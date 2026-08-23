@@ -1,0 +1,180 @@
+// Package config loads and merges notch configuration files.
+package config
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+)
+
+const (
+	defaultProvider     = "anthropic"
+	defaultModel        = "claude-sonnet-4-5"
+	defaultMaxTokens    = 8192
+	defaultSystemPrompt = "You are a coding agent. Help the user understand and modify their codebase."
+)
+
+// Config is the configuration for the notch process. Provider credentials are
+// deliberately not represented here; providers obtain credentials from their
+// environment.
+type Config struct {
+	Provider      string   `json:"provider,omitempty"`
+	Model         string   `json:"model,omitempty"`
+	BaseURL       string   `json:"base_url,omitempty"`
+	MaxTokens     int      `json:"max_tokens,omitempty"`
+	SystemPrompt  string   `json:"system_prompt,omitempty"`
+	MCPConfig     string   `json:"mcp_config,omitempty"`
+	ExtensionDirs []string `json:"extension_dirs,omitempty"`
+	SkillDirs     []string `json:"skill_dirs,omitempty"`
+	PromptDirs    []string `json:"prompt_dirs,omitempty"`
+	SessionDir    string   `json:"session_dir,omitempty"`
+	AuthFile      string   `json:"auth_file,omitempty"`
+}
+
+// Defaults returns the built-in configuration. home is the user's home
+// directory and cwd is the project directory. NOTCH_HOME, when non-empty,
+// replaces home/.notch as the per-user notch directory.
+func Defaults(home, cwd string) Config {
+	root := notchHome(home)
+	projectRoot := filepath.Join(cwd, ".notch")
+	return Config{
+		Provider:      defaultProvider,
+		Model:         defaultModel,
+		MaxTokens:     defaultMaxTokens,
+		SystemPrompt:  defaultSystemPrompt,
+		MCPConfig:     filepath.Join(root, "mcp.json"),
+		ExtensionDirs: uniquePaths(filepath.Join(root, "extensions"), filepath.Join(projectRoot, "extensions")),
+		SkillDirs:     uniquePaths(filepath.Join(root, "skills"), filepath.Join(projectRoot, "skills")),
+		PromptDirs:    uniquePaths(filepath.Join(root, "prompts"), filepath.Join(projectRoot, "prompts")),
+		SessionDir:    filepath.Join(root, "sessions"),
+		AuthFile:      filepath.Join(root, "auth.json"),
+	}
+}
+
+// Load loads the built-in defaults, then the per-user configuration, then the
+// project configuration. Missing files are not errors. A non-zero value in a
+// later file replaces the corresponding earlier value; directory lists are
+// replaced as a whole when non-empty.
+func Load(home, cwd string) (Config, error) {
+	cfg := Defaults(home, cwd)
+	root := notchHome(home)
+	paths := []string{
+		filepath.Join(root, "config.json"),
+		filepath.Join(cwd, ".notch", "config.json"),
+	}
+	seen := make(map[string]bool, len(paths))
+	for _, path := range paths {
+		clean := filepath.Clean(path)
+		if seen[clean] {
+			continue
+		}
+		seen[clean] = true
+		layer, err := read(path)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return Config{}, err
+		}
+		merge(&cfg, layer)
+	}
+	return cfg, nil
+}
+
+func read(path string) (Config, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Config{}, fmt.Errorf("read config %q: %w", path, err)
+	}
+	var cfg Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return Config{}, fmt.Errorf("parse config %q: %w", path, err)
+	}
+	return cfg, nil
+}
+
+func merge(dst *Config, src Config) {
+	if src.Provider != "" {
+		dst.Provider = src.Provider
+	}
+	if src.Model != "" {
+		dst.Model = src.Model
+	}
+	if src.BaseURL != "" {
+		dst.BaseURL = src.BaseURL
+	}
+	if src.MaxTokens != 0 {
+		dst.MaxTokens = src.MaxTokens
+	}
+	if src.SystemPrompt != "" {
+		dst.SystemPrompt = src.SystemPrompt
+	}
+	if src.MCPConfig != "" {
+		dst.MCPConfig = src.MCPConfig
+	}
+	if len(src.ExtensionDirs) != 0 {
+		dst.ExtensionDirs = append([]string(nil), src.ExtensionDirs...)
+	}
+	if len(src.SkillDirs) != 0 {
+		dst.SkillDirs = append([]string(nil), src.SkillDirs...)
+	}
+	if len(src.PromptDirs) != 0 {
+		dst.PromptDirs = append([]string(nil), src.PromptDirs...)
+	}
+	if src.SessionDir != "" {
+		dst.SessionDir = src.SessionDir
+	}
+	if src.AuthFile != "" {
+		dst.AuthFile = src.AuthFile
+	}
+}
+
+// EnsureDirs creates all configured extension, skill, prompt, and session
+// directories. Empty entries are ignored.
+func EnsureDirs(cfg Config) error {
+	dirs := make([]string, 0, len(cfg.ExtensionDirs)+len(cfg.SkillDirs)+len(cfg.PromptDirs)+1)
+	dirs = append(dirs, cfg.ExtensionDirs...)
+	dirs = append(dirs, cfg.SkillDirs...)
+	dirs = append(dirs, cfg.PromptDirs...)
+	dirs = append(dirs, cfg.SessionDir)
+	seen := make(map[string]bool, len(dirs))
+	for _, dir := range dirs {
+		if dir == "" {
+			continue
+		}
+		clean := filepath.Clean(dir)
+		if seen[clean] {
+			continue
+		}
+		seen[clean] = true
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("create config directory %q: %w", dir, err)
+		}
+	}
+	return nil
+}
+
+// EnsureDirs creates the directories named by c.
+func (c Config) EnsureDirs() error { return EnsureDirs(c) }
+
+func notchHome(home string) string {
+	if value := os.Getenv("NOTCH_HOME"); value != "" {
+		return filepath.Clean(value)
+	}
+	return filepath.Join(home, ".notch")
+}
+
+func uniquePaths(paths ...string) []string {
+	out := make([]string, 0, len(paths))
+	seen := make(map[string]bool, len(paths))
+	for _, path := range paths {
+		clean := filepath.Clean(path)
+		if !seen[clean] {
+			seen[clean] = true
+			out = append(out, path)
+		}
+	}
+	return out
+}

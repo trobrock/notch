@@ -1,0 +1,367 @@
+# Extensions
+
+Notch has two first-class extension formats:
+
+- **Lua files** run inside the Notch process using embedded GopherLua.
+- **Executable plugins** run as child processes and speak newline-delimited JSON-RPC 2.0 over stdin/stdout.
+
+Both register the same three concepts: model-callable tools, interactive slash commands, and agent hooks. Executable plugins are the portable option for Go, Python, Rust, shell, or any other language; they do not imply a Node/npm runtime.
+
+Extensions are trusted. Neither format is sandboxed, and host operations execute with the Notch user's privileges.
+
+## Discovery and ordering
+
+Default extension directories are:
+
+```text
+~/.notch/extensions
+<cwd>/.notch/extensions
+```
+
+`$NOTCH_HOME/extensions` replaces the first path when `NOTCH_HOME` is set. `extension_dirs` can replace the list in config.
+
+Notch recursively discovers files named `plugin.json` for executable plugins. It also loads `.lua` files located directly in each configured extension directory; Lua discovery is not recursive. Manifest paths and Lua filenames are sorted. User directories precede project directories by default.
+
+Tool and command names are global. A duplicate is rejected rather than overriding a built-in or an earlier extension. Executable plugin failures are reported independently. Lua loading stops on the first Lua error and reports a warning; declarations from Lua files already committed remain loaded.
+
+## Lua API
+
+Create `.notch/extensions/example.lua`:
+
+```lua
+notch.register_tool({
+  name = "word_count",
+  description = "Count whitespace-separated words",
+  input_schema = {
+    type = "object",
+    properties = {
+      text = { type = "string", description = "Text to count" },
+    },
+    required = { "text" },
+    additionalProperties = false,
+  },
+  execute = function(args, update)
+    update("counting")
+    local _, count = string.gsub(args.text, "%S+", "")
+    return {
+      content = tostring(count),
+      details = { unit = "words" },
+    }
+  end,
+})
+
+notch.register_command({
+  name = "hello",
+  description = "Print a greeting",
+  execute = function(args)
+    return "hello " .. args
+  end,
+})
+
+notch.on("before_agent_start", function(event)
+  return { system_prompt = event.system_prompt .. "\nBe concise." }
+end)
+```
+
+Restart Notch, inspect it with `/tools` or `/help`, and invoke `/hello Ada`. Registered tools are offered to the model automatically.
+
+### Registration functions
+
+Registration is only valid while the Lua file is initially loading.
+
+```lua
+notch.register_tool({
+  name = "required-name",
+  description = "optional",
+  input_schema = { type = "object" }, -- `schema` is also accepted
+  execute = function(args, update) ... end,
+})
+```
+
+`args` is converted from JSON into Lua values. `update(message)` emits a `tool_update` event. A tool may return:
+
+- a string, used as `content`;
+- `nil`, an empty successful result; or
+- `{ content = string, is_error = boolean, details = table }` (all fields optional).
+
+```lua
+notch.register_command({
+  name = "required-name",
+  description = "optional",
+  execute = function(argument_string)
+    return "output" -- string or nil
+  end,
+})
+
+notch.on("event_name", function(event_table)
+  return { changed = "value" } -- table or nil
+end)
+```
+
+Hooks receive a table and return fields to merge into that event before the next hook. JSON-compatible Lua values are supported. Each file has its own Lua state, and calls into one state are serialized.
+
+### Host API
+
+```lua
+local cwd = notch.cwd()
+local run = notch.exec("git", {"status", "--short"})
+-- run.stdout, run.stderr, run.exit_code; run.code aliases exit_code
+
+local value = notch.ui.input("Name", "default")
+local choice = notch.ui.select("Choose", {"one", "two"})
+notch.ui.notify("Finished", "success")
+```
+
+`notch.exec` executes an argv array in Notch's working directory; it does not invoke a shell. A failed start or non-zero exit raises a Lua error with the current host implementation. UI levels are display labels rather than a fixed enum. Lua execution observes agent cancellation, including tight-running Lua code.
+
+## Hooks
+
+The current agent emits these hook names and fields:
+
+### `before_agent_start`
+
+Runs before every model turn.
+
+```json
+{"system_prompt":"...","model":"model-id","turn":0}
+```
+
+Returning `system_prompt` as a string replaces the prompt for that turn.
+
+### `tool_call`
+
+Runs immediately before looking up or executing a model tool call.
+
+```json
+{"name":"read","id":"call-id","arguments":{"path":"README.md"}}
+```
+
+Return `{"denied":true,"reason":"..."}` to produce an error tool result without execution. Return an `arguments` value to replace the call arguments. If multiple hooks modify fields, later hooks see prior changes.
+
+### `tool_execution_start`
+
+Runs after the tool is found and immediately before its handler:
+
+```json
+{"name":"read","id":"call-id"}
+```
+
+Return fields are currently ignored, but an error aborts normal handling for that call.
+
+### `tool_execution_end`
+
+Runs after execution:
+
+```json
+{"name":"read","id":"call-id","content":"...","is_error":false}
+```
+
+Return fields are currently ignored. A hook error replaces the tool result with an error.
+
+### `agent_end`
+
+Runs when a model response has no tool calls:
+
+```json
+{"stop_reason":"end_turn","turn":0}
+```
+
+Return a non-empty string field `follow_up` to append it as a synthetic user message and continue the loop.
+
+Other hook names may be registered, but they do nothing unless core code or another registry caller emits them.
+
+## Executable plugin manifest
+
+A plugin is a directory containing `plugin.json` and its program. For example:
+
+```text
+.notch/extensions/example-plugin/
+  plugin.json
+  plugin.py
+```
+
+```json
+{
+  "name": "example-python",
+  "command": ["python3", "plugin.py"],
+  "enabled": true
+}
+```
+
+`name` and a non-empty `command` array are required. **`enabled` must be explicitly `true`**; unlike MCP server config, omission disables the plugin. The child working directory is the manifest directory. Environment is inherited. stderr is passed through to Notch's stderr, while stdout is reserved exclusively for protocol messages.
+
+## Executable plugin protocol
+
+Messages are one complete JSON object per line, encoded as JSON-RPC 2.0. Notch permits lines up to 16 MiB. Requests can be concurrent and responses may arrive out of order, so plugins must preserve IDs. Do not print logs to stdout.
+
+### Initialization
+
+Immediately after starting the process, Notch sends:
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
+```
+
+The plugin responds with all declarations:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "tools": [{
+      "name": "echo",
+      "description": "Echo text",
+      "input_schema": {
+        "type": "object",
+        "properties": {"text": {"type": "string"}},
+        "required": ["text"]
+      }
+    }],
+    "commands": [{"name": "say", "description": "Print text"}],
+    "hooks": ["before_agent_start"]
+  }
+}
+```
+
+A hook declaration may also be `{"name":"before_agent_start"}` or `{"event":"before_agent_start"}`. Empty arrays may be omitted or returned as empty.
+
+### Calls from Notch
+
+Tool execution:
+
+```json
+{"jsonrpc":"2.0","id":2,"method":"tool.execute","params":{"name":"echo","args":{"text":"hi"}}}
+```
+
+Return either a string or a tool-result object:
+
+```json
+{"jsonrpc":"2.0","id":2,"result":{"content":"hi","is_error":false,"details":{"length":2}}}
+```
+
+While that call is pending, the plugin may send updates as notifications. Associate the update with the **JSON-RPC request ID**:
+
+```json
+{"jsonrpc":"2.0","method":"tool.update","params":{"id":2,"message":"working"}}
+```
+
+`request_id`/`requestId` and `content`/`update` aliases are also accepted.
+
+Command execution:
+
+```json
+{"jsonrpc":"2.0","id":3,"method":"command.execute","params":{"name":"say","args":"hello world"}}
+{"jsonrpc":"2.0","id":3,"result":"hello world"}
+```
+
+A command may instead return `{"output":"..."}` or `{"content":"..."}`.
+
+Hook handling:
+
+```json
+{"jsonrpc":"2.0","id":4,"method":"hook.handle","params":{"name":"before_agent_start","event":{"system_prompt":"...","model":"...","turn":0}}}
+{"jsonrpc":"2.0","id":4,"result":{"system_prompt":"... amended ..."}}
+```
+
+Hook results must be JSON objects (use `{}` for no change).
+
+Use ordinary JSON-RPC errors when a call fails:
+
+```json
+{"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"failed"}}
+```
+
+### Cancellation
+
+If the context for an outstanding plugin request is canceled, Notch sends a notification and stops waiting:
+
+```json
+{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":2}}
+```
+
+The plugin should stop work if possible. A late response for that canceled ID is permitted and ignored.
+
+### Calls from a plugin to Notch
+
+A plugin may issue JSON-RPC requests to the host at any time and must handle the matching response.
+
+Get the working directory:
+
+```json
+{"jsonrpc":"2.0","id":"host-1","method":"host.cwd","params":{}}
+```
+
+Run a program without a shell:
+
+```json
+{"jsonrpc":"2.0","id":"host-2","method":"host.exec","params":{"command":"git","args":["status","--short"]}}
+```
+
+Successful result:
+
+```json
+{"jsonrpc":"2.0","id":"host-2","result":{"stdout":"","stderr":"","exit_code":0}}
+```
+
+With the current terminal host, a non-zero process exit is returned as a host JSON-RPC error rather than as a normal result.
+
+Terminal interactions:
+
+```json
+{"jsonrpc":"2.0","id":"host-3","method":"host.ui.input","params":{"prompt":"Name","placeholder":"Ada"}}
+{"jsonrpc":"2.0","id":"host-4","method":"host.ui.select","params":{"prompt":"Pick","options":["a","b"]}}
+{"jsonrpc":"2.0","id":"host-5","method":"host.ui.notify","params":{"message":"Done","level":"info"}}
+```
+
+Input and selection return strings; notify returns `null`. Host method failures use `-32602` for invalid parameters, `-32601` for unknown methods, and `-32000` for operation errors.
+
+### Minimal Python plugin
+
+This synchronous example is sufficient for one call at a time. Production plugins should dispatch calls and correlate concurrent IDs.
+
+```python
+#!/usr/bin/env python3
+import json
+import sys
+
+
+def send(message):
+    print(json.dumps(message, separators=(",", ":")), flush=True)
+
+
+for line in sys.stdin:
+    request = json.loads(line)
+    method = request.get("method")
+    ident = request.get("id")
+
+    if method == "initialize":
+        send({"jsonrpc": "2.0", "id": ident, "result": {
+            "tools": [{
+                "name": "echo",
+                "description": "Echo text",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"text": {"type": "string"}},
+                    "required": ["text"],
+                },
+            }],
+            "commands": [],
+            "hooks": [],
+        }})
+    elif method == "tool.execute":
+        text = request["params"]["args"]["text"]
+        send({"jsonrpc": "2.0", "method": "tool.update",
+              "params": {"id": ident, "message": "echoing"}})
+        send({"jsonrpc": "2.0", "id": ident,
+              "result": {"content": text}})
+    elif method == "$/cancelRequest":
+        pass
+    elif ident is not None:
+        send({"jsonrpc": "2.0", "id": ident,
+              "error": {"code": -32601, "message": "method not found"}})
+```
+
+## Choosing a format
+
+Use Lua for small, trusted, low-deployment-cost customizations. Use an executable plugin when you need a different language, process isolation for crashes, external libraries, or a protocol boundary shared with other tools. Porting a Pi TypeScript extension generally means translating its registrations and event handlers to one of these APIs; Notch does not embed a TypeScript/JavaScript runtime.

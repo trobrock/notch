@@ -1,0 +1,5 @@
+/bin/
+/examples/extensions/hello-plugin/hello-plugin
+.notch/
+*.test
+coverage.out

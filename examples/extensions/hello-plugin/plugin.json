@@ -1,0 +1,5 @@
+{
+  "name": "hello-plugin",
+  "command": ["./hello-plugin"],
+  "enabled": true
+}
