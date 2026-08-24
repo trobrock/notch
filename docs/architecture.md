@@ -100,6 +100,10 @@ Resources are read once at startup. The binary embeds `notch-config` and `notch-
 
 The system prompt normally comes from layered configuration. `--system-prompt` and `--system-prompt-file` provide mutually exclusive process-local overrides; the file form lets subprocess integrations pass multiline instructions without command-line quoting or size issues.
 
+For provider requests, Notch preserves complete durable session messages but bounds context growth from tool output: extension and MCP results are capped at 50 KiB when produced, the three most recent tool results are represented with up to 12 KiB each, and older results with up to 4 KiB each. Trimming keeps both the head and tail and does not rewrite session history. The generic `context` hook can further transform the request-only message snapshot.
+
+Automatic and manual compaction use a structured continuation summary covering goals, constraints, completed/in-progress/blocked work, decisions, important files and commands, failures, next steps, and critical context. `session_before_compact` can add instructions or provide a complete summary while core retains split selection and durable compaction records.
+
 ## Extension package boundary
 
 `internal/extpkg` manages decentralized package sources separately from extension execution. GitHub sources resolve through the API to exact commit archives; generic Git sources delegate transport and credentials to `git`; local sources are copied. Every source is staged, validated through `notch-package.json`, hashed, and atomically moved under Notch home before the mode-0600 lock state changes. Startup reads only validated exported directories and then hands them to the existing Lua/plugin loaders. Package installation never executes package code or install scripts.

@@ -3,7 +3,9 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -482,4 +484,58 @@ func TestToolHookCanDeny(t *testing.T) {
 	if got := a.Messages()[2].Content[0].Text; got != "blocked" {
 		t.Fatalf("result = %q", got)
 	}
+}
+
+func TestContextAndStatusLifecycleHooks(t *testing.T) {
+	provider := &recordingProvider{}
+	registry := extension.NewRegistry()
+	var lifecycle []string
+	registry.On("agent_start", "test", func(context.Context, map[string]any) (map[string]any, error) {
+		lifecycle = append(lifecycle, "start")
+		return nil, nil
+	})
+	registry.On("context", "test", func(_ context.Context, event map[string]any) (map[string]any, error) {
+		messages, _ := decodeHookMessages(event["messages"])
+		messages = append(messages, model.TextMessage("user", "injected"))
+		return map[string]any{"messages": messages}, nil
+	})
+	a, err := New(Config{Provider: provider, Registry: registry, Model: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Prompt(context.Background(), "original", nil); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(lifecycle, []string{"start"}) {
+		t.Fatalf("lifecycle=%#v", lifecycle)
+	}
+	if got := provider.requests[0].Messages[len(provider.requests[0].Messages)-1].Content[0].Text; got != "injected" {
+		t.Fatalf("request message=%q", got)
+	}
+}
+
+func TestAgentErrorHook(t *testing.T) {
+	provider := &errorProvider{err: errors.New("provider failed")}
+	registry := extension.NewRegistry()
+	var message string
+	registry.On("agent_error", "test", func(_ context.Context, event map[string]any) (map[string]any, error) {
+		message, _ = event["message"].(string)
+		return nil, nil
+	})
+	a, err := New(Config{Provider: provider, Registry: registry, Model: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Prompt(context.Background(), "go", nil); err == nil {
+		t.Fatal("prompt succeeded")
+	}
+	if message != "provider failed" {
+		t.Fatalf("message=%q", message)
+	}
+}
+
+type errorProvider struct{ err error }
+
+func (p *errorProvider) Stream(context.Context, model.Request, func(model.StreamEvent)) (model.Response, error) {
+	return model.Response{}, p.err
 }

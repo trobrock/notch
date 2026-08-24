@@ -311,10 +311,19 @@ func (a *Agent) PromptWithStart(ctx context.Context, text string, emit func(Even
 				return compactErr
 			}
 		}
+		requestMessages := contextMessages(a.messages)
+		contextEvent, contextErr := a.registry.RunHooks(ctx, "context", map[string]any{"messages": requestMessages, "turn": turn})
+		if contextErr != nil {
+			return contextErr
+		}
+		if replacement, ok := decodeHookMessages(contextEvent["messages"]); ok {
+			requestMessages = replacement
+		}
 		emit(Event{Type: "turn_start"})
+		_, _ = a.registry.RunHooks(ctx, "agent_start", map[string]any{"model": a.model, "turn": turn})
 		requestEstimate := a.estimatedContextTokensLocked()
 		response, err := a.provider.Stream(ctx, model.Request{
-			Model: a.model, SystemPrompt: system, Messages: cloneMessages(a.messages),
+			Model: a.model, SystemPrompt: system, Messages: requestMessages,
 			Tools: a.registry.Definitions(), MaxTokens: a.maxTokens,
 			ReasoningLevel: a.ThinkingLevel(),
 		}, func(event model.StreamEvent) {
@@ -324,6 +333,7 @@ func (a *Agent) PromptWithStart(ctx context.Context, text string, emit func(Even
 			}
 		})
 		if err != nil {
+			_, _ = a.registry.RunHooks(ctx, "agent_error", map[string]any{"message": err.Error(), "model": a.model, "turn": turn})
 			emit(Event{Type: "error", Text: err.Error()})
 			return err
 		}
@@ -394,6 +404,21 @@ func (a *Agent) PromptWithStart(ctx context.Context, text string, emit func(Even
 	}
 }
 
+func decodeHookMessages(value any) ([]model.Message, bool) {
+	if value == nil {
+		return nil, false
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return nil, false
+	}
+	var messages []model.Message
+	if json.Unmarshal(data, &messages) != nil {
+		return nil, false
+	}
+	return messages, true
+}
+
 func toolCalls(blocks []model.Block) []model.Block {
 	var calls []model.Block
 	for _, block := range blocks {
@@ -444,6 +469,7 @@ func (a *Agent) executeTool(ctx context.Context, call model.Block, emit func(Eve
 	if execErr != nil {
 		result = extension.ToolResult{Content: execErr.Error(), IsError: true}
 	}
+	result = extension.LimitToolResult(result)
 	_, hookErr := a.registry.RunHooks(ctx, "tool_execution_end", map[string]any{
 		"name": call.Name, "id": call.ID, "content": result.Content, "is_error": result.IsError,
 	})

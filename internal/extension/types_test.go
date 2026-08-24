@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/trobrock/notch/internal/model"
@@ -81,5 +82,16 @@ func TestRegistryActiveToolsCanBeRestored(t *testing.T) {
 	registry.SetActiveTools(nil)
 	if _, ok := registry.Tool("write"); !ok {
 		t.Fatal("restore did not expose write")
+	}
+}
+
+func TestLimitToolResultKeepsHeadAndTail(t *testing.T) {
+	content := "HEAD" + strings.Repeat("x", MaxToolResultBytes) + "TAIL"
+	result := LimitToolResult(ToolResult{Content: content})
+	if !strings.HasPrefix(result.Content, "HEAD") || !strings.HasSuffix(result.Content, "TAIL") || !strings.Contains(result.Content, "tool output truncated") {
+		t.Fatalf("result markers missing")
+	}
+	if len(result.Content) > MaxToolResultBytes+100 {
+		t.Fatalf("result length=%d", len(result.Content))
 	}
 }

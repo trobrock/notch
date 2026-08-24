@@ -111,7 +111,7 @@ Statuses are keyed footer values. Panels are keyed, non-interactive content abov
 
 Supported emitted hooks are:
 
-- `session_start`: runs once after the initial agent/session setup with `cwd`, `provider`, `model`, `thinking_level`, `mode`, `resumed`, and optional `session_id`/`session_file`; errors abort startup.
+- `session_start`, `session_shutdown`, `agent_start`, `agent_error`, `before_agent_start`, `context`, `tool_call`, `tool_execution_start`, `tool_execution_end`, `agent_end`, and `session_before_compact`: lifecycle and request hooks.
 - `session_shutdown`: runs once before extensions close with the session-start fields plus `reason` (`exit` or `canceled`); all handlers are attempted with a fresh bounded context.
 - `before_agent_start`: receives `system_prompt`, `model`, and `turn`; returning `system_prompt` replaces it for that turn.
 - `tool_call`: receives `name`, `id`, and decoded `arguments`; return `denied=true` plus `reason`, or replacement `arguments`.

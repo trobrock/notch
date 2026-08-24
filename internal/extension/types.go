@@ -7,9 +7,45 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/trobrock/notch/internal/model"
 )
+
+const MaxToolResultBytes = 50 * 1024
+
+// LimitToolResult bounds untrusted extension and MCP result text while keeping
+// both the beginning and end, where summaries and terminal errors commonly live.
+func LimitToolResult(result ToolResult) ToolResult {
+	if len(result.Content) <= MaxToolResultBytes {
+		return result
+	}
+	head := MaxToolResultBytes * 65 / 100
+	tail := MaxToolResultBytes - head
+	result.Content = result.Content[:validUTF8Prefix(result.Content, head)] +
+		fmt.Sprintf("\n\n[tool output truncated: %d bytes total]\n\n", len(result.Content)) +
+		result.Content[len(result.Content)-validUTF8Suffix(result.Content, tail):]
+	return result
+}
+
+func validUTF8Prefix(value string, limit int) int {
+	if limit >= len(value) {
+		return len(value)
+	}
+	for limit > 0 && !utf8.ValidString(value[:limit]) {
+		limit--
+	}
+	return limit
+}
+func validUTF8Suffix(value string, limit int) int {
+	if limit >= len(value) {
+		return len(value)
+	}
+	for limit > 0 && !utf8.ValidString(value[len(value)-limit:]) {
+		limit--
+	}
+	return limit
+}
 
 type ToolResult struct {
 	Content string         `json:"content"`

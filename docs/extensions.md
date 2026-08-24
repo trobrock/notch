@@ -125,6 +125,11 @@ In the fullscreen TUI, input and selection requests are queued and presented thr
 
 The current agent emits these hook names and fields:
 
+- `agent_start`: emitted immediately before each provider request with `model` and `turn`.
+- `agent_error`: emitted when a provider request fails with `message`, `model`, and `turn`.
+- `context`: receives the trimmed model-request `messages` and `turn`; returning `messages` replaces that request context without changing durable history.
+- `session_before_compact`: receives `auto`, `instructions`, usage, old messages, and recent messages. It may replace `instructions` or return a non-empty `summary` to supply the compaction summary directly.
+
 ### `session_start`
 
 Runs once after the initial session and agent are ready, before any interactive or one-shot work starts:
