@@ -25,7 +25,7 @@ func TestRegisterKeepsOfficialExtensionsSegmented(t *testing.T) {
 	if err := Register(registry, &testHost{}); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"ask_user_question", "update_task_list"} {
+	for _, name := range []string{"ask_user_question", "run_subagent", "update_task_list"} {
 		tool, ok := registry.Tool(name)
 		if !ok {
 			t.Fatalf("%s not registered", name)

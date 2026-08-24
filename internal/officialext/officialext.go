@@ -7,6 +7,7 @@ import (
 
 	"github.com/trobrock/notch/internal/extension"
 	"github.com/trobrock/notch/internal/officialext/askuser"
+	"github.com/trobrock/notch/internal/officialext/subagent"
 	"github.com/trobrock/notch/internal/officialext/tasklist"
 )
 
@@ -18,6 +19,7 @@ func Register(registry *extension.Registry, host extension.Host) error {
 	}
 	for _, register := range []func(*extension.Registry, extension.Host) error{
 		askuser.Register,
+		subagent.Register,
 		tasklist.Register,
 	} {
 		if err := register(registry, host); err != nil {

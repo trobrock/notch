@@ -50,9 +50,9 @@ var (
 )
 
 type options struct {
-	provider, modelName, thinking, prompt, mcpConfig, resumeSession, mode, toolAllow, toolExclude string
-	continueSession, noSession, jsonOutput, noTUI, init, showVersion, rpcMode                     bool
-	noTools, noBuiltinTools                                                                       bool
+	provider, modelName, thinking, prompt, systemPrompt, systemPromptFile, mcpConfig, resumeSession, mode, toolAllow, toolExclude string
+	continueSession, noSession, jsonOutput, noTUI, init, showVersion, rpcMode                                                     bool
+	noTools, noBuiltinTools, noExtensions, noResources                                                                            bool
 }
 
 func main() {
@@ -87,6 +87,8 @@ func run(args []string) error {
 	flags.StringVar(&opts.modelName, "m", "", "model ID (shorthand)")
 	flags.StringVar(&opts.thinking, "thinking", "", "reasoning effort: off, minimal, low, medium, high, or xhigh")
 	flags.StringVar(&opts.prompt, "print", "", "run one prompt and exit")
+	flags.StringVar(&opts.systemPrompt, "system-prompt", "", "override the configured system prompt")
+	flags.StringVar(&opts.systemPromptFile, "system-prompt-file", "", "read the system prompt override from a file")
 	flags.StringVar(&opts.mcpConfig, "mcp-config", "", "path to MCP JSON config")
 	flags.BoolVar(&opts.continueSession, "continue", false, "continue the latest session")
 	flags.StringVar(&opts.resumeSession, "resume", "", "resume a session by ID, prefix, filename, or path")
@@ -104,6 +106,8 @@ func run(args []string) error {
 	flags.BoolVar(&opts.noTools, "nt", false, "disable all tools (shorthand)")
 	flags.BoolVar(&opts.noBuiltinTools, "no-builtin-tools", false, "disable built-in tools")
 	flags.BoolVar(&opts.noBuiltinTools, "nbt", false, "disable built-in tools (shorthand)")
+	flags.BoolVar(&opts.noExtensions, "no-extensions", false, "disable official and configured extensions")
+	flags.BoolVar(&opts.noResources, "no-resources", false, "disable skills and prompt templates")
 	flags.BoolVar(&opts.init, "init", false, "create ~/.notch and a starter config")
 	flags.BoolVar(&opts.showVersion, "version", false, "print version")
 	if err := flags.Parse(args); err != nil {
@@ -167,12 +171,30 @@ func run(args []string) error {
 	if opts.mcpConfig != "" {
 		cfg.MCPConfig = opts.mcpConfig
 	}
+	if opts.systemPrompt != "" && opts.systemPromptFile != "" {
+		return errors.New("--system-prompt and --system-prompt-file cannot be combined")
+	}
+	if opts.systemPromptFile != "" {
+		data, readErr := os.ReadFile(opts.systemPromptFile)
+		if readErr != nil {
+			return fmt.Errorf("read system prompt file: %w", readErr)
+		}
+		cfg.SystemPrompt = string(data)
+	} else if opts.systemPrompt != "" {
+		cfg.SystemPrompt = opts.systemPrompt
+	}
 	if opts.init {
 		return initialize(home, cwd, cfg)
 	}
-	packageDirs, err := extpkg.DiscoveryDirs(config.HomeDir(home))
-	if err != nil {
-		return fmt.Errorf("load installed extension packages: %w", err)
+	if opts.noExtensions {
+		cfg.ExtensionDirs = nil
+	}
+	var packageDirs []string
+	if !opts.noExtensions {
+		packageDirs, err = extpkg.DiscoveryDirs(config.HomeDir(home))
+		if err != nil {
+			return fmt.Errorf("load installed extension packages: %w", err)
+		}
 	}
 	cfg.ExtensionDirs = append(cfg.ExtensionDirs, packageDirs...)
 	if err := cfg.EnsureDirs(); err != nil {
@@ -224,12 +246,18 @@ func run(args []string) error {
 				return err
 			}
 		}
-		if err := officialext.Register(registry, extensionHost); err != nil {
-			return err
+		if !opts.noExtensions {
+			if err := officialext.Register(registry, extensionHost); err != nil {
+				return err
+			}
 		}
 	}
 
-	plugins, warnings := extension.DiscoverAndLoad(ctx, cfg.ExtensionDirs, registry, extensionHost)
+	var plugins []*extension.Plugin
+	var warnings []error
+	if !opts.noExtensions {
+		plugins, warnings = extension.DiscoverAndLoad(ctx, cfg.ExtensionDirs, registry, extensionHost)
+	}
 	defer func() {
 		for i := len(plugins) - 1; i >= 0; i-- {
 			_ = plugins[i].Close()
@@ -240,8 +268,10 @@ func run(args []string) error {
 	}
 
 	luaManager := luaext.New(registry, extensionHost)
-	if err := luaManager.LoadDirs(cfg.ExtensionDirs...); err != nil {
-		terminal.Notify(err.Error(), "warning")
+	if !opts.noExtensions {
+		if err := luaManager.LoadDirs(cfg.ExtensionDirs...); err != nil {
+			terminal.Notify(err.Error(), "warning")
+		}
 	}
 	defer luaManager.Close()
 
@@ -263,9 +293,14 @@ func run(args []string) error {
 		return err
 	}
 
-	catalog, err := resources.LoadBundled(cfg.SkillDiscoveryDirs(), cfg.PromptDiscoveryDirs())
-	if err != nil {
-		terminal.Notify(err.Error(), "warning")
+	var catalog *resources.Catalog
+	if opts.noResources {
+		catalog = &resources.Catalog{Skills: map[string]resources.Skill{}, Templates: map[string]resources.Template{}}
+	} else {
+		catalog, err = resources.LoadBundled(cfg.SkillDiscoveryDirs(), cfg.PromptDiscoveryDirs())
+		if err != nil {
+			terminal.Notify(err.Error(), "warning")
+		}
 	}
 	systemPrompt := cfg.SystemPrompt
 	if summary := catalog.SystemSummary(); summary != "" {

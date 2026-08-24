@@ -122,6 +122,8 @@ notch [flags] [prompt words...]
   --model, -m string      model ID
   --thinking string       off, minimal, low, medium, high, or xhigh
   --print string          run one prompt and exit
+  --system-prompt string  override the configured system prompt
+  --system-prompt-file    read the system prompt override from a file
   --continue              continue the most recently modified session
   --no-session            do not create or update a session
   --json                  emit JSONL agent events
@@ -131,6 +133,8 @@ notch [flags] [prompt words...]
   --tools, -t string      strict comma-separated tool allowlist
   --exclude-tools string  comma-separated tools to disable
   --no-builtin-tools      disable built-in tools
+  --no-extensions         disable official and configured extensions
+  --no-resources          disable skills and prompt templates
   --no-tools              disable all model tools
   --mcp-config string     path to MCP JSON config
   --init                  create the Notch directories and starter config
