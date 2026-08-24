@@ -143,10 +143,15 @@ func run(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	terminal := ui.DefaultTerminal(cwd)
-	selectedTheme, ok := tui.ThemeByName(cfg.Theme)
+	themeCatalog, themeWarnings := tui.LoadThemeCatalog(cfg.ThemeDirs...)
+	selectedTheme, selectedThemeName, ok := themeCatalog.Lookup(cfg.Theme)
 	if !ok {
-		return fmt.Errorf("unknown theme %q (available: %s)", cfg.Theme, strings.Join(tui.ThemeNames(), ", "))
+		for _, warning := range themeWarnings {
+			terminal.Notify(warning.Error(), "warning")
+		}
+		return fmt.Errorf("unknown theme %q (available: %s)", cfg.Theme, strings.Join(themeCatalog.Names(), ", "))
 	}
+	cfg.Theme = selectedThemeName
 	useFullscreen := opts.prompt == "" && !opts.jsonOutput && !opts.noTUI && term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
 	sessionDir := cfg.SessionDir
 	if opts.noSession {
@@ -157,10 +162,17 @@ func run(args []string) error {
 	if useFullscreen {
 		fullscreen = tui.NewApp(tui.AppConfig{
 			CWD: cwd, Provider: normalizeProvider(cfg.Provider), Model: cfg.Model, SessionDir: sessionDir,
-			Theme: selectedTheme, ThemeName: cfg.Theme, ThinkingLevel: cfg.ThinkingLevel,
+			Theme: selectedTheme, ThemeName: cfg.Theme, Themes: themeCatalog, ThinkingLevel: cfg.ThinkingLevel,
 			GitBranch: currentGitBranch(cwd), In: os.Stdin, Out: os.Stdout,
 		})
 		extensionHost = fullscreen
+		for _, warning := range themeWarnings {
+			fullscreen.Notify(warning.Error(), "warning")
+		}
+	} else {
+		for _, warning := range themeWarnings {
+			terminal.Notify(warning.Error(), "warning")
+		}
 	}
 	registry := extension.NewRegistry()
 	if err := tools.RegisterBuiltins(registry, cwd); err != nil {
@@ -851,5 +863,6 @@ func initialize(home, cwd string, cfg config.Config) error {
 	}
 	fmt.Println("created", path)
 	fmt.Println("project extensions:", filepath.Join(cwd, ".notch", "extensions"))
+	fmt.Println("project themes:", filepath.Join(cwd, ".notch", "themes"))
 	return nil
 }

@@ -57,7 +57,7 @@ The fullscreen built-ins are:
 
 - `/model` (also `/models` or `/provider`) opens provider then model selectors; add `refresh` to force provider discovery;
 - `/thinking` reports the current level; `/thinking LEVEL` changes it;
-- `/theme` lists built-ins; `/theme NAME` changes the current process only;
+- `/theme` lists built-in and custom themes; `/theme NAME` changes the current process only;
 - `/compact [instructions]` summarizes older context while retaining recent complete turns;
 - `/new` starts a clean conversation and clears the transcript and submitted-input history;
 - `/resume` opens a saved-session selector showing modification time, original directory, model, preview, and ID suffix;
@@ -116,7 +116,6 @@ Transcript rendering is cached per entry. Markdown cache keys include the source
 The fullscreen UI currently has no:
 
 - terminal table layout, image display, syntax highlighting, or special rendering for Markdown extensions such as task lists and strikethrough;
-- custom theme files or custom theme JSON;
 - mouse support;
 - configurable keybindings;
 - inline mode that preserves output in the normal screen buffer;

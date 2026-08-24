@@ -61,6 +61,7 @@ type Config struct {
 	ExtensionDirs     []string          `json:"extension_dirs,omitempty"`
 	SkillDirs         []string          `json:"skill_dirs,omitempty"`
 	PromptDirs        []string          `json:"prompt_dirs,omitempty"`
+	ThemeDirs         []string          `json:"theme_dirs,omitempty"`
 	AgentSkillDirs    []string          `json:"-"`
 	AgentCommandDirs  []string          `json:"-"`
 	SessionDir        string            `json:"session_dir,omitempty"`
@@ -89,6 +90,7 @@ func Defaults(home, cwd string) Config {
 		ExtensionDirs:     uniquePaths(filepath.Join(root, "extensions"), filepath.Join(projectRoot, "extensions")),
 		SkillDirs:         uniquePaths(filepath.Join(root, "skills"), filepath.Join(projectRoot, "skills")),
 		PromptDirs:        uniquePaths(filepath.Join(root, "prompts"), filepath.Join(projectRoot, "prompts")),
+		ThemeDirs:         uniquePaths(filepath.Join(root, "themes"), filepath.Join(projectRoot, "themes")),
 		AgentSkillDirs:    uniquePaths(filepath.Join(home, ".agents", "skills"), filepath.Join(cwd, ".agents", "skills")),
 		AgentCommandDirs:  uniquePaths(filepath.Join(home, ".agents", "commands"), filepath.Join(cwd, ".agents", "commands")),
 		SessionDir:        filepath.Join(root, "sessions"),
@@ -185,6 +187,9 @@ func merge(dst *Config, src Config) {
 	if len(src.PromptDirs) != 0 {
 		dst.PromptDirs = append([]string(nil), src.PromptDirs...)
 	}
+	if len(src.ThemeDirs) != 0 {
+		dst.ThemeDirs = append([]string(nil), src.ThemeDirs...)
+	}
 	if src.SessionDir != "" {
 		dst.SessionDir = src.SessionDir
 	}
@@ -223,13 +228,14 @@ func merge(dst *Config, src Config) {
 	}
 }
 
-// EnsureDirs creates all configured extension, skill, prompt, and session
-// directories. Empty entries are ignored.
+// EnsureDirs creates all configured extension, skill, prompt, theme, and
+// session directories. Empty entries are ignored.
 func EnsureDirs(cfg Config) error {
-	dirs := make([]string, 0, len(cfg.ExtensionDirs)+len(cfg.SkillDirs)+len(cfg.PromptDirs)+1)
+	dirs := make([]string, 0, len(cfg.ExtensionDirs)+len(cfg.SkillDirs)+len(cfg.PromptDirs)+len(cfg.ThemeDirs)+1)
 	dirs = append(dirs, cfg.ExtensionDirs...)
 	dirs = append(dirs, cfg.SkillDirs...)
 	dirs = append(dirs, cfg.PromptDirs...)
+	dirs = append(dirs, cfg.ThemeDirs...)
 	dirs = append(dirs, cfg.SessionDir)
 	seen := make(map[string]bool, len(dirs))
 	for _, dir := range dirs {

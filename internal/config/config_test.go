@@ -28,6 +28,10 @@ func TestDefaultsAndNotchHome(t *testing.T) {
 	if !reflect.DeepEqual(cfg.ExtensionDirs, wantExtensions) {
 		t.Fatalf("extension dirs = %#v, want %#v", cfg.ExtensionDirs, wantExtensions)
 	}
+	wantThemes := []string{filepath.Join(root, "themes"), filepath.Join(cwd, ".notch", "themes")}
+	if !reflect.DeepEqual(cfg.ThemeDirs, wantThemes) {
+		t.Fatalf("theme dirs = %#v, want %#v", cfg.ThemeDirs, wantThemes)
+	}
 	wantAgentSkills := []string{filepath.Join(home, ".agents", "skills"), filepath.Join(cwd, ".agents", "skills")}
 	wantAgentCommands := []string{filepath.Join(home, ".agents", "commands"), filepath.Join(cwd, ".agents", "commands")}
 	if !reflect.DeepEqual(cfg.AgentSkillDirs, wantAgentSkills) || !reflect.DeepEqual(cfg.AgentCommandDirs, wantAgentCommands) {
@@ -54,13 +58,13 @@ func TestLoadMergesUserThenProject(t *testing.T) {
 	writeJSON(t, filepath.Join(home, ".notch", "config.json"), `{
 		"provider":"openai", "model":"global-model", "base_url":"https://global.test",
 		"max_tokens":123, "system_prompt":"global prompt", "extension_dirs":["global-ext"],
-		"skill_dirs":["global-skill"], "prompt_dirs":["global-prompt"], "session_dir":"global-sessions",
+		"skill_dirs":["global-skill"], "prompt_dirs":["global-prompt"], "theme_dirs":["global-theme"], "session_dir":"global-sessions",
 		"theme":"dracula", "thinking_level":"low", "context_window":99999, "model_cache":"custom-models.json", "model_refresh_hours":12,
 		"compaction":{"enabled":false,"reserve_tokens":1000,"keep_recent_tokens":2000}
 	}`)
 	writeJSON(t, filepath.Join(cwd, ".notch", "config.json"), `{
 		"model":"project-model", "max_tokens":456, "mcp_config":"project-mcp.json",
-		"extension_dirs":["project-ext"], "provider":"", "prompt_dirs":[],
+		"extension_dirs":["project-ext"], "provider":"", "prompt_dirs":[], "theme_dirs":["project-theme"],
 		"thinking_level":"high", "compaction":{"keep_recent_tokens":3000}
 	}`)
 
@@ -79,7 +83,8 @@ func TestLoadMergesUserThenProject(t *testing.T) {
 	}
 	if !reflect.DeepEqual(cfg.ExtensionDirs, []string{"project-ext"}) ||
 		!reflect.DeepEqual(cfg.SkillDirs, []string{"global-skill"}) ||
-		!reflect.DeepEqual(cfg.PromptDirs, []string{"global-prompt"}) {
+		!reflect.DeepEqual(cfg.PromptDirs, []string{"global-prompt"}) ||
+		!reflect.DeepEqual(cfg.ThemeDirs, []string{"project-theme"}) {
 		t.Fatalf("directory merge failed: %+v", cfg)
 	}
 }
@@ -149,13 +154,15 @@ func TestEnsureDirs(t *testing.T) {
 		filepath.Join(root, "extensions", "nested"),
 		filepath.Join(root, "skills"),
 		filepath.Join(root, "prompts"),
+		filepath.Join(root, "themes"),
 		filepath.Join(root, "sessions"),
 	}
 	cfg := Config{
 		ExtensionDirs: []string{dirs[0], dirs[0], ""},
 		SkillDirs:     []string{dirs[1]},
 		PromptDirs:    []string{dirs[2]},
-		SessionDir:    dirs[3],
+		ThemeDirs:     []string{dirs[3]},
+		SessionDir:    dirs[4],
 	}
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatal(err)

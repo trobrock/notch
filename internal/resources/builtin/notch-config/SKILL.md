@@ -43,6 +43,7 @@ Before editing, read every existing applicable config file. Do not replace unrel
   "extension_dirs": ["/home/me/.notch/extensions", "/work/project/.notch/extensions"],
   "skill_dirs": ["/home/me/.notch/skills", "/work/project/.notch/skills"],
   "prompt_dirs": ["/home/me/.notch/prompts", "/work/project/.notch/prompts"],
+  "theme_dirs": ["/home/me/.notch/themes", "/work/project/.notch/themes"],
   "session_dir": "/home/me/.notch/sessions"
 }
 ```
@@ -52,6 +53,8 @@ Empty scalar values in later files do not erase earlier values. A non-empty dire
 The model registry ships with an offline fallback and refreshes stale selected-provider data from provider model-list APIs on startup or when `/model` is opened. `model_refresh_hours` controls staleness; no polling timer runs. Use `notch models [provider]` to list cached/discovered models, `notch models --refresh [provider]` to force discovery, and `/model refresh` to force it in the fullscreen selector. `model_cache` relocates the mode-0600 JSON cache.
 
 Valid thinking levels are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh`. Built-in themes are `dark`, `dracula`, and `catppuccin-mocha`. `/thinking LEVEL` and `/theme NAME` change only the running process.
+
+Custom themes are direct JSON files in `theme_dirs`, defaulting to user and project `.notch/themes` directories. Each file has an optional `name`, optional `base` (default `dark`), optional `vars`, and a `colors` object whose final values are `#RRGGBB`. Project files load after user files. Preserve unrelated roles by using a base and changing only requested colors. See `docs/themes.md` or the `examples/themes/rose-pine.json` shape before authoring one; invalid roles, colors, variables, and inheritance cycles cause that theme to be skipped.
 
 ## Providers and authentication
 

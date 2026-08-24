@@ -61,7 +61,7 @@ export ANTHROPIC_API_KEY=...
 notch -p anthropic -m claude-sonnet-4-5
 ```
 
-The built-in themes are `dark`, `dracula`, and `catppuccin-mocha`; Notch does not import Pi custom theme files. Thinking levels are `off|minimal|low|medium|high|xhigh` and are transmitted by every provider adapter, although model support varies. In the fullscreen UI, `/theme`, `/thinking`, and `Shift-Tab` change runtime state only. See [themes](themes.md), [TUI controls](tui.md#commands-and-thinking-level), and [compaction](compaction.md).
+The built-in themes are `dark`, `dracula`, and `catppuccin-mocha`. Custom Pi-style JSON themes can be copied to `~/.notch/themes` or `<cwd>/.notch/themes`; Notch reads the semantic roles it renders and ignores known Pi-only roles. Add `"base": "dark"` when the file does not define every Notch role. Thinking levels are `off|minimal|low|medium|high|xhigh` and are transmitted by every provider adapter, although model support varies. In the fullscreen UI, `/theme`, `/thinking`, and `Shift-Tab` change runtime state only. See [themes](themes.md), [TUI controls](tui.md#commands-and-thinking-level), and [compaction](compaction.md).
 
 For OpenAI-compatible local service, set `provider` to `openai` and `base_url` to the API origin. Notch always calls `<base_url>/v1/responses`, not Chat Completions. The tested Ollama route is:
 

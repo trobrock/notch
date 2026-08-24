@@ -8,15 +8,15 @@ Notch is one Go program with a deliberately small provider-independent agent loo
 
 1. Dispatch standalone authentication, model-list, version, and upgrade commands; otherwise parse agent flags and determine the current directory and home directory.
 2. Load defaults, user config, and project config; apply `NOTCH_PROVIDER`, `NOTCH_MODEL`, and `NOTCH_THINKING_LEVEL`; then apply CLI overrides.
-3. Create configured extension, skill, prompt, and session directories.
-4. Create the terminal and extension registry; register built-in tools.
+3. Create configured extension, skill, prompt, theme, and session directories.
+4. Load built-in and custom theme JSON, select the configured theme, then create the terminal and extension registry and register built-in tools.
 5. Discover and start executable plugins, then load top-level Lua files.
 6. If the MCP config file exists, connect configured servers and register their tools.
 7. Load skills and prompt templates and add their catalog summary to the system prompt.
 8. Resolve the selected provider's environment or stored credential (refreshing expiring OAuth when needed), create the provider, refresh its model cache in the background when stale, create or resume a session, and construct the agent.
 9. Run one prompt, enter the fullscreen TUI when both interactive streams are terminals, or enter the line-oriented fallback loop.
 
-Plugin, Lua, and MCP load failures are generally shown as warnings so startup can continue. A failure while connecting a configured MCP set causes that set to be closed rather than leaving partial MCP connections active. Duplicate tool or command names are rejected; built-ins therefore cannot be silently replaced.
+Malformed custom themes and plugin, Lua, and MCP load failures are generally shown as warnings so startup can continue. A failure while connecting a configured MCP set causes that set to be closed rather than leaving partial MCP connections active. Duplicate tool or command names are rejected; built-ins therefore cannot be silently replaced.
 
 ## Packages
 
@@ -109,4 +109,4 @@ The fullscreen event loop blocks on terminal input, agent/extension events, and 
 
 Extension `Input` and `Select` calls rendezvous with the fullscreen event loop and appear as modal transcript/composer interactions; requests are queued and honor cancellation. The line fallback presents the same host operations as ordinary prompts.
 
-With `--json`, agent events are JSON-encoded to stdout as JSONL. Startup warnings can still appear on stderr. Consumers should treat event additions as possible while the MVP API settles. Current fullscreen gaps include custom theme files/JSON, mouse support, configurable keybindings, inline (non-alternate-screen) mode, tool-output expand/collapse, tool approval, and branching/session-tree navigation beyond the flat resume selector.
+With `--json`, agent events are JSON-encoded to stdout as JSONL. Startup warnings can still appear on stderr. Consumers should treat event additions as possible while the MVP API settles. Current fullscreen gaps include mouse support, configurable keybindings, inline (non-alternate-screen) mode, tool-output expand/collapse, tool approval, and branching/session-tree navigation beyond the flat resume selector.

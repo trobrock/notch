@@ -37,6 +37,7 @@ type AppConfig struct {
 	SessionDir    string
 	Theme         Theme
 	ThemeName     string
+	Themes        *ThemeCatalog
 	ThinkingLevel string
 	GitBranch     string
 	In            *os.File
@@ -153,8 +154,16 @@ func NewApp(cfg AppConfig) *App {
 			cfg.CWD = cwd
 		}
 	}
+	if cfg.Themes == nil {
+		cfg.Themes = BuiltinThemeCatalog()
+	}
 	if cfg.ThemeName == "" {
 		cfg.ThemeName = "dark"
+	}
+	if cfg.Theme == (Theme{}) {
+		if theme, canonical, ok := cfg.Themes.Lookup(cfg.ThemeName); ok {
+			cfg.Theme, cfg.ThemeName = theme, canonical
+		}
 	}
 	if cfg.ThinkingLevel == "" {
 		cfg.ThinkingLevel = "off"
@@ -1046,21 +1055,13 @@ func (a *App) applyThinkingLevel(level string, report bool) {
 func (a *App) setTheme(name string) {
 	name = strings.TrimSpace(name)
 	if name == "" {
-		a.addNotice(strings.Join(ThemeNames(), "\n"), "notice")
+		a.addNotice(strings.Join(a.cfg.Themes.Names(), "\n"), "notice")
 		return
 	}
-	theme, ok := ThemeByName(name)
+	theme, canonical, ok := a.cfg.Themes.Lookup(name)
 	if !ok {
 		a.addNotice(fmt.Sprintf("unknown theme %q", name), "error")
 		return
-	}
-	canonical := name
-	for _, candidate := range ThemeNames() {
-		candidateTheme, _ := ThemeByName(candidate)
-		if candidateTheme == theme {
-			canonical = candidate
-			break
-		}
 	}
 	a.cfg.Theme, a.cfg.ThemeName = theme, canonical
 	a.state.layout.Theme, a.state.layout.ThemeName = theme, canonical

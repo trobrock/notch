@@ -151,8 +151,12 @@ func semanticTheme(c themeColors) Theme {
 		ThinkingHigh: c.thinkingHigh, ThinkingXHigh: c.thinkingXHigh,
 		Reset: "\x1b[0m",
 	}
-	// Populate old names too, so reading a built-in through the original API is
-	// useful and old partial themes still have intuitive fallback values.
+	return syncThemeAliases(t)
+}
+
+func syncThemeAliases(t Theme) Theme {
+	// Populate old names too, so custom themes and the original Go API expose
+	// the same values as the canonical semantic fields.
 	t.User, t.Assistant, t.Tool = t.UserText, t.Text, t.ToolTitle
 	t.Pending, t.Status = t.Muted, t.Footer
 	t.Heading, t.Link, t.LinkURL, t.LinkUrl = t.MarkdownHeading, t.MarkdownLink, t.MarkdownURL, t.MarkdownURL
