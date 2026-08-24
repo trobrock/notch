@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/trobrock/notch/internal/extension"
 	"github.com/trobrock/notch/internal/model"
@@ -32,6 +33,8 @@ type Event struct {
 	Auto         bool                  `json:"auto,omitempty"`
 	Queue        []QueuedMessage       `json:"queue,omitempty"`
 	Queued       *QueuedMessage        `json:"queued,omitempty"`
+	Message      *model.Message        `json:"message,omitempty"`
+	StopReason   string                `json:"stop_reason,omitempty"`
 }
 
 type Usage struct {
@@ -73,6 +76,7 @@ type Agent struct {
 	messages            []model.Message
 	reportedInputTokens int
 	reportedEstimate    int
+	messageCount        atomic.Int64
 
 	// settingsMu is deliberately independent of mu: UI settings such as the
 	// thinking level remain responsive while Prompt is waiting on a provider.
@@ -119,6 +123,7 @@ func New(cfg Config) (*Agent, error) {
 	if cfg.Session != nil {
 		a.messages = cloneMessages(cfg.Session.Messages)
 	}
+	a.messageCount.Store(int64(len(a.messages)))
 	return a, nil
 }
 
@@ -128,8 +133,20 @@ func (a *Agent) Messages() []model.Message {
 	return cloneMessages(a.messages)
 }
 
+// MessageCount returns the current effective context size without waiting for
+// an active provider request or tool execution.
+func (a *Agent) MessageCount() int { return int(a.messageCount.Load()) }
+
+// QueueStatus returns whether a prompt is active and snapshots pending queues.
+func (a *Agent) QueueStatus() (processing bool, steering, followUps []QueuedMessage) {
+	a.queueMu.Lock()
+	defer a.queueMu.Unlock()
+	return a.processing, append([]QueuedMessage(nil), a.steering...), append([]QueuedMessage(nil), a.followUps...)
+}
+
 func (a *Agent) appendMessage(message model.Message) error {
 	a.messages = append(a.messages, message)
+	a.messageCount.Store(int64(len(a.messages)))
 	if a.session != nil {
 		return a.session.AppendMessage(message)
 	}
@@ -237,6 +254,13 @@ func (a *Agent) settleOrTakeQueued() (QueuedMessage, bool) {
 
 // Calls are serialized so an Agent's history and session remain ordered.
 func (a *Agent) Prompt(ctx context.Context, text string, emit func(Event)) error {
+	return a.PromptWithStart(ctx, text, emit, nil)
+}
+
+// PromptWithStart is Prompt with a callback invoked after queueing becomes
+// available but before model work starts. RPC uses it to acknowledge a prompt
+// before any streamed events can be emitted.
+func (a *Agent) PromptWithStart(ctx context.Context, text string, emit func(Event), started func()) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if emit == nil {
@@ -244,6 +268,9 @@ func (a *Agent) Prompt(ctx context.Context, text string, emit func(Event)) error
 	}
 	a.beginProcessing(emit)
 	defer a.endProcessing()
+	if started != nil {
+		started()
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -305,7 +332,7 @@ func (a *Agent) Prompt(ctx context.Context, text string, emit func(Event)) error
 
 		usage := &Usage{InputTokens: response.InputTokens, OutputTokens: response.OutputTokens}
 		contextUsage := a.contextUsageLocked()
-		emit(Event{Type: "turn_end", Usage: usage, ContextUsage: &contextUsage})
+		emit(Event{Type: "turn_end", Usage: usage, ContextUsage: &contextUsage, Message: &assistant, StopReason: response.StopReason})
 		calls := toolCalls(response.Content)
 		if len(calls) != 0 {
 			results := make([]model.Block, 0, len(calls))

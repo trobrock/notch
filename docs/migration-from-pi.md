@@ -1,6 +1,6 @@
 # Migrating from Pi
 
-Notch takes inspiration from Pi's coding-agent workflow, but it is not wire-, config-, session-, or extension-compatible. Treat migration as moving selected resources and behavior, not replacing the executable while keeping the same state directory.
+Notch takes inspiration from Pi's coding-agent workflow, but it is not fully wire-, config-, session-, or extension-compatible. Treat migration as moving selected resources and behavior, not replacing the executable while keeping the same state directory.
 
 ## Decide whether the MVP fits
 
@@ -8,14 +8,16 @@ Notch is a good fit when you want a single Go binary, native Anthropic, OpenAI/C
 
 Stay on Pi, or run both during migration, if you depend on features outside Notch's smaller interface and workflow surface. Notch now mirrors Pi's core conversation presentation, themes, thinking controls, `/new`, and context compaction. Remaining gaps include:
 
-- no basic Markdown styling, mouse support, configurable keybindings, inline mode, or tool-output expand/collapse;
-- no custom theme files/JSON;
+- no Markdown tables/images, mouse support, configurable keybindings, inline mode, or tool-output expand/collapse;
 - no branching/session-tree navigation;
+- only the core Pi RPC state/prompt/event subset, not the full command surface;
 - provider OAuth is limited to `openai-codex`, `anthropic`, and `openrouter`;
 - no MCP OAuth (only static HTTP headers);
 - no runtime for Pi TypeScript extensions;
 - a smaller hook, command, and extension-host API;
 - MCP tools only, rather than the broader MCP capability surface.
+
+For headless integrations, `notch --mode rpc` supports Pi-style `get_state`, prompt acceptance, streaming message/tool events, steering, follow-ups, abort, and request IDs. Existing clients that use model/session switching, direct RPC bash, extension dialogs, images, retries, or branch commands must be adapted. See [RPC mode](rpc.md).
 
 There is no automatic migration of the complete Pi installation. A one-time credential import is available, but sessions, config, resources, model registries, and extensions remain separate.
 

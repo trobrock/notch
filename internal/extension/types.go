@@ -75,6 +75,46 @@ func (r *Registry) RegisterTool(tool Tool) error {
 	return nil
 }
 
+// RestrictTools removes every tool not named in names. It returns requested
+// names which were not registered. An empty list disables all tools.
+func (r *Registry) RestrictTools(names []string) []string {
+	allowed := make(map[string]bool, len(names))
+	for _, name := range names {
+		allowed[name] = true
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for name := range r.tools {
+		if !allowed[name] {
+			delete(r.tools, name)
+		}
+	}
+	var missing []string
+	for name := range allowed {
+		if _, ok := r.tools[name]; !ok {
+			missing = append(missing, name)
+		}
+	}
+	sort.Strings(missing)
+	return missing
+}
+
+// RemoveTools disables named tools and returns names which were not registered.
+func (r *Registry) RemoveTools(names []string) []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var missing []string
+	for _, name := range names {
+		if _, ok := r.tools[name]; !ok {
+			missing = append(missing, name)
+			continue
+		}
+		delete(r.tools, name)
+	}
+	sort.Strings(missing)
+	return missing
+}
+
 func (r *Registry) RegisterCommand(command Command) error {
 	if command.Name == "" || command.Execute == nil {
 		return errors.New("command requires a name and execute function")

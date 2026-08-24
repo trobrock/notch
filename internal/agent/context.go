@@ -236,6 +236,7 @@ func (a *Agent) compactLocked(ctx context.Context, instructions string, auto boo
 		}
 	}
 	a.messages = compacted
+	a.messageCount.Store(int64(len(a.messages)))
 	a.reportedInputTokens = 0
 	a.reportedEstimate = 0
 	after := a.contextUsageLocked()
@@ -360,6 +361,7 @@ func (a *Agent) ResumeSession(next *session.Session) (*session.Session, error) {
 	}
 	a.session = next
 	a.messages = cloneMessages(next.Messages)
+	a.messageCount.Store(int64(len(a.messages)))
 	a.reportedInputTokens = 0
 	a.reportedEstimate = 0
 	return old, nil
@@ -380,6 +382,7 @@ func (a *Agent) ResetConversation(newSession *session.Session) (*session.Session
 			}
 		}
 		a.messages = nil
+		a.messageCount.Store(0)
 		a.reportedInputTokens = 0
 		a.reportedEstimate = 0
 		return nil, nil
@@ -387,6 +390,7 @@ func (a *Agent) ResetConversation(newSession *session.Session) (*session.Session
 
 	a.session = newSession
 	a.messages = nil
+	a.messageCount.Store(0)
 	a.reportedInputTokens = 0
 	a.reportedEstimate = 0
 	return old, nil

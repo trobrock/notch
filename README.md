@@ -13,16 +13,16 @@ Notch is an MVP, not a drop-in reimplementation of [Pi](https://github.com/badlo
 - Native Anthropic Messages, OpenAI and Codex Responses, and OpenRouter Chat Completions providers (no provider SDKs)
 - Provider OAuth for ChatGPT Plus/Pro (`openai-codex`), Claude Pro/Max (`anthropic`), and OpenRouter
 - API-key access for Anthropic, OpenAI, and OpenRouter, plus local Ollama through OpenAI Responses
-- Built-in `read`, `write`, `edit`, `bash`, `grep`, `find`, and `ls` tools
+- Built-in `read`, `write`, `edit`, `bash`, `grep`, `find`, and `ls` tools with strict allow/exclude controls
 - Pi-style fullscreen TUI with searchable provider/model selection, themed Markdown, tool cards, streamed thinking summaries or a fallback thinking indicator, and a multiline composer, plus a line-oriented fallback for pipes
-- Streaming interactive and one-shot operation, including JSONL events
+- Streaming interactive and one-shot operation, including JSONL events and a Pi-compatible RPC subset
 - Durable JSONL sessions, `--continue`, `/new`, and persisted conversation compaction
 - Embedded self-configuration and extension-authoring skills, plus Markdown skills and prompt templates
 - In-process Lua extensions
 - Executable, line-delimited JSON-RPC 2.0 plugins in any language
 - Native MCP client support over stdio and Streamable HTTP
 
-See the [fullscreen TUI guide](docs/tui.md), [themes](docs/themes.md), [compaction](docs/compaction.md), [providers and authentication](docs/providers.md), [releases and upgrades](docs/releases.md), [architecture](docs/architecture.md), [extension API](docs/extensions.md), [migration from Pi](docs/migration-from-pi.md), and the [migration plan for the reviewed Pi extensions](docs/current-pi-extension-plan.md).
+See the [fullscreen TUI guide](docs/tui.md), [RPC mode](docs/rpc.md), [themes](docs/themes.md), [compaction](docs/compaction.md), [providers and authentication](docs/providers.md), [releases and upgrades](docs/releases.md), [architecture](docs/architecture.md), [extension API](docs/extensions.md), [migration from Pi](docs/migration-from-pi.md), and the [migration plan for the reviewed Pi extensions](docs/current-pi-extension-plan.md).
 
 ## Status and deliberate gaps
 
@@ -124,6 +124,12 @@ notch [flags] [prompt words...]
   --no-session            do not create or update a session
   --json                  emit JSONL agent events
   --no-tui                use the line-oriented interface
+  --mode rpc              run Pi-compatible JSONL RPC mode
+  --rpc                   shorthand for --mode rpc
+  --tools, -t string      strict comma-separated tool allowlist
+  --exclude-tools string  comma-separated tools to disable
+  --no-builtin-tools      disable built-in tools
+  --no-tools              disable all model tools
   --mcp-config string     path to MCP JSON config
   --init                  create the Notch directories and starter config
   --version               print the version
@@ -150,6 +156,7 @@ notch auth import-pi [path]
 ```sh
 notch --print "Explain internal/agent"
 notch --json "Run the tests and report failures" | jq -c .
+printf '%s\n' '{"id":"s","type":"get_state"}' | notch --mode rpc --no-session --tools read,grep
 notch models openrouter
 notch models --refresh anthropic
 notch --continue
@@ -160,7 +167,9 @@ notch --mcp-config ./mcp.json
 
 Fullscreen interactive commands include `/help`, `/model [refresh]`, `/tools`, `/skills`, `/thinking [LEVEL]`, `/theme [NAME]`, `/compact [instructions]`, `/new`, `/resume`, `/clear`, `/exit`, and `/quit`, plus commands registered by extensions. Typing `/` opens a filtered command menu with descriptions; Up/Down selects an entry and Tab or Enter completes it. Skills are invoked as `/skill:name arguments`; prompt templates use `/name arguments`. See the [TUI guide](docs/tui.md) for runtime command behavior.
 
-An interactive invocation uses the fullscreen TUI only when both stdin and stdout are terminals. `--no-tui`, `--json`, one-shot prompts, and redirected or piped input/output use the line-oriented path. The fullscreen UI runs in the terminal's alternate screen. While a model is active, Enter queues steering for the next safe turn boundary and Alt-Enter queues a follow-up for after the run would otherwise settle; pending messages remain visible above the composer until delivered. It mirrors Pi's presentation: padded full-width user background boxes, plain assistant prose, Markdown styling, provider-supplied thinking summaries with a static fallback indicator, and tool cards with state-colored backgrounds and pending/success/error icons. Transcript entries use consistent blank-row spacing; tool arguments are compact, while output is visually barred and shortened when large. Rendering wraps by terminal display width (including Unicode), is cached by text, width, and theme where styling applies, and sanitizes untrusted text so model/tool content cannot inject terminal controls. See [the TUI guide](docs/tui.md) for details, keys, extension prompts, and fallback behavior.
+`--mode rpc` exposes asynchronous Pi-style command responses and streaming events over strict JSONL; see [RPC mode](docs/rpc.md). Tool flags apply to every run mode after built-in, extension, and MCP registration.
+
+An interactive invocation uses the fullscreen TUI only when both stdin and stdout are terminals. `--no-tui`, `--json`, and one-shot prompts use the line-oriented path; redirected input/output does too unless RPC mode was selected explicitly. The fullscreen UI runs in the terminal's alternate screen. While a model is active, Enter queues steering for the next safe turn boundary and Alt-Enter queues a follow-up for after the run would otherwise settle; pending messages remain visible above the composer until delivered. It mirrors Pi's presentation: padded full-width user background boxes, plain assistant prose, Markdown styling, provider-supplied thinking summaries with a static fallback indicator, and tool cards with state-colored backgrounds and pending/success/error icons. Transcript entries use consistent blank-row spacing; tool arguments are compact, while output is visually barred and shortened when large. Rendering wraps by terminal display width (including Unicode), is cached by text, width, and theme where styling applies, and sanitizes untrusted text so model/tool content cannot inject terminal controls. See [the TUI guide](docs/tui.md) for details, keys, extension prompts, and fallback behavior.
 
 `--continue` selects the latest session globally in the configured session directory. `--resume ID-OR-PREFIX` opens a specific session by ID, filename, unambiguous prefix, or path. Fullscreen `/resume` presents saved sessions with time, original directory, model, and prompt preview. Resumed requests use the current provider/model configuration while preserving the selected session's conversation context.
 
@@ -281,7 +290,7 @@ A server must specify exactly one of `command` or `url`. `enabled` defaults to t
 
 Unless `--no-session` is used, every new invocation creates a mode-0600 JSONL file under the configured session directory. The first record is metadata (format version, ID, time, CWD, provider, model); subsequent records contain messages and durable compaction records. Each append is synced before continuing. In the fullscreen UI, `/new` creates a distinct durable session and clears transcript context and input history; under `--no-session` it performs the same reset in memory. `/resume` switches to a selected saved session and restores its effective transcript, context, and submitted-input history.
 
-`--json` emits one JSON object per line. Current event types include `turn_start`, `text_delta`, `thinking_delta`, `turn_end` (with token usage), `tool_start`, `tool_update`, `tool_end`, `queue_update`, `queue_delivered`, compaction events, and `error`. The JSON stream is an event interface, not the on-disk session format.
+`--json` emits one JSON object per line. Current event types include `turn_start`, `text_delta`, `thinking_delta`, `turn_end` (with token usage), `tool_start`, `tool_update`, `tool_end`, `queue_update`, `queue_delivered`, compaction events, and `error`. The `--json` stream is a one-way event interface, not the on-disk session format. Use `--mode rpc` for bidirectional state, prompt, queue, and abort commands.
 
 ## Extensions
 

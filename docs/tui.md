@@ -1,6 +1,6 @@
 # Fullscreen terminal UI
 
-Notch's interactive default is a fullscreen, event-driven terminal UI. It is selected only when there is no one-shot prompt, both stdin and stdout are TTYs, and neither `--no-tui` nor `--json` is set. If either stream is redirected or piped, Notch uses its buffered line-oriented interface instead. `--no-tui` selects that fallback explicitly; one-shot prompts and JSONL output also avoid the fullscreen UI.
+Notch's interactive default is a fullscreen, event-driven terminal UI. It is selected only when there is no one-shot prompt, both stdin and stdout are TTYs, and none of `--no-tui`, `--json`, or `--mode rpc` is set. If either stream is redirected or piped, Notch uses its buffered line-oriented interface instead. `--no-tui` selects that fallback explicitly; one-shot prompts and JSONL output also avoid the fullscreen UI.
 
 The fullscreen UI puts the terminal in raw mode and uses the alternate screen, restoring the previous screen and terminal mode on exit. Bracketed-paste mode is enabled for the duration of the session.
 

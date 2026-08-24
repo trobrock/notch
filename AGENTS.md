@@ -32,6 +32,7 @@ Notch is a small, fast, extensible coding agent distributed as a single compiled
 - `internal/model`: provider-neutral types
 - `internal/provider`: provider adapters
 - `internal/tui`: fullscreen event loop and renderer
+- `internal/rpc`: headless JSONL command and event protocol
 - `internal/session`: JSONL session store
 - `internal/extension`, `internal/luaext`, `plugin`: extension systems
 - `internal/resources`: skills and command templates

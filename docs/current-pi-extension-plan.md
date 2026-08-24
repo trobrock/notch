@@ -21,7 +21,7 @@ This maps the Pi installation reviewed before Notch was created. It is a porting
 
 ## Core work required for full parity
 
-1. Harden official subagent plugins around isolated `notch --json --no-session` children with model/tool/cwd selection, structured events, usage, cancellation, depth guards, and concurrency limits. Promote child execution to a core host service only if the subprocess boundary proves insufficient.
+1. Harden official subagent plugins around isolated `notch --mode rpc --no-session --tools ...` children with model/tool/cwd selection, structured events, usage, cancellation, depth guards, and concurrency limits. Promote child execution to a core host service only if the subprocess boundary proves insufficient.
 2. Add supervised background jobs that survive individual turns and can enqueue a follow-up.
 3. Add context replacement and compaction hooks.
 4. Add active-tool sets, keybindings, and a trust hook that runs before project extensions.

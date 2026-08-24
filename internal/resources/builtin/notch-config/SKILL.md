@@ -54,6 +54,8 @@ The model registry ships with an offline fallback and refreshes stale selected-p
 
 Valid thinking levels are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh`. Built-in themes are `dark`, `dracula`, and `catppuccin-mocha`. `/thinking LEVEL` and `/theme NAME` change only the running process.
 
+Tool exposure is controlled per process with `--tools read,grep`, `--exclude-tools bash,write`, `--no-builtin-tools`, or `--no-tools`. The strict allowlist applies across built-in, extension, and MCP tools; unknown names fail startup. These are CLI controls rather than persistent config keys.
+
 Custom themes are direct JSON files in `theme_dirs`, defaulting to user and project `.notch/themes` directories. Each file has an optional `name`, optional `base` (default `dark`), optional `vars`, and a `colors` object whose final values are `#RRGGBB`. Project files load after user files. Preserve unrelated roles by using a base and changing only requested colors. See `docs/themes.md` or the `examples/themes/rose-pine.json` shape before authoring one; invalid roles, colors, variables, and inheritance cycles cause that theme to be skipped.
 
 ## Providers and authentication

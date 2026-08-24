@@ -32,6 +32,7 @@ import (
 	"github.com/trobrock/notch/internal/provider/openai"
 	"github.com/trobrock/notch/internal/provider/openrouter"
 	"github.com/trobrock/notch/internal/resources"
+	notchrpc "github.com/trobrock/notch/internal/rpc"
 	"github.com/trobrock/notch/internal/session"
 	"github.com/trobrock/notch/internal/tools"
 	"github.com/trobrock/notch/internal/tui"
@@ -47,8 +48,9 @@ var (
 )
 
 type options struct {
-	provider, modelName, prompt, mcpConfig, resumeSession            string
-	continueSession, noSession, jsonOutput, noTUI, init, showVersion bool
+	provider, modelName, prompt, mcpConfig, resumeSession, mode, toolAllow, toolExclude string
+	continueSession, noSession, jsonOutput, noTUI, init, showVersion, rpcMode           bool
+	noTools, noBuiltinTools                                                             bool
 }
 
 func main() {
@@ -86,6 +88,16 @@ func run(args []string) error {
 	flags.BoolVar(&opts.noSession, "no-session", false, "do not save a session")
 	flags.BoolVar(&opts.jsonOutput, "json", false, "emit JSONL events")
 	flags.BoolVar(&opts.noTUI, "no-tui", false, "use the line-oriented interface")
+	flags.StringVar(&opts.mode, "mode", "", "run mode: rpc")
+	flags.BoolVar(&opts.rpcMode, "rpc", false, "run Pi-compatible JSONL RPC mode")
+	flags.StringVar(&opts.toolAllow, "tools", "", "strict comma-separated tool allowlist")
+	flags.StringVar(&opts.toolAllow, "t", "", "tool allowlist (shorthand)")
+	flags.StringVar(&opts.toolExclude, "exclude-tools", "", "comma-separated tools to disable")
+	flags.StringVar(&opts.toolExclude, "xt", "", "excluded tools (shorthand)")
+	flags.BoolVar(&opts.noTools, "no-tools", false, "disable all model tools")
+	flags.BoolVar(&opts.noTools, "nt", false, "disable all tools (shorthand)")
+	flags.BoolVar(&opts.noBuiltinTools, "no-builtin-tools", false, "disable built-in tools")
+	flags.BoolVar(&opts.noBuiltinTools, "nbt", false, "disable built-in tools (shorthand)")
 	flags.BoolVar(&opts.init, "init", false, "create ~/.notch and a starter config")
 	flags.BoolVar(&opts.showVersion, "version", false, "print version")
 	if err := flags.Parse(args); err != nil {
@@ -94,6 +106,16 @@ func run(args []string) error {
 	if opts.showVersion {
 		fmt.Println("notch", currentBuildInfo().Version)
 		return nil
+	}
+	if opts.mode != "" && opts.mode != "rpc" {
+		return fmt.Errorf("unsupported mode %q (available: rpc)", opts.mode)
+	}
+	rpcMode := opts.rpcMode || opts.mode == "rpc"
+	if rpcMode && (opts.prompt != "" || opts.jsonOutput || flags.NArg() != 0) {
+		return errors.New("RPC mode cannot be combined with --print, --json, or prompt arguments")
+	}
+	if opts.noTools && (opts.toolAllow != "" || opts.toolExclude != "") {
+		return errors.New("--no-tools cannot be combined with --tools or --exclude-tools")
 	}
 	if opts.continueSession && opts.resumeSession != "" {
 		return errors.New("--continue and --resume cannot be used together")
@@ -152,14 +174,18 @@ func run(args []string) error {
 		return fmt.Errorf("unknown theme %q (available: %s)", cfg.Theme, strings.Join(themeCatalog.Names(), ", "))
 	}
 	cfg.Theme = selectedThemeName
-	useFullscreen := opts.prompt == "" && !opts.jsonOutput && !opts.noTUI && term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
+	useFullscreen := !rpcMode && opts.prompt == "" && !opts.jsonOutput && !opts.noTUI && term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
 	sessionDir := cfg.SessionDir
 	if opts.noSession {
 		sessionDir = ""
 	}
 	var fullscreen *tui.App
+	var rpcServer *notchrpc.Server
 	var extensionHost extension.Host = terminal
-	if useFullscreen {
+	if rpcMode {
+		rpcServer = notchrpc.New(os.Stdin, os.Stdout, cwd)
+		extensionHost = rpcServer
+	} else if useFullscreen {
 		fullscreen = tui.NewApp(tui.AppConfig{
 			CWD: cwd, Provider: normalizeProvider(cfg.Provider), Model: cfg.Model, SessionDir: sessionDir,
 			Theme: selectedTheme, ThemeName: cfg.Theme, Themes: themeCatalog, ThinkingLevel: cfg.ThinkingLevel,
@@ -175,8 +201,10 @@ func run(args []string) error {
 		}
 	}
 	registry := extension.NewRegistry()
-	if err := tools.RegisterBuiltins(registry, cwd); err != nil {
-		return err
+	if !opts.noTools && !opts.noBuiltinTools {
+		if err := tools.RegisterBuiltins(registry, cwd); err != nil {
+			return err
+		}
 	}
 
 	plugins, warnings := extension.DiscoverAndLoad(ctx, cfg.ExtensionDirs, registry, extensionHost)
@@ -196,7 +224,7 @@ func run(args []string) error {
 	defer luaManager.Close()
 
 	var mcpManager *mcp.Manager
-	if cfg.MCPConfig != "" {
+	if cfg.MCPConfig != "" && !opts.noTools {
 		if _, statErr := os.Stat(cfg.MCPConfig); statErr == nil {
 			mcpCfg, loadErr := mcp.LoadConfig(cfg.MCPConfig)
 			if loadErr != nil {
@@ -208,6 +236,9 @@ func run(args []string) error {
 	}
 	if mcpManager != nil {
 		defer mcpManager.Close()
+	}
+	if err := applyToolPolicy(registry, opts); err != nil {
+		return err
 	}
 
 	catalog, err := resources.LoadBundled(cfg.SkillDiscoveryDirs(), cfg.PromptDiscoveryDirs())
@@ -285,6 +316,18 @@ func run(args []string) error {
 	})
 	if err != nil {
 		return err
+	}
+	if rpcServer != nil {
+		sessionFile, sessionID := "", ""
+		if store != nil {
+			sessionFile, sessionID = store.Path(), store.Header.ID
+		}
+		rpcServer.Configure(runner, registry, catalog, notchrpc.StateConfig{
+			Provider: normalizeProvider(cfg.Provider), Model: cfg.Model, API: rpcAPIForProvider(cfg.Provider), BaseURL: cfg.BaseURL,
+			ContextWindow: contextWindow, MaxTokens: cfg.MaxTokens, SessionFile: sessionFile, SessionID: sessionID,
+			AutoCompactionEnabled: compactionEnabled,
+		})
+		return rpcServer.Run(ctx)
 	}
 	if fullscreen != nil {
 		fullscreen.SetModelManager(
@@ -620,6 +663,62 @@ func makeProvider(ctx context.Context, cfg config.Config, store *credentials.Sto
 		return openai.New(openai.Config{APIKey: key, BaseURL: cfg.BaseURL}), nil
 	default:
 		return nil, fmt.Errorf("unsupported provider %q (use openai-codex, openrouter, anthropic, or openai)", cfg.Provider)
+	}
+}
+
+func applyToolPolicy(registry *extension.Registry, opts options) error {
+	if opts.noTools {
+		registry.RestrictTools(nil)
+		return nil
+	}
+	if opts.toolAllow != "" {
+		allowed, err := parseToolNames(opts.toolAllow)
+		if err != nil {
+			return fmt.Errorf("--tools: %w", err)
+		}
+		if missing := registry.RestrictTools(allowed); len(missing) != 0 {
+			return fmt.Errorf("--tools references unavailable tools: %s", strings.Join(missing, ", "))
+		}
+	}
+	if opts.toolExclude != "" {
+		excluded, err := parseToolNames(opts.toolExclude)
+		if err != nil {
+			return fmt.Errorf("--exclude-tools: %w", err)
+		}
+		if missing := registry.RemoveTools(excluded); len(missing) != 0 {
+			return fmt.Errorf("--exclude-tools references unavailable tools: %s", strings.Join(missing, ", "))
+		}
+	}
+	return nil
+}
+
+func parseToolNames(value string) ([]string, error) {
+	parts := strings.Split(value, ",")
+	names := make([]string, 0, len(parts))
+	seen := make(map[string]bool, len(parts))
+	for _, part := range parts {
+		name := strings.TrimSpace(part)
+		if name == "" {
+			return nil, errors.New("tool names cannot be empty")
+		}
+		if !seen[name] {
+			seen[name], names = true, append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+func rpcAPIForProvider(provider string) string {
+	switch normalizeProvider(provider) {
+	case "anthropic":
+		return "anthropic-messages"
+	case "openrouter":
+		return "openai-completions"
+	case "openai-codex":
+		return "openai-codex-responses"
+	default:
+		return "openai-responses"
 	}
 }
 

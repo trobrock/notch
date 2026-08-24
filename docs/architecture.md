@@ -14,7 +14,7 @@ Notch is one Go program with a deliberately small provider-independent agent loo
 6. If the MCP config file exists, connect configured servers and register their tools.
 7. Load skills and prompt templates and add their catalog summary to the system prompt.
 8. Resolve the selected provider's environment or stored credential (refreshing expiring OAuth when needed), create the provider, refresh its model cache in the background when stale, create or resume a session, and construct the agent.
-9. Run one prompt, enter the fullscreen TUI when both interactive streams are terminals, or enter the line-oriented fallback loop.
+9. Run RPC mode, one prompt, the fullscreen TUI when both interactive streams are terminals, or the line-oriented fallback loop.
 
 Malformed custom themes and plugin, Lua, and MCP load failures are generally shown as warnings so startup can continue. A failure while connecting a configured MCP set causes that set to be closed rather than leaving partial MCP connections active. Duplicate tool or command names are rejected; built-ins therefore cannot be silently replaced.
 
@@ -38,6 +38,7 @@ Malformed custom themes and plugin, Lua, and MCP load failures are generally sho
 - `internal/mcp`: MCP initialization, tool discovery/calling, stdio, and Streamable HTTP transports.
 - `internal/ui`: dependency-free line-oriented terminal I/O and fallback extension host operations.
 - `internal/tui`: fullscreen event loop, multiline editor, layout, input parser, and differential terminal renderer.
+- `internal/rpc`: strict JSONL command server, Pi-compatible event adapter, asynchronous prompt control, and headless extension host.
 - `internal/upgrade`: GitHub release lookup, semantic-version comparison, checksum verification, constrained archive extraction, and atomic executable replacement.
 
 ## Agent loop
@@ -55,7 +56,7 @@ For each user prompt:
 7. At each safe turn boundary, atomically take one queued steering message before continuing the normal tool-call chain. Steering can redirect the next model turn without interrupting an in-flight request or tool.
 8. When the run would otherwise settle, run `agent_end`; a non-empty hook `follow_up` continues immediately. Otherwise atomically take one queued user follow-up. If neither exists, mark the run idle and complete.
 
-A prompt, including steering and follow-up turns, is capped at 50 model turns internally. Queue state uses a mutex independent of the long-held conversation mutex, allowing messages to be enqueued while provider or tool work is active. Tool calls in one assistant response execute sequentially, not concurrently. Context compaction summarizes old messages and retains recent complete turns; durable compaction records restore that effective context on resume. There is no branching, rewind, or session-tree navigation. See [compaction.md](compaction.md) for thresholds and persistence.
+A prompt, including steering and follow-up turns, is capped at 50 model turns internally. Queue state and an atomic effective-message count remain independent of the long-held conversation mutex, allowing RPC/TUI status and queued messages to stay responsive while provider or tool work is active. Tool calls in one assistant response execute sequentially, not concurrently. Context compaction summarizes old messages and retains recent complete turns; durable compaction records restore that effective context on resume. There is no branching, rewind, or session-tree navigation. See [compaction.md](compaction.md) for thresholds and persistence.
 
 `tool_call` hooks can deny a call or replace its arguments. `tool_execution_start` and `tool_execution_end` surround execution. See [extensions.md](extensions.md) for hook payloads.
 
@@ -82,6 +83,8 @@ Every tool has a name, description, JSON input schema, source, and execution han
 4. MCP tools.
 
 Registration order matters only for collision detection; definitions sent to providers are sorted by name. Commands and hooks share the same registry abstraction. Hooks of a given name execute in registration order, and each hook receives values merged from earlier hooks.
+
+Tool policy is applied after all configured sources register. `--tools` retains only an exact allowlist, `--exclude-tools` removes exact names, `--no-builtin-tools` skips built-in registration while preserving extension/MCP tools, and `--no-tools` clears the registry. Unknown requested names are startup errors.
 
 The built-ins resolve relative paths against Notch's startup working directory. Absolute paths are accepted; there is no repository-boundary jail. `bash` invokes `/bin/sh -c` (or `cmd.exe /C` on Windows). Potentially unbounded built-in output is capped at 50 KiB. `read` defaults to 2,000 lines. `edit` requires one exact unique occurrence.
 
