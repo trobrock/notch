@@ -71,16 +71,28 @@ type processRunner struct {
 	defaultCWD string
 }
 
+// NewRunner creates a subprocess runner using the current Notch executable.
+func NewRunner(host extension.Host) (Runner, error) {
+	if host == nil {
+		return nil, errors.New("create subagent runner: host is required")
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("resolve Notch executable: %w", err)
+	}
+	return &processRunner{executable: executable, defaultCWD: host.CWD()}, nil
+}
+
 // Register registers run_subagent using the current Notch executable.
 func Register(registry *extension.Registry, host extension.Host) error {
 	if registry == nil || host == nil {
 		return errors.New("register subagent: registry and host are required")
 	}
-	executable, err := os.Executable()
+	runner, err := NewRunner(host)
 	if err != nil {
-		return fmt.Errorf("resolve Notch executable: %w", err)
+		return err
 	}
-	return RegisterWithRunner(registry, &processRunner{executable: executable, defaultCWD: host.CWD()})
+	return RegisterWithRunner(registry, runner)
 }
 
 // RegisterWithRunner exposes runner injection for focused tests.

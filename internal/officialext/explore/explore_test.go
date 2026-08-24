@@ -1,0 +1,93 @@
+package explore
+
+import (
+	"context"
+	"encoding/json"
+	"reflect"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/trobrock/notch/internal/extension"
+	"github.com/trobrock/notch/internal/officialext/subagent"
+)
+
+type fakeRunner struct {
+	mu                sync.Mutex
+	inputs            []subagent.Input
+	active, maxActive int
+}
+
+func (r *fakeRunner) Run(_ context.Context, input subagent.Input, _ func(string)) (subagent.Result, error) {
+	r.mu.Lock()
+	r.inputs = append(r.inputs, input)
+	r.active++
+	if r.active > r.maxActive {
+		r.maxActive = r.active
+	}
+	r.mu.Unlock()
+	time.Sleep(5 * time.Millisecond)
+	r.mu.Lock()
+	r.active--
+	r.mu.Unlock()
+	return subagent.Result{Output: "found " + input.Prompt, Usage: subagent.Usage{Input: 10, Output: 2, Model: input.Model}}, nil
+}
+
+func TestExploreSingleTaskUsesReadOnlyRunner(t *testing.T) {
+	registry, runner := extension.NewRegistry(), &fakeRunner{}
+	if err := RegisterWithRunner(registry, runner); err != nil {
+		t.Fatal(err)
+	}
+	tool, _ := registry.Tool(ToolName)
+	result, err := tool.Execute(context.Background(), json.RawMessage(`{"task":"find parser","model":"test/model","cwd":"/work"}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError || result.Content != "found Explore task: find parser" {
+		t.Fatalf("result = %#v", result)
+	}
+	input := runner.inputs[0]
+	if input.Tools != "read,grep,find,ls" || input.Thinking != "minimal" || input.Model != "test/model" || input.CWD != "/work" || !strings.Contains(input.SystemPrompt, "read-only") {
+		t.Fatalf("input = %#v", input)
+	}
+}
+
+func TestExploreParallelPreservesOrderAndLimitsConcurrency(t *testing.T) {
+	registry, runner := extension.NewRegistry(), &fakeRunner{}
+	if err := RegisterWithRunner(registry, runner); err != nil {
+		t.Fatal(err)
+	}
+	tool, _ := registry.Tool(ToolName)
+	var updates []string
+	result, err := tool.Execute(context.Background(), json.RawMessage(`{"tasks":[
+		{"task":"one"},{"task":"two"},{"task":"three"},{"task":"four"},{"task":"five"}
+	]}`), func(s string) { updates = append(updates, s) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runner.maxActive > maxConcurrency || !strings.Contains(result.Content, "Exploration 1: one") || !strings.Contains(result.Content, "Exploration 5: five") {
+		t.Fatalf("max=%d result=%q", runner.maxActive, result.Content)
+	}
+	if len(updates) != 5 || result.Details["count"] != 5 {
+		t.Fatalf("updates=%#v details=%#v", updates, result.Details)
+	}
+}
+
+func TestExploreValidatesModes(t *testing.T) {
+	for _, raw := range []string{`{}`, `{"task":"x","tasks":[{"task":"y"}]}`, `{"tasks":[]}`, `{"tasks":[{"task":" "}]}`, `{"unknown":true}`} {
+		if _, err := decode(json.RawMessage(raw)); err == nil {
+			t.Fatalf("decode(%s) succeeded", raw)
+		}
+	}
+}
+
+func TestExploreTaskOverridesDefaults(t *testing.T) {
+	input, err := decode(json.RawMessage(`{"tasks":[{"task":"one","model":"task/model","cwd":"/task"}],"model":"default/model","cwd":"/default"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(input.Tasks, []Task{{Task: "one", Model: "task/model", CWD: "/task"}}) {
+		t.Fatalf("input=%#v", input)
+	}
+}
