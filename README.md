@@ -1,5 +1,9 @@
 # Notch
 
+[![CI](https://github.com/trobrock/notch/actions/workflows/ci.yml/badge.svg)](https://github.com/trobrock/notch/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/trobrock/notch)](https://github.com/trobrock/notch/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Notch is a small coding agent distributed as a single Go binary. It has native adapters for Anthropic Messages, OpenAI Responses, ChatGPT's Codex Responses endpoint, and OpenRouter Chat Completions; it streams model output, executes tools, and stores conversations as append-only JSONL sessions. The OpenAI provider also works with a local Ollama server exposing its OpenAI-compatible Responses endpoint.
 
 Notch is an MVP, not a drop-in reimplementation of [Pi](https://github.com/badlogic/pi-mono). It favors a dependency-light native core and portable extension protocols and does not embed a JavaScript runtime.
@@ -287,3 +291,10 @@ Place `.lua` files or executable-plugin directories below either:
 - `<cwd>/.notch/extensions`
 
 Lua files are loaded directly from each extension directory. Executable manifests named `plugin.json` are discovered recursively. Extensions can register model tools, interactive slash commands, and agent hooks. Full examples and the wire protocol are in [docs/extensions.md](docs/extensions.md).
+
+## Community
+
+- Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
+- Follow the [Code of Conduct](CODE_OF_CONDUCT.md) in project spaces.
+- Report vulnerabilities privately using [SECURITY.md](SECURITY.md).
+- Notch is available under the [MIT License](LICENSE).

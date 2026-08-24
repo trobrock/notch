@@ -1,0 +1,66 @@
+name: Bug report
+description: Report reproducible incorrect behavior in Notch
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Remove API keys, OAuth tokens, private prompts, and session data. Report vulnerabilities through the private process in SECURITY.md instead.
+  - type: input
+    id: version
+    attributes:
+      label: Notch version
+      description: Paste the output of `notch version`.
+      placeholder: notch v0.1.0, linux/amd64
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Operating system, terminal, shell, and tmux version when relevant.
+      placeholder: macOS 15, WezTerm, zsh
+    validations:
+      required: true
+  - type: input
+    id: provider
+    attributes:
+      label: Provider and model
+      description: Do not include credentials.
+      placeholder: openai-codex / gpt-5.6-sol
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What happened, and what did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Provide the smallest reliable sequence that reproduces the problem.
+      placeholder: |
+        1. Run ...
+        2. Enter ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs or screenshots
+      description: Redact credentials, private prompts, paths, and session content.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues for this problem.
+          required: true
+        - label: I removed credentials and private data.
+          required: true
+        - label: This is not a privately reportable security vulnerability.
+          required: true
