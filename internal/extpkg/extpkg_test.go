@@ -350,6 +350,9 @@ func testArchive(t *testing.T, files map[string]string) []byte {
 	var output bytes.Buffer
 	gzipWriter := gzip.NewWriter(&output)
 	tarWriter := tar.NewWriter(gzipWriter)
+	if err := tarWriter.WriteHeader(&tar.Header{Name: "pax_global_header", Typeflag: tar.TypeXGlobalHeader, PAXRecords: map[string]string{"comment": "test"}}); err != nil {
+		t.Fatal(err)
+	}
 	for name, contents := range files {
 		if err := tarWriter.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(contents)), Typeflag: tar.TypeReg}); err != nil {
 			t.Fatal(err)

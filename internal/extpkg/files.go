@@ -53,6 +53,17 @@ func extractGitHubTarGzipSubdir(contents []byte, destination, subdir string) err
 		if err != nil {
 			return fmt.Errorf("read package archive: %w", err)
 		}
+		archiveEntries++
+		if archiveEntries > maxArchiveEntries {
+			return fmt.Errorf("package archive contains more than %d entries", maxArchiveEntries)
+		}
+		if header.Size < 0 || header.Size > maxArchiveSize-archiveTotal {
+			return fmt.Errorf("package archive expands beyond %d MiB", maxArchiveSize>>20)
+		}
+		archiveTotal += header.Size
+		if header.Typeflag == tar.TypeXGlobalHeader {
+			continue
+		}
 		name := strings.TrimPrefix(header.Name, "./")
 		clean := path.Clean(name)
 		if clean == "." || clean == "" || path.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, "../") {
@@ -65,14 +76,6 @@ func extractGitHubTarGzipSubdir(contents []byte, destination, subdir string) err
 		if parts[0] != root {
 			return errors.New("package archive has multiple top-level roots")
 		}
-		archiveEntries++
-		if archiveEntries > maxArchiveEntries {
-			return fmt.Errorf("package archive contains more than %d entries", maxArchiveEntries)
-		}
-		if header.Size < 0 || header.Size > maxArchiveSize-archiveTotal {
-			return fmt.Errorf("package archive expands beyond %d MiB", maxArchiveSize>>20)
-		}
-		archiveTotal += header.Size
 		if len(parts) == 1 {
 			if header.Typeflag != tar.TypeDir {
 				return errors.New("package archive root is not a directory")
