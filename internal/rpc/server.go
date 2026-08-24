@@ -135,6 +135,10 @@ func (s *Server) SetActiveTools(names []string) error {
 	return nil
 }
 
+func (s *Server) SwitchModel(context.Context, string, string) (string, int, error) {
+	return "", 0, errors.New("runtime model switching is unavailable in RPC mode")
+}
+
 func (s *Server) SetStatus(key, value string) {
 	_ = s.write(map[string]any{"type": "status", "key": key, "value": value})
 }

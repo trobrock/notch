@@ -61,6 +61,13 @@ type Config struct {
 	Compaction    CompactionConfig
 }
 
+type providerSwitch struct {
+	providerName  string
+	provider      model.Provider
+	model         string
+	contextWindow int
+}
+
 type Agent struct {
 	provider     model.Provider
 	providerName string
@@ -89,6 +96,7 @@ type Agent struct {
 	steering      []QueuedMessage
 	followUps     []QueuedMessage
 	queueEmit     func(Event)
+	pendingSwitch *providerSwitch
 }
 
 func New(cfg Config) (*Agent, error) {
@@ -363,6 +371,9 @@ func (a *Agent) PromptWithStart(ctx context.Context, text string, emit func(Even
 				results = append(results, model.Block{Type: "tool_result", ToolUseID: call.ID, Text: result.Content, IsError: result.IsError})
 			}
 			if err := a.appendMessage(model.Message{Role: "user", Content: results}); err != nil {
+				return err
+			}
+			if err := a.applyPendingSwitchLocked(); err != nil {
 				return err
 			}
 		}

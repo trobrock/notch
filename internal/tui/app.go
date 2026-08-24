@@ -2001,6 +2001,33 @@ func (a *App) SetActiveTools(names []string) error {
 	return nil
 }
 
+func (a *App) SwitchModel(ctx context.Context, provider, modelName string) (string, int, error) {
+	provider, modelName = strings.TrimSpace(provider), strings.TrimSpace(modelName)
+	if modelName == "" {
+		return "", 0, errors.New("model is required")
+	}
+	a.mu.Lock()
+	switcher := a.switchModel
+	currentProvider := a.state.layout.Provider
+	a.mu.Unlock()
+	if switcher == nil {
+		return "", 0, errors.New("model switching is unavailable")
+	}
+	if provider == "" {
+		provider = currentProvider
+	}
+	window, err := switcher(ctx, provider, modelName, 0)
+	if err != nil {
+		return "", 0, err
+	}
+	a.state.layout.Provider, a.state.layout.Model = provider, modelName
+	a.cfg.Provider, a.cfg.Model = provider, modelName
+	if window > 0 {
+		a.state.layout.ContextWindow = window
+	}
+	return provider, window, nil
+}
+
 // SetStatus publishes a keyed extension status in the footer. Reusing a key
 // replaces its value; an empty value removes it.
 func (a *App) SetStatus(key, value string) {

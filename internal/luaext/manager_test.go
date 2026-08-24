@@ -42,6 +42,9 @@ func (h *testHost) Notify(message, level string) {
 func (h *testHost) FollowUp(string) error         { return nil }
 func (h *testHost) Handoff(string, bool) error    { return nil }
 func (h *testHost) SetActiveTools([]string) error { return nil }
+func (h *testHost) SwitchModel(context.Context, string, string) (string, int, error) {
+	return "", 0, nil
+}
 func (h *testHost) SetStatus(key, value string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()

@@ -427,7 +427,7 @@ func run(args []string) error {
 				if window <= 0 {
 					window = contextWindowFor(providerName, modelName)
 				}
-				if switchErr := runner.SwitchProvider(normalizeProvider(providerName), nextProvider, modelName, window); switchErr != nil {
+				if switchErr := runner.QueueProviderSwitch(normalizeProvider(providerName), nextProvider, modelName, window); switchErr != nil {
 					return 0, switchErr
 				}
 				cfg.Provider, cfg.Model = normalizeProvider(providerName), modelName

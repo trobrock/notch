@@ -30,10 +30,11 @@ func (h *testHost) FollowUp(s string) error {
 	h.followups = append(h.followups, s)
 	return nil
 }
-func (*testHost) Handoff(string, bool) error        { return nil }
-func (*testHost) SetActiveTools([]string) error     { return nil }
-func (*testHost) SetStatus(string, string)          {}
-func (*testHost) SetPanel(string, string, []string) {}
+func (*testHost) Handoff(string, bool) error                                       { return nil }
+func (*testHost) SetActiveTools([]string) error                                    { return nil }
+func (*testHost) SwitchModel(context.Context, string, string) (string, int, error) { return "", 0, nil }
+func (*testHost) SetStatus(string, string)                                         {}
+func (*testHost) SetPanel(string, string, []string)                                {}
 
 func setup(t *testing.T) (*extension.Registry, *testHost) {
 	t.Helper()

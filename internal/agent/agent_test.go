@@ -539,3 +539,38 @@ type errorProvider struct{ err error }
 func (p *errorProvider) Stream(context.Context, model.Request, func(model.StreamEvent)) (model.Response, error) {
 	return model.Response{}, p.err
 }
+
+func TestQueuedProviderSwitchAppliesAfterToolTurn(t *testing.T) {
+	oldProvider := &queueTestProvider{started: make(chan struct{}), release: make(chan struct{})}
+	close(oldProvider.release)
+	registry := extension.NewRegistry()
+	next := &recordingProvider{}
+	var agentRef *Agent
+	if err := registry.RegisterTool(extension.Tool{Definition: model.ToolDefinition{Name: "switch"}, Execute: func(context.Context, json.RawMessage, func(string)) (extension.ToolResult, error) {
+		return extension.ToolResult{}, agentRef.QueueProviderSwitch("next", next, "next-model", 999)
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	provider := &switchToolProvider{}
+	a, err := New(Config{Provider: provider, ProviderName: "old", Registry: registry, Model: "old-model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentRef = a
+	if err := a.Prompt(context.Background(), "go", nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(next.requests) != 1 || next.requests[0].Model != "next-model" {
+		t.Fatalf("next requests=%#v", next.requests)
+	}
+}
+
+type switchToolProvider struct{ calls int }
+
+func (p *switchToolProvider) Stream(_ context.Context, request model.Request, _ func(model.StreamEvent)) (model.Response, error) {
+	p.calls++
+	if p.calls == 1 {
+		return model.Response{Content: []model.Block{{Type: "tool_use", ID: "1", Name: "switch", Arguments: json.RawMessage(`{}`)}}}, nil
+	}
+	return model.Response{Content: []model.Block{{Type: "text", Text: "done"}}}, nil
+}

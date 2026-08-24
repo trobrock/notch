@@ -449,3 +449,46 @@ func (a *Agent) ResetConversation(newSession *session.Session) (*session.Session
 	a.reportedEstimate = 0
 	return old, nil
 }
+
+// QueueProviderSwitch defers a provider/model change until the current tool
+// turn completes. If no prompt is active, it applies immediately.
+func (a *Agent) QueueProviderSwitch(providerName string, next model.Provider, modelName string, contextWindow int) error {
+	if next == nil {
+		return errors.New("switch provider: provider is nil")
+	}
+	if strings.TrimSpace(modelName) == "" {
+		return errors.New("switch provider: model is empty")
+	}
+	switchTo := &providerSwitch{providerName: providerName, provider: next, model: modelName, contextWindow: contextWindow}
+	a.queueMu.Lock()
+	processing := a.processing
+	if processing {
+		a.pendingSwitch = switchTo
+	}
+	a.queueMu.Unlock()
+	if processing {
+		return nil
+	}
+	return a.SwitchProvider(providerName, next, modelName, contextWindow)
+}
+
+func (a *Agent) applyPendingSwitchLocked() error {
+	a.queueMu.Lock()
+	next := a.pendingSwitch
+	a.pendingSwitch = nil
+	a.queueMu.Unlock()
+	if next == nil {
+		return nil
+	}
+	if a.session != nil {
+		if err := a.session.AppendEntry("model_change", map[string]any{"provider": next.providerName, "model": next.model}); err != nil {
+			return fmt.Errorf("switch provider: %w", err)
+		}
+	}
+	a.provider, a.providerName, a.model = next.provider, next.providerName, next.model
+	if next.contextWindow > 0 {
+		a.compaction.ContextWindow = next.contextWindow
+	}
+	a.reportedInputTokens, a.reportedEstimate = 0, 0
+	return nil
+}

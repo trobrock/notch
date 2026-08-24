@@ -89,6 +89,9 @@ type Host interface {
 	// SetActiveTools replaces the model-visible tool set. Nil restores all
 	// registered tools; an empty non-nil slice disables every tool.
 	SetActiveTools(names []string) error
+	// SwitchModel changes the provider/model used for subsequent turns while
+	// preserving the current conversation. Empty provider keeps the current one.
+	SwitchModel(ctx context.Context, provider, model string) (actualProvider string, contextWindow int, err error)
 	// SetStatus publishes a short keyed status for persistent UI display. An
 	// empty value removes the status. Headless hosts may expose it as an event.
 	SetStatus(key, value string)

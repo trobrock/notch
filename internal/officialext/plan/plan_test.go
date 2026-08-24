@@ -38,8 +38,9 @@ func (h *testHost) SetActiveTools(n []string) error {
 	h.active = append(h.active, append([]string(nil), n...))
 	return nil
 }
-func (h *testHost) SetStatus(k, v string)           { h.statuses = append(h.statuses, [2]string{k, v}) }
-func (*testHost) SetPanel(string, string, []string) {}
+func (*testHost) SwitchModel(context.Context, string, string) (string, int, error) { return "", 0, nil }
+func (h *testHost) SetStatus(k, v string)                                          { h.statuses = append(h.statuses, [2]string{k, v}) }
+func (*testHost) SetPanel(string, string, []string)                                {}
 
 func setup(t *testing.T) (*extension.Registry, *testHost, *state) {
 	t.Helper()

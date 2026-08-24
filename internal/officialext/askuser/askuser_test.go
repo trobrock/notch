@@ -34,10 +34,13 @@ func (h *testHost) Select(_ context.Context, prompt string, options []string) (s
 	h.options = append([]string(nil), options...)
 	return h.selected, h.selectErr
 }
-func (*testHost) Notify(string, string)             {}
-func (*testHost) FollowUp(string) error             { return nil }
-func (h *testHost) Handoff(string, bool) error      { return nil }
-func (h *testHost) SetActiveTools([]string) error   { return nil }
+func (*testHost) Notify(string, string)           {}
+func (*testHost) FollowUp(string) error           { return nil }
+func (h *testHost) Handoff(string, bool) error    { return nil }
+func (h *testHost) SetActiveTools([]string) error { return nil }
+func (h *testHost) SwitchModel(context.Context, string, string) (string, int, error) {
+	return "", 0, nil
+}
 func (*testHost) SetStatus(string, string)          {}
 func (*testHost) SetPanel(string, string, []string) {}
 

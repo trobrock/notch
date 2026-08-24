@@ -116,6 +116,9 @@ func (t *Terminal) Handoff(string, bool) error {
 func (t *Terminal) SetActiveTools([]string) error {
 	return errors.New("runtime tool policy is unavailable in line mode")
 }
+func (t *Terminal) SwitchModel(context.Context, string, string) (string, int, error) {
+	return "", 0, errors.New("runtime model switching is unavailable in line mode")
+}
 func (t *Terminal) SetStatus(string, string)          {}
 func (t *Terminal) SetPanel(string, string, []string) {}
 
