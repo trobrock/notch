@@ -11,6 +11,29 @@ Notch uses native Go HTTP adapters rather than provider SDKs. Select an adapter 
 
 Model IDs are passed through to the selected service. Availability is determined by the account and provider; a documented example is not a guarantee that a model is enabled for every account.
 
+## Model registry and selection
+
+Notch embeds a small offline model catalog and maintains a mode-0600 cache at `model_cache` (default `~/.notch/models.json`). Stale entries refresh on startup for the selected provider and when the model selector is opened. `model_refresh_hours` defaults to 24. Refresh is demand-driven: there is no timer or idle polling.
+
+- Anthropic uses `GET /v1/models` with configured authentication.
+- OpenRouter uses its public `GET /models` catalog and records context/reasoning metadata.
+- OpenAI and compatible local servers use `GET /v1/models`.
+- ChatGPT Codex currently uses the embedded fallback because its subscription Responses endpoint does not expose a supported listing API.
+
+Use `notch models [provider]` for a terminal listing or `notch models --refresh [provider]` to force a refresh. In fullscreen mode `/model` opens searchable provider/model selectors; `/model refresh` bypasses a fresh cache. Runtime changes preserve context and affect later requests and newly created sessions, but do not modify user/project config.
+
+A provider discovery failure still returns stale cache data or the bundled fallback and reports a warning. Custom OpenAI-compatible `base_url` values receive separate cache scopes so local model catalogs do not overwrite hosted OpenAI data.
+
+## Reasoning and thinking
+
+Set `thinking_level` in global or project configuration to one of `off`, `minimal`, `low`, `medium`, `high`, or `xhigh` (default `medium`). In the fullscreen UI, `Shift-Tab` cycles those levels and `/thinking` reports or changes the current value. Runtime changes affect subsequent requests and do not edit configuration.
+
+Every provider adapter transmits the selected level in its native request form. OpenAI Responses, Codex, and OpenRouter use reasoning effort; Anthropic uses adaptive thinking/effort for supported newer models and a bounded thinking-token budget otherwise. `off` omits reasoning settings. Provider APIs and individual models differ: a model may not support all values, and a service may reject, clamp, or reinterpret the requested level. Notch does not treat the configured label as a guarantee of actual reasoning cost or behavior.
+
+The fullscreen UI displays OpenAI/Codex reasoning summaries, Anthropic thinking blocks, and OpenRouter reasoning deltas when the service returns them. If no summary is available, a temporary static thinking indicator is shown instead. Notch cannot force a model to provide a summary.
+
+See the [TUI thinking controls](tui.md#commands-and-thinking-level).
+
 ## OAuth commands
 
 ```sh

@@ -18,6 +18,32 @@ func writeResource(t *testing.T, path, content string) {
 	}
 }
 
+func TestLoadBundledSkillsAndDiskOverride(t *testing.T) {
+	catalog, err := LoadBundled(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"notch-config", "notch-extension"} {
+		skill, ok := catalog.Skills[name]
+		if !ok || skill.Description == "" || !strings.HasPrefix(skill.Path, "builtin:") || len(skill.Content) < 500 {
+			t.Fatalf("bundled skill %q = %#v", name, skill)
+		}
+	}
+
+	dir := t.TempDir()
+	writeResource(t, filepath.Join(dir, "override.md"), "---\nname: notch-config\ndescription: custom config\n---\ncustom instructions")
+	catalog, err = LoadBundled([]string{dir}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := catalog.Skills["notch-config"]; got.Description != "custom config" || got.Content != "custom instructions" || strings.HasPrefix(got.Path, "builtin:") {
+		t.Fatalf("disk override = %#v", got)
+	}
+	if _, ok := catalog.Skills["notch-extension"]; !ok {
+		t.Fatal("unrelated bundled skill disappeared")
+	}
+}
+
 func TestLoadDiscoversMetadataAndOverrides(t *testing.T) {
 	globalSkills := filepath.Join(t.TempDir(), "skills")
 	projectSkills := filepath.Join(t.TempDir(), "skills")
@@ -26,7 +52,7 @@ func TestLoadDiscoversMetadataAndOverrides(t *testing.T) {
 	writeResource(t, filepath.Join(globalSkills, "nested", "SKILL.md"), "---\ndescription: 'nested skill'\n---\nnested")
 	writeResource(t, filepath.Join(globalSkills, "nested", "ignored.md"), "ignored")
 	writeResource(t, filepath.Join(projectSkills, "replacement.md"), "---\nname: review\ndescription: project review\n---\nproject $ARGUMENTS")
-	writeResource(t, filepath.Join(prompts, "fix.md"), "---\ndescription: Fix a bug\n---\nFix $ARGUMENTS")
+	writeResource(t, filepath.Join(prompts, "fix.md"), "---\ndescription: Fix a bug\nargument-hint: <issue>\n---\nFix $ARGUMENTS")
 	writeResource(t, filepath.Join(prompts, "ignore.txt"), "no")
 
 	catalog, err := Load([]string{globalSkills, projectSkills}, []string{prompts})
@@ -39,7 +65,7 @@ func TestLoadDiscoversMetadataAndOverrides(t *testing.T) {
 	if got := catalog.Skills["review"]; got.Content != "project $ARGUMENTS" || got.Description != "project review" {
 		t.Fatalf("override = %#v", got)
 	}
-	if len(catalog.Templates) != 1 || catalog.Templates["fix"].Description != "Fix a bug" {
+	if len(catalog.Templates) != 1 || catalog.Templates["fix"].Description != "Fix a bug" || catalog.Templates["fix"].ArgumentHint != "<issue>" {
 		t.Fatalf("templates = %#v", catalog.Templates)
 	}
 }

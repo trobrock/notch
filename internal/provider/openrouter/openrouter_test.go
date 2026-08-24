@@ -14,6 +14,55 @@ import (
 	"github.com/trobrock/notch/internal/model"
 )
 
+func TestRequestBodyReasoningLevels(t *testing.T) {
+	for _, tc := range []struct {
+		level      string
+		wantEffort string
+	}{
+		{level: "off"},
+		{level: "medium", wantEffort: "medium"},
+		{level: "xhigh", wantEffort: "xhigh"},
+		{level: "invalid"},
+	} {
+		t.Run(tc.level, func(t *testing.T) {
+			body, err := json.Marshal(makeRequest(model.Request{Model: "test/model", ReasoningLevel: tc.level}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var request map[string]any
+			if err := json.Unmarshal(body, &request); err != nil {
+				t.Fatal(err)
+			}
+			reasoning, present := request["reasoning"].(map[string]any)
+			if tc.wantEffort == "" {
+				if present {
+					t.Fatalf("reasoning must be omitted: %s", body)
+				}
+			} else if !present || reasoning["effort"] != tc.wantEffort {
+				t.Fatalf("reasoning = %#v, want effort %q", request["reasoning"], tc.wantEffort)
+			}
+			if _, present := request["temperature"]; present {
+				t.Fatalf("temperature must be omitted: %s", body)
+			}
+		})
+	}
+}
+
+func TestListModels(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" || r.Header.Get("Authorization") != "Bearer secret" {
+			t.Errorf("request = %s auth=%q", r.URL.Path, r.Header.Get("Authorization"))
+		}
+		fmt.Fprint(w, `{"data":[{"id":"vendor/model","name":"Model","context_length":123456,"supported_parameters":["reasoning"]}]}`)
+	}))
+	defer server.Close()
+	provider := New(Config{APIKey: "secret", BaseURL: server.URL, HTTPClient: server.Client()})
+	models, err := provider.(model.ModelLister).ListModels(context.Background())
+	if err != nil || len(models) != 1 || models[0].ID != "vendor/model" || models[0].ContextWindow != 123456 || !models[0].Reasoning {
+		t.Fatalf("models = %#v, %v", models, err)
+	}
+}
+
 func TestStreamRequestTextToolsAndUsage(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/chat/completions" {
@@ -143,6 +192,27 @@ func TestStreamRequestTextToolsAndUsage(t *testing.T) {
 	}
 	if fmt.Sprint(events) != fmt.Sprint(wantEvents) {
 		t.Errorf("events = %#v, want %#v", events, wantEvents)
+	}
+}
+
+func TestStreamReasoningSummary(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning\":\"Checked \"}}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning\":\"the files.\",\"content\":\"Done\"},\"finish_reason\":\"stop\"}]}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+	var events []model.StreamEvent
+	response, err := New(Config{BaseURL: server.URL, HTTPClient: server.Client()}).Stream(context.Background(), model.Request{}, func(event model.StreamEvent) { events = append(events, event) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Content) != 2 || response.Content[0].Type != "thinking" || response.Content[0].Text != "Checked the files." || response.Content[1].Text != "Done" {
+		t.Fatalf("content = %#v", response.Content)
+	}
+	if len(events) != 3 || events[0].Type != "thinking_delta" || events[1].Type != "thinking_delta" || events[2].Type != "text_delta" {
+		t.Fatalf("events = %#v", events)
 	}
 }
 

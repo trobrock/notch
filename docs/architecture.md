@@ -7,21 +7,22 @@ Notch is one Go program with a deliberately small provider-independent agent loo
 `cmd/notch/main.go` is the composition root. Startup proceeds in this order:
 
 1. Parse CLI flags and determine the current directory and home directory.
-2. Load defaults, user config, project config, then apply CLI overrides.
+2. Load defaults, user config, and project config; apply `NOTCH_PROVIDER`, `NOTCH_MODEL`, and `NOTCH_THINKING_LEVEL`; then apply CLI overrides.
 3. Create configured extension, skill, prompt, and session directories.
 4. Create the terminal and extension registry; register built-in tools.
 5. Discover and start executable plugins, then load top-level Lua files.
 6. If the MCP config file exists, connect configured servers and register their tools.
 7. Load skills and prompt templates and add their catalog summary to the system prompt.
-8. Resolve the selected provider's environment or stored credential (refreshing expiring OAuth when needed), create the provider, create or resume a session, and construct the agent.
-9. Run one prompt or enter the line-oriented input loop.
+8. Resolve the selected provider's environment or stored credential (refreshing expiring OAuth when needed), create the provider, refresh its model cache in the background when stale, create or resume a session, and construct the agent.
+9. Run one prompt, enter the fullscreen TUI when both interactive streams are terminals, or enter the line-oriented fallback loop.
 
 Plugin, Lua, and MCP load failures are generally shown as warnings so startup can continue. A failure while connecting a configured MCP set causes that set to be closed rather than leaving partial MCP connections active. Duplicate tool or command names are rejected; built-ins therefore cannot be silently replaced.
 
 ## Packages
 
 - `internal/config`: layered JSON configuration and directory defaults.
-- `internal/model`: provider-neutral messages, content blocks, tool definitions, requests, and responses.
+- `internal/model`: provider-neutral messages, content blocks, tool definitions, requests, responses, and model-list metadata.
+- `internal/modelregistry`: embedded model fallback plus atomic, endpoint-scoped, stale-on-demand provider cache.
 - `internal/provider/anthropic`: native streaming Anthropic Messages client.
 - `internal/provider/openai`: native streaming OpenAI Responses client; custom base URLs enable compatible servers such as Ollama.
 - `internal/provider/codex`: configures the Responses client for ChatGPT's native Codex endpoint.
@@ -35,7 +36,8 @@ Plugin, Lua, and MCP load failures are generally shown as warnings so startup ca
 - `internal/extension`: common registry plus executable JSON-RPC plugin host.
 - `internal/luaext`: embedded Lua manager and Notch Lua API.
 - `internal/mcp`: MCP initialization, tool discovery/calling, stdio, and Streamable HTTP transports.
-- `internal/ui`: dependency-free terminal I/O and extension host operations.
+- `internal/ui`: dependency-free line-oriented terminal I/O and fallback extension host operations.
+- `internal/tui`: fullscreen event loop, multiline editor, layout, input parser, and differential terminal renderer.
 
 ## Agent loop
 
@@ -45,13 +47,14 @@ For each user prompt:
 
 1. Append and persist the user message.
 2. Run `before_agent_start`; an extension may replace `system_prompt`.
-3. send the complete history, system prompt, tool schemas, model, and output-token limit to the provider.
-4. Stream text deltas to the event renderer.
+3. Compact older context first if the configured automatic threshold has been reached, then send the effective history, system prompt, tool schemas, model, output-token limit, and current thinking level to the provider.
+4. Stream answer and provider-supplied thinking deltas to the event renderer.
 5. Append and persist the complete assistant response.
-6. If there are tool calls, run each call in response order, append all results as one user message, and request another model turn.
-7. If there are no calls, run `agent_end`; a non-empty `follow_up` result adds a synthetic user message and continues. Otherwise the prompt is complete.
+6. If there are tool calls, run each call in response order and append all results as one user message.
+7. At each safe turn boundary, atomically take one queued steering message before continuing the normal tool-call chain. Steering can redirect the next model turn without interrupting an in-flight request or tool.
+8. When the run would otherwise settle, run `agent_end`; a non-empty hook `follow_up` continues immediately. Otherwise atomically take one queued user follow-up. If neither exists, mark the run idle and complete.
 
-A prompt is capped at 50 model turns internally. Tool calls in one assistant response execute sequentially, not concurrently. There is currently no context compaction, token-budget pruning, branching, or rewind. Resuming loads the entire saved message history.
+A prompt, including steering and follow-up turns, is capped at 50 model turns internally. Queue state uses a mutex independent of the long-held conversation mutex, allowing messages to be enqueued while provider or tool work is active. Tool calls in one assistant response execute sequentially, not concurrently. Context compaction summarizes old messages and retains recent complete turns; durable compaction records restore that effective context on resume. There is no branching, rewind, or session-tree navigation. See [compaction.md](compaction.md) for thresholds and persistence.
 
 `tool_call` hooks can deny a call or replace its arguments. `tool_execution_start` and `tool_execution_end` surround execution. See [extensions.md](extensions.md) for hook payloads.
 
@@ -64,7 +67,7 @@ The model layer represents text, tool use, and tool results as typed blocks. Eac
 - Codex reuses the native Responses translation but sends to ChatGPT's `/backend-api/codex/responses` path with the OAuth account scope required by the Codex backend.
 - OpenRouter sends streaming requests to `<base_url>/chat/completions` and translates Chat Completions messages and tool calls.
 
-Only text is streamed to the terminal; tool arguments are assembled from deltas before execution. Completed assistant content and token usage are retained. API keys come from environment variables, while OAuth login supports `openai-codex`, `anthropic`, and `openrouter`. Stored credentials live in `~/.notch/auth.json` (or `$NOTCH_HOME/auth.json`) and refresh near expiry when the provider issues refresh tokens. There is no provider discovery, automatic model selection, fallback, retry policy, or rate-limit scheduler yet. See [providers.md](providers.md) for authentication precedence and verification notes.
+Answer text and provider-supplied thinking summaries are streamed to the terminal; tool arguments are assembled from deltas before execution. Completed assistant content, thinking blocks, and token usage are retained. OpenAI Responses/Codex reasoning summaries, Anthropic thinking blocks and signatures, and OpenRouter reasoning deltas use the same provider-neutral stream event. All adapters receive the provider-neutral thinking level: OpenAI Responses, Codex, and OpenRouter translate it to native reasoning effort, while Anthropic uses adaptive effort on supported models or a bounded thinking budget on older models. Provider/model support still varies and services may clamp or reject a setting. API keys come from environment variables, while OAuth login supports `openai-codex`, `anthropic`, and `openrouter`. Stored credentials live in `~/.notch/auth.json` (or `$NOTCH_HOME/auth.json`) and refresh near expiry when the provider issues refresh tokens. There is no provider discovery, automatic model selection, fallback, retry policy, or rate-limit scheduler yet. See [providers.md](providers.md) for authentication precedence and verification notes.
 
 Ollama uses the OpenAI adapter with `base_url` such as `http://localhost:11434`. Consequently it must expose `/v1/responses`; configuring an older Chat Completions-only server is insufficient.
 
@@ -83,11 +86,11 @@ The built-ins resolve relative paths against Notch's startup working directory. 
 
 ## Sessions and resources
 
-Sessions are version-1 JSONL files. Creation is exclusive, names combine UTC time and random bytes, and files are mode 0600. The metadata header includes the original CWD/provider/model; messages use the provider-neutral block representation. Appends and the initial header are synced to disk. `--continue` opens the most recently modified `.jsonl` file in `session_dir` and appends to it.
+Sessions are version-1 JSONL files. Creation is exclusive, names combine UTC time and random bytes, and files are mode 0600. The metadata header includes the original CWD/provider/model; messages use the provider-neutral block representation. Appends and the initial header are synced to disk. `--continue` opens the most recently modified `.jsonl` file; `--resume` resolves an exact path, ID, filename, or unambiguous ID prefix. The fullscreen `/resume` selector inspects valid sessions and orders them by modification time.
 
-Sessions preserve conversation state, not process state: extension declarations, current config, system prompt, and MCP connections are rebuilt on every launch. When continuing, the provider and model used for new requests come from current config/CLI, even though the original values remain in the session header.
+Sessions preserve conversation state, not process state: extension declarations, current config, system prompt, and MCP connections are rebuilt on every launch. Message, compaction, and reset records determine the effective context. When continuing, the provider and model used for new requests come from current config/CLI, even though the original values remain in the session header. Fullscreen `/new` creates and switches to a distinct session when persistence is enabled; `/resume` restores an existing session's effective messages and submitted-input history. In no-session mode `/new` resets only memory and resume is disabled.
 
-Resources are read once at startup. Skills accept top-level Markdown files and one-level `name/SKILL.md` directories. Templates accept top-level Markdown files. Later directories overwrite earlier resources by declared name. Their bodies are expanded into ordinary user input before it enters the agent.
+Resources are read once at startup. The binary embeds `notch-config` and `notch-extension` skills so an installed Notch can configure itself and author extensions without a source checkout. Bundled skills are the lowest-precedence layer and may be overridden by a disk skill with the same declared name. In addition to configured Notch directories, discovery reads `~/.agents/skills`, `<cwd>/.agents/skills`, `~/.agents/commands`, and `<cwd>/.agents/commands` without creating those shared directories. Skills accept top-level Markdown files and one-level `name/SKILL.md` directories. Commands/templates accept top-level Markdown files and expose descriptions plus optional `argument-hint` metadata to slash completion. Later directories overwrite earlier resources by declared name. Their bodies are expanded into ordinary user input before it enters the agent.
 
 ## Extension boundaries
 
@@ -99,6 +102,10 @@ MCP is a separate client boundary. Stdio servers are child processes; HTTP serve
 
 ## Terminal and event output
 
-The default UI uses buffered line input and writes streamed assistant text to stdout. Status, tool starts, warnings, and errors generally go to stderr. It has no full-screen renderer, multiline editor, syntax highlighting, tool approval flow, or interactive session tree.
+For an interactive invocation, the fullscreen TUI is selected only when both stdin and stdout are TTYs and `--no-tui` and `--json` are absent. It uses raw input and the alternate screen. Redirected or piped streams, `--no-tui`, JSON output, and one-shot prompts stay on the buffered line-oriented path. The Pi-style layout uses padded full-width user boxes, plain assistant text, status-colored tool boxes, thinking-colored editor rules, and a two-line footer for cwd/Git plus usage/context/provider/model/thinking. See [tui.md](tui.md) for behavior and keys.
 
-With `--json`, agent events are JSON-encoded to stdout as JSONL. Input and extension UI methods are still terminal-oriented, and startup warnings can still appear on stderr. Consumers should treat event additions as possible while the MVP API settles.
+The fullscreen event loop blocks on terminal input, agent/extension events, and `SIGWINCH`; there is no polling loop or idle render ticker. Answer and thinking deltas start a one-shot 33 ms timer to coalesce output while a response is streaming, and non-stream model events flush pending text in order. Transcript entries cache wrapping until their text or width changes. The screen compares frames and emits only changed rows, assembling each render into a single buffered write. These choices reduce idle work and terminal traffic, but they do not eliminate rebuilding layout state when an event actually requires a frame.
+
+Extension `Input` and `Select` calls rendezvous with the fullscreen event loop and appear as modal transcript/composer interactions; requests are queued and honor cancellation. The line fallback presents the same host operations as ordinary prompts.
+
+With `--json`, agent events are JSON-encoded to stdout as JSONL. Startup warnings can still appear on stderr. Consumers should treat event additions as possible while the MVP API settles. Current fullscreen gaps include custom theme files/JSON, mouse support, configurable keybindings, inline (non-alternate-screen) mode, tool-output expand/collapse, tool approval, and branching/session-tree navigation beyond the flat resume selector.

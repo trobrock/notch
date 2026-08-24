@@ -2,7 +2,7 @@
 
 Notch is a small coding agent distributed as a single Go binary. It has native adapters for Anthropic Messages, OpenAI Responses, ChatGPT's Codex Responses endpoint, and OpenRouter Chat Completions; it streams model output, executes tools, and stores conversations as append-only JSONL sessions. The OpenAI provider also works with a local Ollama server exposing its OpenAI-compatible Responses endpoint.
 
-Notch is an MVP, not a drop-in reimplementation of [Pi](https://github.com/badlogic/pi-mono). It favors a dependency-light native core and portable extension protocols over a full-screen UI or a JavaScript runtime.
+Notch is an MVP, not a drop-in reimplementation of [Pi](https://github.com/badlogic/pi-mono). It favors a dependency-light native core and portable extension protocols and does not embed a JavaScript runtime.
 
 ## What is included
 
@@ -10,18 +10,19 @@ Notch is an MVP, not a drop-in reimplementation of [Pi](https://github.com/badlo
 - Provider OAuth for ChatGPT Plus/Pro (`openai-codex`), Claude Pro/Max (`anthropic`), and OpenRouter
 - API-key access for Anthropic, OpenAI, and OpenRouter, plus local Ollama through OpenAI Responses
 - Built-in `read`, `write`, `edit`, `bash`, `grep`, `find`, and `ls` tools
+- Pi-style fullscreen TUI with searchable provider/model selection, themed Markdown, tool cards, streamed thinking summaries or a fallback thinking indicator, and a multiline composer, plus a line-oriented fallback for pipes
 - Streaming interactive and one-shot operation, including JSONL events
-- Durable JSONL sessions and `--continue`
-- Markdown skills and prompt templates
+- Durable JSONL sessions, `--continue`, `/new`, and persisted conversation compaction
+- Embedded self-configuration and extension-authoring skills, plus Markdown skills and prompt templates
 - In-process Lua extensions
 - Executable, line-delimited JSON-RPC 2.0 plugins in any language
 - Native MCP client support over stdio and Streamable HTTP
 
-See [providers and authentication](docs/providers.md), [architecture](docs/architecture.md), [extension API](docs/extensions.md), [migration from Pi](docs/migration-from-pi.md), and the [migration plan for the reviewed Pi extensions](docs/current-pi-extension-plan.md).
+See the [fullscreen TUI guide](docs/tui.md), [themes](docs/themes.md), [compaction](docs/compaction.md), [providers and authentication](docs/providers.md), [architecture](docs/architecture.md), [extension API](docs/extensions.md), [migration from Pi](docs/migration-from-pi.md), and the [migration plan for the reviewed Pi extensions](docs/current-pi-extension-plan.md).
 
 ## Status and deliberate gaps
 
-Notch currently has a basic line-oriented terminal UI. It does **not** yet have conversation compaction, session branching/tree navigation, or MCP OAuth. MCP HTTP credentials can only be supplied as static headers. Provider OAuth is implemented for `openai-codex`, `anthropic`, and `openrouter`, but sessions and configuration are not automatically imported from Pi; credentials have an explicit one-time import command. Existing Pi TypeScript extensions do not run in Notch and must be ported to Lua or the executable JSON-RPC protocol.
+Notch has a Pi-style fullscreen terminal UI with a multiline composer, transcript scrolling, Markdown-aware rendering, themes, thinking controls, context compaction, and extension prompts, plus a line-oriented fallback for redirection and automation. It does **not** yet have session branching/tree navigation or MCP OAuth. The TUI also does not yet provide mouse support, configurable keybindings, inline (non-alternate-screen) mode, or tool-output expand/collapse. Its Markdown support covers common prose and code constructs, but not terminal table layout, image display, or extensions such as task lists and strikethrough. Themes are built in only: custom theme files/JSON are not supported. MCP HTTP credentials can only be supplied as static headers. Provider OAuth is implemented for `openai-codex`, `anthropic`, and `openrouter`, but sessions and configuration are not automatically imported from Pi; credentials have an explicit one-time import command. Existing Pi TypeScript extensions do not run in Notch and must be ported to Lua or the executable JSON-RPC protocol.
 
 Tools and extensions run with the user's privileges. There is no sandbox or tool-approval UI yet.
 
@@ -110,6 +111,7 @@ notch [flags] [prompt words...]
   --continue              continue the most recently modified session
   --no-session            do not create or update a session
   --json                  emit JSONL agent events
+  --no-tui                use the line-oriented interface
   --mcp-config string     path to MCP JSON config
   --init                  create the Notch directories and starter config
   --version               print the version
@@ -129,14 +131,19 @@ notch auth import-pi [path]
 ```sh
 notch --print "Explain internal/agent"
 notch --json "Run the tests and report failures" | jq -c .
+notch models openrouter
+notch models --refresh anthropic
 notch --continue
+notch --resume 20260823T221401
 notch --no-session
 notch --mcp-config ./mcp.json
 ```
 
-Interactive commands are `/help`, `/tools`, `/skills`, `/exit`, and `/quit`, plus commands registered by extensions. Skills are invoked as `/skill:name arguments`; prompt templates use `/name arguments`.
+Fullscreen interactive commands include `/help`, `/model [refresh]`, `/tools`, `/skills`, `/thinking [LEVEL]`, `/theme [NAME]`, `/compact [instructions]`, `/new`, `/resume`, `/clear`, `/exit`, and `/quit`, plus commands registered by extensions. Typing `/` opens a filtered command menu with descriptions; Up/Down selects an entry and Tab or Enter completes it. Skills are invoked as `/skill:name arguments`; prompt templates use `/name arguments`. See the [TUI guide](docs/tui.md) for runtime command behavior.
 
-`--continue` selects the latest session globally in the configured session directory, not necessarily one created in the current working directory. `--json` changes event rendering, but interactive input remains the same line interface.
+An interactive invocation uses the fullscreen TUI only when both stdin and stdout are terminals. `--no-tui`, `--json`, one-shot prompts, and redirected or piped input/output use the line-oriented path. The fullscreen UI runs in the terminal's alternate screen. While a model is active, Enter queues steering for the next safe turn boundary and Alt-Enter queues a follow-up for after the run would otherwise settle; pending messages remain visible above the composer until delivered. It mirrors Pi's presentation: padded full-width user background boxes, plain assistant prose, Markdown styling, provider-supplied thinking summaries with a static fallback indicator, and tool cards with state-colored backgrounds and pending/success/error icons. Transcript entries use consistent blank-row spacing; tool arguments are compact, while output is visually barred and shortened when large. Rendering wraps by terminal display width (including Unicode), is cached by text, width, and theme where styling applies, and sanitizes untrusted text so model/tool content cannot inject terminal controls. See [the TUI guide](docs/tui.md) for details, keys, extension prompts, and fallback behavior.
+
+`--continue` selects the latest session globally in the configured session directory. `--resume ID-OR-PREFIX` opens a specific session by ID, filename, unambiguous prefix, or path. Fullscreen `/resume` presents saved sessions with time, original directory, model, and prompt preview. Resumed requests use the current provider/model configuration while preserving the selected session's conversation context.
 
 ## Configuration
 
@@ -144,9 +151,10 @@ Configuration is JSON. Notch starts with defaults, then merges:
 
 1. `$NOTCH_HOME/config.json`, when `NOTCH_HOME` is set, otherwise `~/.notch/config.json`
 2. `<working-directory>/.notch/config.json`
-3. CLI overrides for provider, model, and MCP config
+3. `NOTCH_PROVIDER`, `NOTCH_MODEL`, and `NOTCH_THINKING_LEVEL`
+4. CLI overrides such as `--provider` and `--model`
 
-Later non-empty scalar values replace earlier ones. Non-empty directory arrays replace the complete earlier array; they are not appended. API keys can come from environment variables; OAuth credentials are kept separately from config in the protected auth store.
+Later non-empty values replace earlier ones, so CLI flags take precedence over environment variables and environment variables take precedence over project and user config. Empty or whitespace-only values for the three runtime environment variables are ignored and fall back to the merged config files. Non-empty directory arrays replace the complete earlier array; they are not appended. API keys can come from environment variables; OAuth credentials are kept separately from config in the protected auth store.
 
 ```json
 {
@@ -154,6 +162,16 @@ Later non-empty scalar values replace earlier ones. Non-empty directory arrays r
   "model": "claude-sonnet-4-5",
   "base_url": "",
   "max_tokens": 8192,
+  "theme": "dark",
+  "thinking_level": "medium",
+  "context_window": 0,
+  "model_cache": "/home/me/.notch/models.json",
+  "model_refresh_hours": 24,
+  "compaction": {
+    "enabled": true,
+    "reserveTokens": 16384,
+    "keepRecentTokens": 20000
+  },
   "system_prompt": "You are a coding agent. Help the user understand and modify their codebase.",
   "mcp_config": "/home/me/.notch/mcp.json",
   "extension_dirs": [
@@ -172,7 +190,13 @@ Later non-empty scalar values replace earlier ones. Non-empty directory arrays r
 }
 ```
 
-The paths above illustrate the defaults; actual home and working-directory paths are resolved at startup. `NOTCH_HOME` relocates user config, user resources, user extensions, the default MCP file, and sessions. Project resources remain under `<cwd>/.notch`. Configured resource directories are created automatically.
+For example, a shell or per-command override can select a runtime without editing either config file:
+
+```sh
+NOTCH_PROVIDER=openai-codex NOTCH_MODEL=gpt-5.6-sol NOTCH_THINKING_LEVEL=high notch
+```
+
+Provider and model overrides are independent: if only one environment variable is set, the other value comes from the merged config. `notch models [provider]` lists provider-discovered or fallback models; add `--refresh` to bypass the cache. Fullscreen `/model` selects a provider and filters its models, while `/model refresh` forces discovery. Runtime selection changes subsequent turns and new sessions but does not edit config files. The paths above illustrate the defaults; actual home and working-directory paths are resolved at startup. `NOTCH_HOME` relocates user config, user resources, user extensions, the default MCP file, and sessions. Project resources remain under `<cwd>/.notch`. Configured resource directories are created automatically. Notch also discovers shared skills in `~/.agents/skills` and `<cwd>/.agents/skills`, plus command templates in `~/.agents/commands` and `<cwd>/.agents/commands`; these shared directories are discovered but never created by Notch. `theme` and `thinking_level` can be set in either global or project config. The mode-0600 model cache refreshes stale selected-provider data on startup or selector use without a polling timer; `model_refresh_hours` defaults to 24. `context_window: 0` means use the provider/model default; omit it for the same behavior. The compaction object deliberately uses Pi-compatible camelCase keys. See [themes](docs/themes.md), [thinking controls](docs/tui.md#commands-and-thinking-level), and [compaction](docs/compaction.md).
 
 Provider credentials:
 
@@ -185,7 +209,14 @@ OAuth credentials are stored in `~/.notch/auth.json` (or `$NOTCH_HOME/auth.json`
 
 ## Skills and prompt templates
 
-Skills may be either `skills/name.md` or `skills/name/SKILL.md`. Prompt templates are top-level `.md` files in a prompt directory. User directories load first and project directories load later, so a project resource with the same declared name wins.
+Every binary includes two built-in skills:
+
+- `/skill:notch-config` configures providers, models, authentication, themes, thinking, compaction, sessions, resources, and MCP;
+- `/skill:notch-extension` builds and tests Lua extensions or executable JSON-RPC plugins and explains when MCP or a core change is more appropriate.
+
+The built-ins require no source checkout or external documentation. A user or project skill declaring the same name overrides the bundled version, so the defaults remain customizable.
+
+Additional skills may be either `skills/name.md` or `skills/name/SKILL.md`. Notch discovers them in `~/.agents/skills`, configured `skill_dirs` (defaulting to user and project `.notch/skills`), and `<cwd>/.agents/skills`. Command/prompt templates are top-level `.md` files discovered from the matching `.agents/commands` and configured prompt directories. Later locations win when names collide, so project `.agents` resources have final precedence.
 
 ```markdown
 ---
@@ -195,7 +226,7 @@ description: Review a change for correctness
 Review the current changes with this focus: $ARGUMENTS
 ```
 
-Put that file at `.notch/prompts/review.md` and run `/review concurrency`. Front matter supports scalar `name` and `description` fields (including simple quoted or `|`/`>` values), not arbitrary YAML. Every `$ARGUMENTS` occurrence is replaced. Loaded resource names and descriptions are also added to the system prompt.
+Put that file at `.notch/prompts/review.md` or `.agents/commands/review.md` and run `/review concurrency`. Front matter supports scalar `name`, `description`, and `argument-hint` fields (including simple quoted or `|`/`>` values), not arbitrary YAML. `argument-hint` is shown in slash-command completion. Every `$ARGUMENTS` occurrence is replaced. Loaded resource names and descriptions are also added to the system prompt.
 
 ## MCP
 
@@ -225,9 +256,9 @@ A server must specify exactly one of `command` or `url`. `enabled` defaults to t
 
 ## Sessions and JSON output
 
-Unless `--no-session` is used, every new invocation creates a mode-0600 JSONL file under the configured session directory. The first record is metadata (format version, ID, time, CWD, provider, model); subsequent records contain complete user, assistant, and tool-result messages. Each append is synced before continuing.
+Unless `--no-session` is used, every new invocation creates a mode-0600 JSONL file under the configured session directory. The first record is metadata (format version, ID, time, CWD, provider, model); subsequent records contain messages and durable compaction records. Each append is synced before continuing. In the fullscreen UI, `/new` creates a distinct durable session and clears transcript context and input history; under `--no-session` it performs the same reset in memory. `/resume` switches to a selected saved session and restores its effective transcript, context, and submitted-input history.
 
-`--json` emits one JSON object per line. Current event types are `turn_start`, `text_delta`, `turn_end` (with token usage), `tool_start`, `tool_update`, `tool_end` (with a result), and `error`. The JSON stream is an event interface, not the on-disk session format.
+`--json` emits one JSON object per line. Current event types include `turn_start`, `text_delta`, `thinking_delta`, `turn_end` (with token usage), `tool_start`, `tool_update`, `tool_end`, `queue_update`, `queue_delivered`, compaction events, and `error`. The JSON stream is an event interface, not the on-disk session format.
 
 ## Extensions
 

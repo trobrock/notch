@@ -14,6 +14,79 @@ import (
 	"github.com/trobrock/notch/internal/model"
 )
 
+func TestRequestBodyReasoningLevels(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		model      string
+		level      string
+		wantType   string
+		wantEffort string
+		wantBudget bool
+	}{
+		{name: "off", model: "claude-opus-4-6", level: "off"},
+		{name: "medium adaptive", model: "claude-sonnet-4-7", level: "medium", wantType: "adaptive", wantEffort: "medium"},
+		{name: "xhigh adaptive", model: "claude-opus-5", level: "xhigh", wantType: "adaptive", wantEffort: "max"},
+		{name: "medium budget", model: "claude-sonnet-4-5", level: "medium", wantType: "enabled", wantBudget: true},
+		{name: "xhigh budget capped", model: "claude-haiku-4-5", level: "xhigh", wantType: "enabled", wantBudget: true},
+		{name: "invalid", model: "claude-opus-4-6", level: "invalid"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const maxTokens = 20000
+			body, err := json.Marshal(makeRequest(model.Request{
+				Model: tc.model, MaxTokens: maxTokens, ReasoningLevel: tc.level,
+			}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var request map[string]any
+			if err := json.Unmarshal(body, &request); err != nil {
+				t.Fatal(err)
+			}
+			thinking, present := request["thinking"].(map[string]any)
+			if tc.wantType == "" {
+				if present || request["output_config"] != nil {
+					t.Fatalf("thinking settings must be omitted: %s", body)
+				}
+			} else if !present || thinking["type"] != tc.wantType {
+				t.Fatalf("thinking = %#v, want type %q", request["thinking"], tc.wantType)
+			}
+			if tc.wantEffort != "" {
+				output, ok := request["output_config"].(map[string]any)
+				if !ok || output["effort"] != tc.wantEffort {
+					t.Fatalf("output_config = %#v, want effort %q", request["output_config"], tc.wantEffort)
+				}
+			}
+			if tc.wantBudget {
+				budget, ok := thinking["budget_tokens"].(float64)
+				if !ok || budget <= 0 || budget >= maxTokens {
+					t.Fatalf("budget_tokens = %#v, must be positive and below max_tokens", thinking["budget_tokens"])
+				}
+				if _, present := request["output_config"]; present {
+					t.Fatalf("output_config must be omitted for budget thinking: %s", body)
+				}
+			}
+			if _, present := request["temperature"]; present {
+				t.Fatalf("temperature must be omitted: %s", body)
+			}
+		})
+	}
+}
+
+func TestListModels(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" || r.URL.Query().Get("limit") != "1000" || r.Header.Get("x-api-key") != "secret" {
+			t.Errorf("request = %s?%s", r.URL.Path, r.URL.RawQuery)
+		}
+		fmt.Fprint(w, `{"data":[{"id":"claude-test","display_name":"Claude Test"}]}`)
+	}))
+	defer server.Close()
+	provider := New(Config{APIKey: "secret", BaseURL: server.URL, HTTPClient: server.Client()})
+	models, err := provider.(model.ModelLister).ListModels(context.Background())
+	if err != nil || len(models) != 1 || models[0].ID != "claude-test" || models[0].Name != "Claude Test" || !models[0].Reasoning {
+		t.Fatalf("models = %#v, %v", models, err)
+	}
+}
+
 func TestStreamTextToolUseAndUsage(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/messages" || r.Header.Get("x-api-key") != "secret" {
@@ -130,6 +203,41 @@ func TestStreamOAuthHeadersBodyAndToolNameRoundTrip(t *testing.T) {
 	}
 	if len(response.Content) != 1 || response.Content[0].Name != "find" {
 		t.Fatalf("streamed tool name was not mapped to registered name: %#v", response.Content)
+	}
+}
+
+func TestThinkingStreamAndReplay(t *testing.T) {
+	wire := makeRequest(model.Request{Messages: []model.Message{{Role: "assistant", Content: []model.Block{{Type: "thinking", Text: "prior", Signature: "sig"}}}}, MaxTokens: 4096})
+	body, err := json.Marshal(wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), `"type":"thinking","thinking":"prior","signature":"sig"`) {
+		t.Fatalf("thinking replay missing: %s", body)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, data := range []string{
+			`{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`,
+			`{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Checked the files."}}`,
+			`{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"signed"}}`,
+			`{"type":"message_stop"}`,
+		} {
+			fmt.Fprintf(w, "data: %s\n\n", data)
+		}
+	}))
+	defer server.Close()
+	var events []model.StreamEvent
+	response, err := New(Config{BaseURL: server.URL, HTTPClient: server.Client()}).Stream(context.Background(), model.Request{}, func(event model.StreamEvent) { events = append(events, event) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Content) != 1 || response.Content[0].Type != "thinking" || response.Content[0].Text != "Checked the files." || response.Content[0].Signature != "signed" {
+		t.Fatalf("content = %#v", response.Content)
+	}
+	if len(events) != 1 || events[0].Type != "thinking_delta" || events[0].Text != "Checked the files." {
+		t.Fatalf("events = %#v", events)
 	}
 }
 

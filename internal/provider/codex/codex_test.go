@@ -11,6 +11,51 @@ import (
 	"github.com/trobrock/notch/internal/model"
 )
 
+func TestRequestBodyReasoningLevels(t *testing.T) {
+	for _, tc := range []struct {
+		level      string
+		wantEffort string
+	}{
+		{level: "off"},
+		{level: "medium", wantEffort: "medium"},
+		{level: "xhigh", wantEffort: "xhigh"},
+	} {
+		t.Run(tc.level, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Fatal(err)
+				}
+				for _, name := range []string{"store", "stream", "instructions", "input", "tools", "text", "include", "tool_choice", "parallel_tool_calls"} {
+					if _, ok := body[name]; !ok {
+						t.Errorf("request body does not contain %q: %#v", name, body)
+					}
+				}
+				reasoning, present := body["reasoning"].(map[string]any)
+				if tc.wantEffort == "" {
+					if present {
+						t.Errorf("reasoning must be omitted: %#v", body)
+					}
+				} else if !present || reasoning["effort"] != tc.wantEffort {
+					t.Errorf("reasoning = %#v, want effort %q", body["reasoning"], tc.wantEffort)
+				}
+				if _, present := body["temperature"]; present {
+					t.Errorf("temperature must be omitted: %#v", body)
+				}
+				fmt.Fprint(w, "data: [DONE]\n\n")
+			}))
+			defer server.Close()
+
+			_, err := New(Config{BaseURL: server.URL, HTTPClient: server.Client()}).Stream(
+				context.Background(), model.Request{ReasoningLevel: tc.level}, nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestStreamConfiguresCodexRequestAndParsesToolCall(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/codex/responses" {

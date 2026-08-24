@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/trobrock/notch/internal/model"
@@ -64,17 +65,120 @@ func New(cfg Config) model.Provider {
 }
 
 type wireRequest struct {
-	Model     string                 `json:"model"`
-	System    any                    `json:"system,omitempty"`
-	Messages  []wireMessage          `json:"messages"`
-	Tools     []model.ToolDefinition `json:"tools,omitempty"`
-	MaxTokens int                    `json:"max_tokens"`
-	Stream    bool                   `json:"stream"`
+	Model        string                 `json:"model"`
+	System       any                    `json:"system,omitempty"`
+	Messages     []wireMessage          `json:"messages"`
+	Tools        []model.ToolDefinition `json:"tools,omitempty"`
+	MaxTokens    int                    `json:"max_tokens"`
+	Thinking     *wireThinking          `json:"thinking,omitempty"`
+	OutputConfig *wireOutputConfig      `json:"output_config,omitempty"`
+	Stream       bool                   `json:"stream"`
+}
+
+type wireThinking struct {
+	Type         string `json:"type"`
+	BudgetTokens int    `json:"budget_tokens,omitempty"`
+}
+
+type wireOutputConfig struct {
+	Effort string `json:"effort"`
 }
 
 type wireMessage struct {
 	Role    string `json:"role"`
 	Content []any  `json:"content"`
+}
+
+func validReasoningLevel(level string) bool {
+	switch level {
+	case "", "off", "minimal", "low", "medium", "high", "xhigh":
+		return true
+	default:
+		return false
+	}
+}
+
+// Adaptive thinking was introduced with Claude 4.6. Treat later 4.x
+// versions and all 5.x model-family IDs as adaptive as well.
+func supportsAdaptiveThinking(modelID string) bool {
+	parts := strings.FieldsFunc(strings.ToLower(modelID), func(r rune) bool {
+		return r == '-' || r == '.' || r == '/' || r == ':'
+	})
+	adaptiveVersion := func(majorPart, minorPart string) bool {
+		major, err := strconv.Atoi(majorPart)
+		if err != nil {
+			return false
+		}
+		if major >= 5 {
+			return true
+		}
+		minor, err := strconv.Atoi(minorPart)
+		return err == nil && major == 4 && minor >= 6
+	}
+	for i, part := range parts {
+		if part != "opus" && part != "sonnet" && part != "haiku" {
+			continue
+		}
+		// Current IDs place the family before the version (opus-4-6), but
+		// accepting version-first aliases makes model detection robust.
+		if i+1 < len(parts) {
+			minor := ""
+			if i+2 < len(parts) {
+				minor = parts[i+2]
+			}
+			if adaptiveVersion(parts[i+1], minor) {
+				return true
+			}
+		}
+		if i >= 2 {
+			if adaptiveVersion(parts[i-2], parts[i-1]) {
+				return true
+			}
+		} else if i >= 1 && adaptiveVersion(parts[i-1], "") {
+			return true
+		}
+	}
+	return false
+}
+
+func adaptiveEffort(level string) string {
+	switch level {
+	case "minimal", "low":
+		return "low"
+	case "medium":
+		return "medium"
+	case "high":
+		return "high"
+	case "xhigh":
+		return "max"
+	default:
+		return ""
+	}
+}
+
+func thinkingBudget(level string, maxTokens int) int {
+	desired := map[string]int{
+		"minimal": 1024,
+		"low":     2048,
+		"medium":  8192,
+		"high":    16384,
+		"xhigh":   32768,
+	}[level]
+	if desired == 0 || maxTokens <= 1 {
+		return 0
+	}
+
+	// Reserve at least 1024 tokens for the visible answer where possible. For
+	// unusually small limits, still keep the thinking budget strictly below the
+	// API's max_tokens value.
+	limit := maxTokens - 1024
+	if limit < 1024 {
+		limit = maxTokens - 1
+	}
+	if desired > limit {
+		return limit
+	}
+	return desired
 }
 
 func makeRequest(req model.Request) wireRequest {
@@ -87,6 +191,16 @@ func makeRequestForMode(req model.Request, oauthMode bool) wireRequest {
 		content := make([]any, 0, len(message.Content))
 		for _, block := range message.Content {
 			switch block.Type {
+			case "thinking":
+				// Anthropic requires its opaque signature when replaying a thinking
+				// block. Unsigned summaries from another provider are display-only.
+				if block.Signature != "" {
+					content = append(content, struct {
+						Type      string `json:"type"`
+						Thinking  string `json:"thinking"`
+						Signature string `json:"signature"`
+					}{"thinking", block.Text, block.Signature})
+				}
 			case "text":
 				content = append(content, map[string]any{"type": "text", "text": block.Text})
 			case "tool_use", "function_call":
@@ -136,10 +250,20 @@ func makeRequestForMode(req model.Request, oauthMode bool) wireRequest {
 	} else if req.SystemPrompt != "" {
 		system = req.SystemPrompt
 	}
-	return wireRequest{
+	wireReq := wireRequest{
 		Model: req.Model, System: system, Messages: messages,
 		Tools: tools, MaxTokens: maxTokens, Stream: true,
 	}
+	if req.ReasoningLevel == "" || req.ReasoningLevel == "off" || !validReasoningLevel(req.ReasoningLevel) {
+		return wireReq
+	}
+	if supportsAdaptiveThinking(req.Model) {
+		wireReq.Thinking = &wireThinking{Type: "adaptive"}
+		wireReq.OutputConfig = &wireOutputConfig{Effort: adaptiveEffort(req.ReasoningLevel)}
+	} else {
+		wireReq.Thinking = &wireThinking{Type: "enabled", BudgetTokens: thinkingBudget(req.ReasoningLevel, maxTokens)}
+	}
+	return wireReq
 }
 
 func canonicalToolName(name string) string {
@@ -181,7 +305,53 @@ type streamBlock struct {
 	sawArgDelta bool
 }
 
+func (p *provider) ListModels(ctx context.Context) ([]model.ModelInfo, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+"/v1/models?limit=1000", nil)
+	if err != nil {
+		return nil, fmt.Errorf("anthropic: create model-list request: %w", err)
+	}
+	httpReq.Header.Set("anthropic-version", p.version)
+	if p.oauthMode {
+		if p.oauthToken != "" {
+			httpReq.Header.Set("Authorization", "Bearer "+p.oauthToken)
+		}
+		httpReq.Header.Set("anthropic-beta", oauthBeta)
+		httpReq.Header.Set("User-Agent", oauthUserAgent)
+		httpReq.Header.Set("x-app", "cli")
+	} else if p.apiKey != "" {
+		httpReq.Header.Set("x-api-key", p.apiKey)
+	}
+	httpResp, err := p.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("anthropic: list models: %w", err)
+	}
+	defer httpResp.Body.Close()
+	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+		return nil, httpStatusError("anthropic", httpResp)
+	}
+	var envelope struct {
+		Data []struct {
+			ID          string `json:"id"`
+			DisplayName string `json:"display_name"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(io.LimitReader(httpResp.Body, 16<<20)).Decode(&envelope); err != nil {
+		return nil, fmt.Errorf("anthropic: decode model list: %w", err)
+	}
+	models := make([]model.ModelInfo, 0, len(envelope.Data))
+	for _, item := range envelope.Data {
+		if strings.TrimSpace(item.ID) == "" {
+			continue
+		}
+		models = append(models, model.ModelInfo{ID: item.ID, Name: item.DisplayName, Reasoning: true})
+	}
+	return models, nil
+}
+
 func (p *provider) Stream(ctx context.Context, req model.Request, onEvent func(model.StreamEvent)) (model.Response, error) {
+	if !validReasoningLevel(req.ReasoningLevel) {
+		return model.Response{}, fmt.Errorf("anthropic: invalid reasoning level %q", req.ReasoningLevel)
+	}
 	body, err := json.Marshal(makeRequestForMode(req, p.oauthMode))
 	if err != nil {
 		return model.Response{}, fmt.Errorf("anthropic: encode request: %w", err)
@@ -233,15 +403,19 @@ func (p *provider) Stream(ctx context.Context, req model.Request, onEvent func(m
 				} `json:"usage"`
 			} `json:"message"`
 			ContentBlock struct {
-				Type  string          `json:"type"`
-				Text  string          `json:"text"`
-				ID    string          `json:"id"`
-				Name  string          `json:"name"`
-				Input json.RawMessage `json:"input"`
+				Type      string          `json:"type"`
+				Text      string          `json:"text"`
+				Thinking  string          `json:"thinking"`
+				Signature string          `json:"signature"`
+				ID        string          `json:"id"`
+				Name      string          `json:"name"`
+				Input     json.RawMessage `json:"input"`
 			} `json:"content_block"`
 			Delta struct {
 				Type        string `json:"type"`
 				Text        string `json:"text"`
+				Thinking    string `json:"thinking"`
+				Signature   string `json:"signature"`
 				PartialJSON string `json:"partial_json"`
 				StopReason  string `json:"stop_reason"`
 			} `json:"delta"`
@@ -270,13 +444,21 @@ func (p *provider) Stream(ctx context.Context, req model.Request, onEvent func(m
 			if original, ok := toolNames[strings.ToLower(name)]; ok {
 				name = original
 			}
-			b := &streamBlock{block: model.Block{Type: envelope.ContentBlock.Type, Text: envelope.ContentBlock.Text, ID: envelope.ContentBlock.ID, Name: name}}
+			text := envelope.ContentBlock.Text
+			if envelope.ContentBlock.Type == "thinking" {
+				text = envelope.ContentBlock.Thinking
+			}
+			b := &streamBlock{block: model.Block{Type: envelope.ContentBlock.Type, Text: text, Signature: envelope.ContentBlock.Signature, ID: envelope.ContentBlock.ID, Name: name}}
 			if len(envelope.ContentBlock.Input) > 0 && string(envelope.ContentBlock.Input) != "{}" {
 				b.arguments.Write(envelope.ContentBlock.Input)
 			}
 			blocks[envelope.Index] = b
-			if envelope.ContentBlock.Text != "" && onEvent != nil {
-				onEvent(model.StreamEvent{Type: "text_delta", Text: envelope.ContentBlock.Text})
+			if text != "" && onEvent != nil {
+				eventType := "text_delta"
+				if envelope.ContentBlock.Type == "thinking" {
+					eventType = "thinking_delta"
+				}
+				onEvent(model.StreamEvent{Type: eventType, Text: text})
 			}
 		case "content_block_delta":
 			b := blocks[envelope.Index]
@@ -285,6 +467,16 @@ func (p *provider) Stream(ctx context.Context, req model.Request, onEvent func(m
 				blocks[envelope.Index] = b
 			}
 			switch envelope.Delta.Type {
+			case "thinking_delta":
+				if b.block.Type == "" {
+					b.block.Type = "thinking"
+				}
+				b.block.Text += envelope.Delta.Thinking
+				if envelope.Delta.Thinking != "" && onEvent != nil {
+					onEvent(model.StreamEvent{Type: "thinking_delta", Text: envelope.Delta.Thinking})
+				}
+			case "signature_delta":
+				b.block.Signature += envelope.Delta.Signature
 			case "text_delta":
 				if b.block.Type == "" {
 					b.block.Type = "text"

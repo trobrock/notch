@@ -6,10 +6,10 @@ Notch takes inspiration from Pi's coding-agent workflow, but it is not wire-, co
 
 Notch is a good fit when you want a single Go binary, native Anthropic, OpenAI/Codex Responses, and OpenRouter access, local Ollama, built-in coding tools, simple persistent sessions, and extensions without a required npm runtime.
 
-Stay on Pi, or run both during migration, if you depend on its richer interactive interface or workflow features. Current Notch gaps include:
+Stay on Pi, or run both during migration, if you depend on features outside Notch's smaller interface and workflow surface. Notch now mirrors Pi's core conversation presentation, themes, thinking controls, `/new`, and context compaction. Remaining gaps include:
 
-- a basic line UI rather than Pi's richer terminal experience;
-- no conversation compaction;
+- no basic Markdown styling, mouse support, configurable keybindings, inline mode, or tool-output expand/collapse;
+- no custom theme files/JSON;
 - no branching/session-tree navigation;
 - provider OAuth is limited to `openai-codex`, `anthropic`, and `openrouter`;
 - no MCP OAuth (only static HTTP headers);
@@ -39,13 +39,20 @@ Notch supports four provider values:
 - `anthropic`, using the native Anthropic Messages API with `ANTHROPIC_API_KEY` or Claude Pro/Max OAuth;
 - `openai`, using the native OpenAI **Responses** API with `OPENAI_API_KEY`, or a configured local endpoint.
 
-Notch does not import Pi provider/model registries. Select the model explicitly in `~/.notch/config.json`, project `.notch/config.json`, or with flags. See [providers and authentication](providers.md) for adapter details and current real-service verification status.
+Notch does not import Pi provider/model registries. It maintains its own embedded/provider-refreshed registry. Select a model in `~/.notch/config.json`, project `.notch/config.json`, with flags, or through fullscreen `/model`. See [providers and authentication](providers.md) for adapter details and current real-service verification status.
 
 ```json
 {
   "provider": "anthropic",
   "model": "claude-sonnet-4-5",
-  "max_tokens": 8192
+  "max_tokens": 8192,
+  "theme": "dark",
+  "thinking_level": "medium",
+  "compaction": {
+    "enabled": true,
+    "reserveTokens": 16384,
+    "keepRecentTokens": 20000
+  }
 }
 ```
 
@@ -53,6 +60,8 @@ Notch does not import Pi provider/model registries. Select the model explicitly 
 export ANTHROPIC_API_KEY=...
 notch -p anthropic -m claude-sonnet-4-5
 ```
+
+The built-in themes are `dark`, `dracula`, and `catppuccin-mocha`; Notch does not import Pi custom theme files. Thinking levels are `off|minimal|low|medium|high|xhigh` and are transmitted by every provider adapter, although model support varies. In the fullscreen UI, `/theme`, `/thinking`, and `Shift-Tab` change runtime state only. See [themes](themes.md), [TUI controls](tui.md#commands-and-thinking-level), and [compaction](compaction.md).
 
 For OpenAI-compatible local service, set `provider` to `openai` and `base_url` to the API origin. Notch always calls `<base_url>/v1/responses`, not Chat Completions. The tested Ollama route is:
 
@@ -88,14 +97,16 @@ The import copies credentials into `~/.notch/auth.json` (or `$NOTCH_HOME/auth.js
 
 ## Move skills
 
-Typical Pi installations keep user resources below a Pi agent directory, while Notch uses:
+Notch always provides `/skill:notch-config` and `/skill:notch-extension` from the binary. Disk skills with those names override the bundled versions.
+
+Notch reads shared Agent Skills directly from `~/.agents/skills` and `<project>/.agents/skills`, alongside its native locations:
 
 ```text
 ~/.notch/skills
 <project>/.notch/skills
 ```
 
-Copy only the skills you want to test. Notch recognizes either:
+Resources that already live under `.agents/skills` do not need to be copied. Notch currently checks the startup working directory rather than walking ancestor directories. Copy other Pi-only skills you want to test. Notch recognizes either:
 
 ```text
 skills/review.md
@@ -116,16 +127,18 @@ Invoke it as `/skill:review concurrency`. Verify advanced front matter: Notch pa
 
 ## Move prompt templates
 
-Place template `.md` files directly in:
+Notch reads top-level command/template `.md` files from both shared and native locations:
 
 ```text
+~/.agents/commands
+<project>/.agents/commands
 ~/.notch/prompts
 <project>/.notch/prompts
 ```
 
-Templates use the same limited `name`/`description` front matter and replace every `$ARGUMENTS` marker. A file declaring `name: explain` is invoked as `/explain optional text`.
+Templates use limited `name`, `description`, and `argument-hint` front matter and replace every `$ARGUMENTS` marker. A file declaring `name: explain` is invoked as `/explain optional text`.
 
-Check command-name conflicts after copying. Built-in commands (`help`, `tools`, `skills`, `exit`, `quit`) are handled first, registered extension commands next, and prompt templates after that.
+Check command-name conflicts after copying. Built-in commands are handled first, registered extension commands next, and prompt templates after that. All are visible in the `/` completion menu.
 
 ## Port extensions rather than copying them
 
@@ -166,7 +179,7 @@ Port behavior to the nearest current Notch hook:
 | Observe tool boundaries | `tool_execution_start`, `tool_execution_end` |
 | Request another turn after completion | `agent_end`, return `follow_up` |
 
-Pi events with no equivalent need to be redesigned or deferred. Notch does not expose session mutation, model switching, custom rendering, branching, or compaction through the current extension API.
+Pi events with no equivalent need to be redesigned or deferred. Notch has native session reset and compaction, but does not expose session mutation, model switching, custom rendering, branching, or context replacement/compaction through the current extension API.
 
 ### Tool behavior differences
 
@@ -212,15 +225,16 @@ Use `--mcp-config path/to/file.json` to test a project-specific file before maki
 
 Pi session files cannot be resumed by Notch. Notch's own files are append-only version-1 JSONL under `~/.notch/sessions` by default. Start a fresh Notch conversation and, if context is needed, paste or generate a summary from the Pi session.
 
-Notch currently supports only:
-
 ```sh
 notch                 # create a new session
 notch --continue      # resume the latest Notch session
+notch --resume ID     # resume a specific Notch session
 notch --no-session    # save nothing
 ```
 
-`--continue` means the most recently modified file in the configured session directory, regardless of project. There is no selector, branching, or compaction. If project isolation matters, set a project-specific `session_dir`.
+In the fullscreen UI, `/new` creates and switches to a distinct durable session and clears conversation context, transcript, and submitted-input history. `/resume` selects an older session and restores its effective context, transcript, and submitted-input history. With `--no-session`, `/new` performs the reset only in memory. `/compact [instructions]` persists a summary and retained recent context in Notch sessions; automatic compaction is enabled by default. See [compaction](compaction.md).
+
+`--continue` means the most recently modified file in the configured session directory, regardless of project. `--resume` and fullscreen `/resume` select existing sessions, but there is still no branching or session-tree navigation beyond the flat selectors. If project isolation matters, set a project-specific `session_dir`.
 
 ## Suggested migration checklist
 
@@ -231,4 +245,4 @@ notch --no-session    # save nothing
 5. Reconfigure MCP stdio/HTTP servers, excluding OAuth-dependent servers.
 6. Inventory Pi TypeScript extensions and classify each as Lua, executable plugin, or currently unsupported.
 7. Test hooks and tool safety with `notch --no-session`.
-8. Keep Pi available for old sessions, branches, compaction, and richer UI workflows until Notch's MVP limits are acceptable.
+8. Keep Pi available for old sessions, branches/session trees, custom themes, and richer Markdown UI workflows until Notch's limits are acceptable.

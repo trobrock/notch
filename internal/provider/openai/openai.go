@@ -68,25 +68,32 @@ func New(cfg Config) model.Provider {
 }
 
 type wireRequest struct {
-	Model           string     `json:"model"`
-	Instructions    string     `json:"instructions,omitempty"`
-	Input           []any      `json:"input"`
-	Tools           []wireTool `json:"tools,omitempty"`
-	MaxOutputTokens int        `json:"max_output_tokens,omitempty"`
-	Stream          bool       `json:"stream"`
+	Model           string         `json:"model"`
+	Instructions    string         `json:"instructions,omitempty"`
+	Input           []any          `json:"input"`
+	Tools           []wireTool     `json:"tools,omitempty"`
+	MaxOutputTokens int            `json:"max_output_tokens,omitempty"`
+	Reasoning       *wireReasoning `json:"reasoning,omitempty"`
+	Stream          bool           `json:"stream"`
 }
 
 type codexWireRequest struct {
-	Model             string     `json:"model"`
-	Store             bool       `json:"store"`
-	Stream            bool       `json:"stream"`
-	Instructions      string     `json:"instructions"`
-	Input             []any      `json:"input"`
-	Tools             []wireTool `json:"tools"`
-	Text              wireText   `json:"text"`
-	Include           []string   `json:"include"`
-	ToolChoice        string     `json:"tool_choice"`
-	ParallelToolCalls bool       `json:"parallel_tool_calls"`
+	Model             string         `json:"model"`
+	Store             bool           `json:"store"`
+	Stream            bool           `json:"stream"`
+	Instructions      string         `json:"instructions"`
+	Input             []any          `json:"input"`
+	Tools             []wireTool     `json:"tools"`
+	Text              wireText       `json:"text"`
+	Include           []string       `json:"include"`
+	ToolChoice        string         `json:"tool_choice"`
+	ParallelToolCalls bool           `json:"parallel_tool_calls"`
+	Reasoning         *wireReasoning `json:"reasoning,omitempty"`
+}
+
+type wireReasoning struct {
+	Effort  string `json:"effort"`
+	Summary string `json:"summary,omitempty"`
 }
 
 type wireText struct {
@@ -98,6 +105,22 @@ type wireTool struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description,omitempty"`
 	Parameters  map[string]any `json:"parameters"`
+}
+
+func validReasoningLevel(level string) bool {
+	switch level {
+	case "", "off", "minimal", "low", "medium", "high", "xhigh":
+		return true
+	default:
+		return false
+	}
+}
+
+func reasoningForLevel(level string) *wireReasoning {
+	if level == "" || level == "off" || !validReasoningLevel(level) {
+		return nil
+	}
+	return &wireReasoning{Effort: level, Summary: "auto"}
 }
 
 func makeRequest(req model.Request) wireRequest {
@@ -153,15 +176,16 @@ func makeRequest(req model.Request) wireRequest {
 	}
 	return wireRequest{
 		Model: req.Model, Instructions: req.SystemPrompt, Input: input, Tools: tools,
-		MaxOutputTokens: req.MaxTokens, Stream: true,
+		MaxOutputTokens: req.MaxTokens, Reasoning: reasoningForLevel(req.ReasoningLevel), Stream: true,
 	}
 }
 
 type outputSlot struct {
-	kind  string
-	parts map[int]*model.Block
-	call  model.Block
-	args  bytes.Buffer
+	kind     string
+	parts    map[int]*model.Block
+	call     model.Block
+	thinking model.Block
+	args     bytes.Buffer
 }
 
 type outputItem struct {
@@ -175,6 +199,10 @@ type outputItem struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	} `json:"content"`
+	Summary []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"summary"`
 }
 
 type responseData struct {
@@ -193,7 +221,53 @@ type responseData struct {
 	} `json:"error"`
 }
 
+func (p *provider) ListModels(ctx context.Context) ([]model.ModelInfo, error) {
+	if p.codexMode {
+		return nil, errors.New("openai-codex: model listing is unavailable; using bundled registry")
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+"/v1/models", nil)
+	if err != nil {
+		return nil, fmt.Errorf("openai: create model-list request: %w", err)
+	}
+	if p.apiKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
+	}
+	for name, value := range p.headers {
+		httpReq.Header.Set(name, value)
+	}
+	httpResp, err := p.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("openai: list models: %w", err)
+	}
+	defer httpResp.Body.Close()
+	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+		return nil, httpStatusError(httpResp)
+	}
+	var envelope struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(io.LimitReader(httpResp.Body, 16<<20)).Decode(&envelope); err != nil {
+		return nil, fmt.Errorf("openai: decode model list: %w", err)
+	}
+	models := make([]model.ModelInfo, 0, len(envelope.Data))
+	for _, item := range envelope.Data {
+		id := strings.TrimSpace(item.ID)
+		if id == "" {
+			continue
+		}
+		lower := strings.ToLower(id)
+		reasoning := strings.Contains(lower, "gpt-5") || strings.HasPrefix(lower, "o1") || strings.HasPrefix(lower, "o3") || strings.HasPrefix(lower, "o4")
+		models = append(models, model.ModelInfo{ID: id, Name: id, Reasoning: reasoning})
+	}
+	return models, nil
+}
+
 func (p *provider) Stream(ctx context.Context, req model.Request, onEvent func(model.StreamEvent)) (model.Response, error) {
+	if !validReasoningLevel(req.ReasoningLevel) {
+		return model.Response{}, fmt.Errorf("openai: invalid reasoning level %q", req.ReasoningLevel)
+	}
 	wireReq := makeRequest(req)
 	var requestBody any = wireReq
 	if p.codexMode {
@@ -201,7 +275,7 @@ func (p *provider) Stream(ctx context.Context, req model.Request, onEvent func(m
 			Model: wireReq.Model, Store: false, Stream: true,
 			Instructions: wireReq.Instructions, Input: wireReq.Input, Tools: wireReq.Tools,
 			Text: wireText{Verbosity: "low"}, Include: []string{"reasoning.encrypted_content"},
-			ToolChoice: "auto", ParallelToolCalls: true,
+			ToolChoice: "auto", ParallelToolCalls: true, Reasoning: wireReq.Reasoning,
 		}
 	}
 	body, err := json.Marshal(requestBody)
@@ -295,6 +369,25 @@ func (p *provider) Stream(ctx context.Context, req model.Request, onEvent func(m
 			if block.Text == "" {
 				block.Text = envelope.Text
 			}
+		case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
+			block := reasoningPart(slots, envelope.OutputIndex)
+			block.Text += envelope.Delta
+			if envelope.Delta != "" && onEvent != nil {
+				onEvent(model.StreamEvent{Type: "thinking_delta", Text: envelope.Delta})
+			}
+		case "response.reasoning_summary_part.done":
+			block := reasoningPart(slots, envelope.OutputIndex)
+			if block.Text != "" && !strings.HasSuffix(block.Text, "\n\n") {
+				block.Text += "\n\n"
+				if onEvent != nil {
+					onEvent(model.StreamEvent{Type: "thinking_delta", Text: "\n\n"})
+				}
+			}
+		case "response.reasoning_summary_text.done":
+			block := reasoningPart(slots, envelope.OutputIndex)
+			if block.Text == "" {
+				block.Text = envelope.Text
+			}
 		case "response.function_call_arguments.delta":
 			slot := functionSlot(slots, envelope.OutputIndex)
 			slot.args.WriteString(envelope.Delta)
@@ -369,6 +462,17 @@ func textPart(slots map[int]*outputSlot, outputIndex, contentIndex int) *model.B
 	return block
 }
 
+func reasoningPart(slots map[int]*outputSlot, outputIndex int) *model.Block {
+	slot := slots[outputIndex]
+	if slot == nil {
+		slot = &outputSlot{}
+		slots[outputIndex] = slot
+	}
+	slot.kind = "reasoning"
+	slot.thinking.Type = "thinking"
+	return &slot.thinking
+}
+
 func functionSlot(slots map[int]*outputSlot, outputIndex int) *outputSlot {
 	slot := slots[outputIndex]
 	if slot == nil {
@@ -382,6 +486,26 @@ func functionSlot(slots map[int]*outputSlot, outputIndex int) *outputSlot {
 
 func mergeOutputItem(slots map[int]*outputSlot, index int, item outputItem, done bool) {
 	switch item.Type {
+	case "reasoning":
+		block := reasoningPart(slots, index)
+		if done {
+			var parts []string
+			for _, summary := range item.Summary {
+				if summary.Text != "" {
+					parts = append(parts, summary.Text)
+				}
+			}
+			if len(parts) == 0 {
+				for _, content := range item.Content {
+					if content.Text != "" {
+						parts = append(parts, content.Text)
+					}
+				}
+			}
+			if len(parts) != 0 {
+				block.Text = strings.Join(parts, "\n\n")
+			}
+		}
 	case "message":
 		for contentIndex, content := range item.Content {
 			if content.Type == "output_text" {
@@ -437,6 +561,10 @@ func flattenSlots(slots map[int]*outputSlot) []model.Block {
 	for _, index := range indices {
 		slot := slots[index]
 		switch slot.kind {
+		case "reasoning":
+			if slot.thinking.Text != "" {
+				content = append(content, slot.thinking)
+			}
 		case "message":
 			partIndices := make([]int, 0, len(slot.parts))
 			for partIndex := range slot.parts {

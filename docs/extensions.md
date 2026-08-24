@@ -1,5 +1,7 @@
 # Extensions
 
+Installed Notch binaries include `/skill:notch-extension`, an on-demand guide for choosing, building, validating, and installing the extension formats described here. `/skill:notch-config` covers extension directory and related runtime configuration.
+
 Notch has two first-class extension formats:
 
 - **Lua files** run inside the Notch process using embedded GopherLua.
@@ -113,6 +115,8 @@ notch.ui.notify("Finished", "success")
 ```
 
 `notch.exec` executes an argv array in Notch's working directory; it does not invoke a shell. A failed start or non-zero exit raises a Lua error with the current host implementation. UI levels are display labels rather than a fixed enum. Lua execution observes agent cancellation, including tight-running Lua code.
+
+In the fullscreen TUI, input and selection requests are queued and presented through the transcript and composer; selection supports typed filtering, Up/Down, and Enter, and `Ctrl-C`/Escape cancels. In line fallback mode they are ordinary text/numbered prompts. See [tui.md](tui.md#extension-ui-integration).
 
 ## Hooks
 
@@ -314,7 +318,7 @@ Terminal interactions:
 {"jsonrpc":"2.0","id":"host-5","method":"host.ui.notify","params":{"message":"Done","level":"info"}}
 ```
 
-Input and selection return strings; notify returns `null`. Host method failures use `-32602` for invalid parameters, `-32601` for unknown methods, and `-32000` for operation errors.
+Input and selection return strings; notify returns `null`. In the fullscreen TUI these requests rendezvous with the event loop and are queued if another extension prompt is active; the line fallback uses ordinary prompts. See [tui.md](tui.md#extension-ui-integration). Host method failures use `-32602` for invalid parameters, `-32601` for unknown methods, and `-32000` for operation errors.
 
 ### Minimal Python plugin
 

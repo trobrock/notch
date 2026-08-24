@@ -18,12 +18,24 @@ func TestDefaultsAndNotchHome(t *testing.T) {
 	if cfg.Provider == "" || cfg.Model == "" || cfg.MaxTokens == 0 || cfg.SystemPrompt == "" {
 		t.Fatalf("incomplete defaults: %+v", cfg)
 	}
-	if cfg.MCPConfig != filepath.Join(root, "mcp.json") || cfg.SessionDir != filepath.Join(root, "sessions") {
+	if cfg.Theme != "dark" || cfg.ThinkingLevel != "medium" || cfg.Compaction == nil || cfg.Compaction.Enabled == nil || !*cfg.Compaction.Enabled {
+		t.Fatalf("interactive defaults are incomplete: %+v", cfg)
+	}
+	if cfg.MCPConfig != filepath.Join(root, "mcp.json") || cfg.SessionDir != filepath.Join(root, "sessions") || cfg.ModelCache != filepath.Join(root, "models.json") || cfg.ModelRefreshHours != 24 {
 		t.Fatalf("defaults use wrong home: %+v", cfg)
 	}
 	wantExtensions := []string{filepath.Join(root, "extensions"), filepath.Join(cwd, ".notch", "extensions")}
 	if !reflect.DeepEqual(cfg.ExtensionDirs, wantExtensions) {
 		t.Fatalf("extension dirs = %#v, want %#v", cfg.ExtensionDirs, wantExtensions)
+	}
+	wantAgentSkills := []string{filepath.Join(home, ".agents", "skills"), filepath.Join(cwd, ".agents", "skills")}
+	wantAgentCommands := []string{filepath.Join(home, ".agents", "commands"), filepath.Join(cwd, ".agents", "commands")}
+	if !reflect.DeepEqual(cfg.AgentSkillDirs, wantAgentSkills) || !reflect.DeepEqual(cfg.AgentCommandDirs, wantAgentCommands) {
+		t.Fatalf(".agents dirs = %#v / %#v", cfg.AgentSkillDirs, cfg.AgentCommandDirs)
+	}
+	wantSkillOrder := []string{wantAgentSkills[0], filepath.Join(root, "skills"), filepath.Join(cwd, ".notch", "skills"), wantAgentSkills[1]}
+	if !reflect.DeepEqual(cfg.SkillDiscoveryDirs(), wantSkillOrder) {
+		t.Fatalf("skill discovery order = %#v, want %#v", cfg.SkillDiscoveryDirs(), wantSkillOrder)
 	}
 
 	custom := filepath.Join(t.TempDir(), "custom-notch")
@@ -35,17 +47,21 @@ func TestDefaultsAndNotchHome(t *testing.T) {
 }
 
 func TestLoadMergesUserThenProject(t *testing.T) {
+	clearRuntimeConfigEnv(t)
 	home := t.TempDir()
 	cwd := t.TempDir()
 	t.Setenv("NOTCH_HOME", "")
 	writeJSON(t, filepath.Join(home, ".notch", "config.json"), `{
 		"provider":"openai", "model":"global-model", "base_url":"https://global.test",
 		"max_tokens":123, "system_prompt":"global prompt", "extension_dirs":["global-ext"],
-		"skill_dirs":["global-skill"], "prompt_dirs":["global-prompt"], "session_dir":"global-sessions"
+		"skill_dirs":["global-skill"], "prompt_dirs":["global-prompt"], "session_dir":"global-sessions",
+		"theme":"dracula", "thinking_level":"low", "context_window":99999, "model_cache":"custom-models.json", "model_refresh_hours":12,
+		"compaction":{"enabled":false,"reserve_tokens":1000,"keep_recent_tokens":2000}
 	}`)
 	writeJSON(t, filepath.Join(cwd, ".notch", "config.json"), `{
 		"model":"project-model", "max_tokens":456, "mcp_config":"project-mcp.json",
-		"extension_dirs":["project-ext"], "provider":"", "prompt_dirs":[]
+		"extension_dirs":["project-ext"], "provider":"", "prompt_dirs":[],
+		"thinking_level":"high", "compaction":{"keep_recent_tokens":3000}
 	}`)
 
 	cfg, err := Load(home, cwd)
@@ -58,6 +74,9 @@ func TestLoadMergesUserThenProject(t *testing.T) {
 	if cfg.SystemPrompt != "global prompt" || cfg.MCPConfig != "project-mcp.json" || cfg.SessionDir != "global-sessions" {
 		t.Fatalf("scalar inheritance failed: %+v", cfg)
 	}
+	if cfg.Theme != "dracula" || cfg.ThinkingLevel != "high" || cfg.ContextWindow != 99999 || cfg.ModelCache != "custom-models.json" || cfg.ModelRefreshHours != 12 || cfg.Compaction == nil || cfg.Compaction.Enabled == nil || *cfg.Compaction.Enabled || cfg.Compaction.ReserveTokens != 1000 || cfg.Compaction.KeepRecentTokens != 3000 {
+		t.Fatalf("theme/thinking/compaction merge failed: %+v", cfg)
+	}
 	if !reflect.DeepEqual(cfg.ExtensionDirs, []string{"project-ext"}) ||
 		!reflect.DeepEqual(cfg.SkillDirs, []string{"global-skill"}) ||
 		!reflect.DeepEqual(cfg.PromptDirs, []string{"global-prompt"}) {
@@ -66,6 +85,7 @@ func TestLoadMergesUserThenProject(t *testing.T) {
 }
 
 func TestLoadMissingAndMalformed(t *testing.T) {
+	clearRuntimeConfigEnv(t)
 	t.Setenv("NOTCH_HOME", "")
 	if _, err := Load(t.TempDir(), t.TempDir()); err != nil {
 		t.Fatalf("missing configs should be ignored: %v", err)
@@ -80,6 +100,7 @@ func TestLoadMissingAndMalformed(t *testing.T) {
 }
 
 func TestLoadUsesNotchHomeForUserConfig(t *testing.T) {
+	clearRuntimeConfigEnv(t)
 	home, cwd, custom := t.TempDir(), t.TempDir(), t.TempDir()
 	t.Setenv("NOTCH_HOME", custom)
 	writeJSON(t, filepath.Join(home, ".notch", "config.json"), `{"model":"wrong"}`)
@@ -90,6 +111,35 @@ func TestLoadUsesNotchHomeForUserConfig(t *testing.T) {
 	}
 	if cfg.Model != "right" {
 		t.Fatalf("model = %q, want config below NOTCH_HOME", cfg.Model)
+	}
+}
+
+func TestLoadEnvironmentOverridesFilesAndEmptyValuesFallBack(t *testing.T) {
+	clearRuntimeConfigEnv(t)
+	home, cwd := t.TempDir(), t.TempDir()
+	t.Setenv("NOTCH_HOME", "")
+	writeJSON(t, filepath.Join(cwd, ".notch", "config.json"), `{"provider":"anthropic","model":"file-model","thinking_level":"low"}`)
+	t.Setenv("NOTCH_PROVIDER", " openrouter ")
+	t.Setenv("NOTCH_MODEL", " env-model ")
+	t.Setenv("NOTCH_THINKING_LEVEL", " high ")
+
+	cfg, err := Load(home, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Provider != "openrouter" || cfg.Model != "env-model" || cfg.ThinkingLevel != "high" {
+		t.Fatalf("environment overrides = %+v", cfg)
+	}
+
+	t.Setenv("NOTCH_PROVIDER", "")
+	t.Setenv("NOTCH_MODEL", "  ")
+	t.Setenv("NOTCH_THINKING_LEVEL", "")
+	cfg, err = Load(home, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Provider != "anthropic" || cfg.Model != "file-model" || cfg.ThinkingLevel != "low" {
+		t.Fatalf("empty environment values did not fall back: %+v", cfg)
 	}
 }
 
@@ -126,6 +176,13 @@ func TestEnsureDirsReportsFileConflict(t *testing.T) {
 	err := EnsureDirs(Config{SessionDir: filepath.Join(path, "child")})
 	if err == nil || !strings.Contains(err.Error(), filepath.Join(path, "child")) {
 		t.Fatalf("expected path-bearing directory error, got %v", err)
+	}
+}
+
+func clearRuntimeConfigEnv(t *testing.T) {
+	t.Helper()
+	for _, name := range []string{"NOTCH_PROVIDER", "NOTCH_MODEL", "NOTCH_THINKING_LEVEL"} {
+		t.Setenv(name, "")
 	}
 }
 

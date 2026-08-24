@@ -30,10 +30,11 @@ type Skill struct {
 
 // Template is a markdown prompt template.
 type Template struct {
-	Name        string
-	Description string
-	Content     string
-	Path        string
+	Name         string
+	Description  string
+	ArgumentHint string
+	Content      string
+	Path         string
 }
 
 // Catalog contains resources keyed by their command name.
@@ -64,7 +65,7 @@ func Load(skillDirs, promptDirs []string) (*Catalog, error) {
 			if strings.EqualFold(filepath.Base(path), "SKILL.md") {
 				fallback = filepath.Base(filepath.Dir(path))
 			}
-			name, description, content, err := readMarkdown(path, fallback)
+			name, description, _, content, err := readMarkdown(path, fallback)
 			if err != nil {
 				loadErrors = append(loadErrors, fmt.Errorf("load skill %s: %w", path, err))
 				continue
@@ -81,12 +82,12 @@ func Load(skillDirs, promptDirs []string) (*Catalog, error) {
 		}
 		for _, path := range paths {
 			fallback := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-			name, description, content, err := readMarkdown(path, fallback)
+			name, description, argumentHint, content, err := readMarkdown(path, fallback)
 			if err != nil {
 				loadErrors = append(loadErrors, fmt.Errorf("load prompt template %s: %w", path, err))
 				continue
 			}
-			catalog.Templates[name] = Template{Name: name, Description: description, Content: content, Path: path}
+			catalog.Templates[name] = Template{Name: name, Description: description, ArgumentHint: argumentHint, Content: content, Path: path}
 		}
 	}
 
@@ -146,30 +147,33 @@ func templatePaths(dir string) ([]string, error) {
 }
 
 // readMarkdown reads the small YAML-like front matter understood by Notch. It
-// deliberately supports only scalar name and description fields, avoiding a
-// YAML dependency for these two metadata values.
-func readMarkdown(path, fallbackName string) (name, description, content string, err error) {
+// deliberately supports only a few scalar fields, avoiding a YAML dependency.
+func readMarkdown(path, fallbackName string) (name, description, argumentHint, content string, err error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", "", "", err
+		return "", "", "", "", err
 	}
+	return parseMarkdown(data, fallbackName)
+}
+
+func parseMarkdown(data []byte, fallbackName string) (name, description, argumentHint, content string, err error) {
 	name = fallbackName
 	content = string(data)
 
 	// Accept both Unix and Windows line endings while preserving body text.
 	normalized := strings.ReplaceAll(content, "\r\n", "\n")
 	if !strings.HasPrefix(normalized, "---\n") {
-		return name, "", content, nil
+		return name, "", "", content, nil
 	}
 	end := strings.Index(normalized[4:], "\n---")
 	if end < 0 {
-		return "", "", "", errors.New("unterminated front matter")
+		return "", "", "", "", errors.New("unterminated front matter")
 	}
 	end += 4
 	// The closing delimiter must occupy its complete line.
 	afterDelimiter := normalized[end+4:]
 	if afterDelimiter != "" && !strings.HasPrefix(afterDelimiter, "\n") {
-		return "", "", "", errors.New("invalid front matter delimiter")
+		return "", "", "", "", errors.New("invalid front matter delimiter")
 	}
 
 	metadata := normalized[4:end]
@@ -178,11 +182,12 @@ func readMarkdown(path, fallbackName string) (name, description, content string,
 		name = value
 	}
 	description = strings.TrimSpace(values["description"])
+	argumentHint = strings.TrimSpace(values["argument-hint"])
 	if strings.TrimSpace(name) == "" {
-		return "", "", "", errors.New("resource name is empty")
+		return "", "", "", "", errors.New("resource name is empty")
 	}
 	content = strings.TrimPrefix(afterDelimiter, "\n")
-	return name, description, content, nil
+	return name, description, argumentHint, content, nil
 }
 
 func parseMetadata(metadata string) map[string]string {
@@ -195,7 +200,7 @@ func parseMetadata(metadata string) map[string]string {
 		}
 		key, value, ok := strings.Cut(line, ":")
 		key = strings.ToLower(strings.TrimSpace(key))
-		if !ok || (key != "name" && key != "description") {
+		if !ok || (key != "name" && key != "description" && key != "argument-hint") {
 			continue
 		}
 		value = strings.TrimSpace(value)

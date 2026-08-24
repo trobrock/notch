@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"sort"
@@ -22,6 +23,7 @@ import (
 	"github.com/trobrock/notch/internal/luaext"
 	"github.com/trobrock/notch/internal/mcp"
 	"github.com/trobrock/notch/internal/model"
+	"github.com/trobrock/notch/internal/modelregistry"
 	"github.com/trobrock/notch/internal/oauth"
 	"github.com/trobrock/notch/internal/provider/anthropic"
 	"github.com/trobrock/notch/internal/provider/codex"
@@ -30,14 +32,16 @@ import (
 	"github.com/trobrock/notch/internal/resources"
 	"github.com/trobrock/notch/internal/session"
 	"github.com/trobrock/notch/internal/tools"
+	"github.com/trobrock/notch/internal/tui"
 	"github.com/trobrock/notch/internal/ui"
+	"golang.org/x/term"
 )
 
 var version = "dev"
 
 type options struct {
-	provider, modelName, prompt, mcpConfig                    string
-	continueSession, noSession, jsonOutput, init, showVersion bool
+	provider, modelName, prompt, mcpConfig, resumeSession            string
+	continueSession, noSession, jsonOutput, noTUI, init, showVersion bool
 }
 
 func main() {
@@ -51,6 +55,9 @@ func run(args []string) error {
 	if len(args) > 0 && (args[0] == "login" || args[0] == "logout" || args[0] == "auth") {
 		return runAuth(args)
 	}
+	if len(args) > 0 && args[0] == "models" {
+		return runListModels(args[1:])
+	}
 	var opts options
 	flags := flag.NewFlagSet("notch", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
@@ -61,8 +68,11 @@ func run(args []string) error {
 	flags.StringVar(&opts.prompt, "print", "", "run one prompt and exit")
 	flags.StringVar(&opts.mcpConfig, "mcp-config", "", "path to MCP JSON config")
 	flags.BoolVar(&opts.continueSession, "continue", false, "continue the latest session")
+	flags.StringVar(&opts.resumeSession, "resume", "", "resume a session by ID, prefix, filename, or path")
+	flags.StringVar(&opts.resumeSession, "r", "", "resume a session (shorthand)")
 	flags.BoolVar(&opts.noSession, "no-session", false, "do not save a session")
 	flags.BoolVar(&opts.jsonOutput, "json", false, "emit JSONL events")
+	flags.BoolVar(&opts.noTUI, "no-tui", false, "use the line-oriented interface")
 	flags.BoolVar(&opts.init, "init", false, "create ~/.notch and a starter config")
 	flags.BoolVar(&opts.showVersion, "version", false, "print version")
 	if err := flags.Parse(args); err != nil {
@@ -71,6 +81,12 @@ func run(args []string) error {
 	if opts.showVersion {
 		fmt.Println("notch", version)
 		return nil
+	}
+	if opts.continueSession && opts.resumeSession != "" {
+		return errors.New("--continue and --resume cannot be used together")
+	}
+	if opts.noSession && (opts.continueSession || opts.resumeSession != "") {
+		return errors.New("--no-session cannot be combined with --continue or --resume")
 	}
 	if opts.prompt == "" && flags.NArg() != 0 {
 		opts.prompt = strings.Join(flags.Args(), " ")
@@ -114,12 +130,31 @@ func run(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	terminal := ui.DefaultTerminal(cwd)
+	selectedTheme, ok := tui.ThemeByName(cfg.Theme)
+	if !ok {
+		return fmt.Errorf("unknown theme %q (available: %s)", cfg.Theme, strings.Join(tui.ThemeNames(), ", "))
+	}
+	useFullscreen := opts.prompt == "" && !opts.jsonOutput && !opts.noTUI && term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
+	sessionDir := cfg.SessionDir
+	if opts.noSession {
+		sessionDir = ""
+	}
+	var fullscreen *tui.App
+	var extensionHost extension.Host = terminal
+	if useFullscreen {
+		fullscreen = tui.NewApp(tui.AppConfig{
+			CWD: cwd, Provider: normalizeProvider(cfg.Provider), Model: cfg.Model, SessionDir: sessionDir,
+			Theme: selectedTheme, ThemeName: cfg.Theme, ThinkingLevel: cfg.ThinkingLevel,
+			GitBranch: currentGitBranch(cwd), In: os.Stdin, Out: os.Stdout,
+		})
+		extensionHost = fullscreen
+	}
 	registry := extension.NewRegistry()
 	if err := tools.RegisterBuiltins(registry, cwd); err != nil {
 		return err
 	}
 
-	plugins, warnings := extension.DiscoverAndLoad(ctx, cfg.ExtensionDirs, registry, terminal)
+	plugins, warnings := extension.DiscoverAndLoad(ctx, cfg.ExtensionDirs, registry, extensionHost)
 	defer func() {
 		for i := len(plugins) - 1; i >= 0; i-- {
 			_ = plugins[i].Close()
@@ -129,7 +164,7 @@ func run(args []string) error {
 		terminal.Notify(warning.Error(), "warning")
 	}
 
-	luaManager := luaext.New(registry, terminal)
+	luaManager := luaext.New(registry, extensionHost)
 	if err := luaManager.LoadDirs(cfg.ExtensionDirs...); err != nil {
 		terminal.Notify(err.Error(), "warning")
 	}
@@ -150,7 +185,7 @@ func run(args []string) error {
 		defer mcpManager.Close()
 	}
 
-	catalog, err := resources.Load(cfg.SkillDirs, cfg.PromptDirs)
+	catalog, err := resources.LoadBundled(cfg.SkillDiscoveryDirs(), cfg.PromptDiscoveryDirs())
 	if err != nil {
 		terminal.Notify(err.Error(), "warning")
 	}
@@ -160,13 +195,29 @@ func run(args []string) error {
 	}
 
 	credentialStore := credentials.New(cfg.AuthFile)
+	baseModelConfig := cfg
+	modelsRegistry := modelRegistryFor(cfg)
 	provider, err := makeProvider(ctx, cfg, credentialStore)
 	if err != nil {
 		return err
 	}
+	if lister, ok := provider.(model.ModelLister); ok {
+		providerName, scope := normalizeProvider(cfg.Provider), modelregistry.Scope(normalizeProvider(cfg.Provider), cfg.BaseURL)
+		go func() {
+			refreshCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			_, _ = modelsRegistry.List(refreshCtx, providerName, scope, false, lister.ListModels)
+		}()
+	}
 	var store *session.Session
 	if !opts.noSession {
-		if opts.continueSession {
+		if opts.resumeSession != "" {
+			var path string
+			path, err = session.Resolve(cfg.SessionDir, opts.resumeSession)
+			if err == nil {
+				store, err = session.Load(path)
+			}
+		} else if opts.continueSession {
 			store, err = session.Latest(cfg.SessionDir)
 		} else {
 			store, err = session.New(cfg.SessionDir, cwd, cfg.Provider, cfg.Model)
@@ -176,9 +227,76 @@ func run(args []string) error {
 		}
 		defer store.Close()
 	}
-	runner, err := agent.New(agent.Config{Provider: provider, Registry: registry, Session: store, Model: cfg.Model, SystemPrompt: systemPrompt, MaxTokens: cfg.MaxTokens})
+	compactionEnabled := true
+	reserveTokens, keepRecentTokens := 16384, 20000
+	if cfg.Compaction != nil {
+		if cfg.Compaction.Enabled != nil {
+			compactionEnabled = *cfg.Compaction.Enabled
+		}
+		if cfg.Compaction.ReserveTokens > 0 {
+			reserveTokens = cfg.Compaction.ReserveTokens
+		}
+		if cfg.Compaction.KeepRecentTokens > 0 {
+			keepRecentTokens = cfg.Compaction.KeepRecentTokens
+		}
+	}
+	contextWindow := cfg.ContextWindow
+	if contextWindow <= 0 {
+		cachedModels, _ := modelsRegistry.Cached(normalizeProvider(cfg.Provider), modelregistry.Scope(normalizeProvider(cfg.Provider), cfg.BaseURL))
+		for _, candidate := range cachedModels {
+			if candidate.ID == cfg.Model && candidate.ContextWindow > 0 {
+				contextWindow = candidate.ContextWindow
+				break
+			}
+		}
+	}
+	if contextWindow <= 0 {
+		contextWindow = contextWindowFor(cfg.Provider, cfg.Model)
+	}
+	runner, err := agent.New(agent.Config{
+		Provider: provider, Registry: registry, Session: store, Model: cfg.Model,
+		SystemPrompt: systemPrompt, MaxTokens: cfg.MaxTokens, ThinkingLevel: cfg.ThinkingLevel,
+		Compaction: agent.CompactionConfig{Enabled: compactionEnabled, ContextWindow: contextWindow, ReserveTokens: reserveTokens, KeepRecentTokens: keepRecentTokens},
+	})
 	if err != nil {
 		return err
+	}
+	if fullscreen != nil {
+		fullscreen.SetModelManager(
+			func(listCtx context.Context, providerName string, force bool) ([]modelregistry.Entry, error) {
+				return discoverModels(listCtx, modelsRegistry, baseModelConfig, credentialStore, providerName, force)
+			},
+			func(switchCtx context.Context, providerName, modelName string, discoveredWindow int) (int, error) {
+				candidate := configForProvider(baseModelConfig, providerName)
+				candidate.Model = modelName
+				nextProvider, makeErr := makeProvider(switchCtx, candidate, credentialStore)
+				if makeErr != nil {
+					return 0, makeErr
+				}
+				window := discoveredWindow
+				if baseModelConfig.ContextWindow > 0 {
+					window = baseModelConfig.ContextWindow
+				}
+				if window <= 0 {
+					window = contextWindowFor(providerName, modelName)
+				}
+				if switchErr := runner.SwitchProvider(normalizeProvider(providerName), nextProvider, modelName, window); switchErr != nil {
+					return 0, switchErr
+				}
+				cfg.Provider, cfg.Model = normalizeProvider(providerName), modelName
+				return window, nil
+			},
+		)
+		var sessionFactory func() (*session.Session, error)
+		if !opts.noSession {
+			sessionFactory = func() (*session.Session, error) { return session.New(cfg.SessionDir, cwd, cfg.Provider, cfg.Model) }
+		}
+		fullscreen.SetSessionFactory(store, sessionFactory)
+		fullscreen.Configure(runner, registry, catalog)
+		if err := fullscreen.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			return err
+		}
+		return nil
 	}
 
 	emit := terminal.Render
@@ -220,7 +338,7 @@ func run(args []string) error {
 		if input == "" {
 			continue
 		}
-		if handled, exit, commandErr := handleCommand(ctx, input, registry, catalog, terminal); handled {
+		if handled, exit, commandErr := handleCommand(ctx, input, registry, catalog, terminal, runner); handled {
 			if commandErr != nil {
 				terminal.Notify(commandErr.Error(), "error")
 			}
@@ -247,6 +365,92 @@ func run(args []string) error {
 			fmt.Println()
 		}
 	}
+}
+
+func modelRegistryFor(cfg config.Config) *modelregistry.Registry {
+	ttl := time.Duration(cfg.ModelRefreshHours) * time.Hour
+	return modelregistry.New(cfg.ModelCache, ttl)
+}
+
+func configForProvider(base config.Config, providerName string) config.Config {
+	providerName = normalizeProvider(providerName)
+	candidate := base
+	if providerName != normalizeProvider(base.Provider) {
+		candidate.BaseURL = ""
+	}
+	candidate.Provider = providerName
+	candidate.Model = defaultModelFor(providerName)
+	return candidate
+}
+
+func discoverModels(ctx context.Context, registry *modelregistry.Registry, base config.Config, store *credentials.Store, providerName string, force bool) ([]modelregistry.Entry, error) {
+	candidate := configForProvider(base, providerName)
+	instance, providerErr := makeProvider(ctx, candidate, store)
+	if providerErr != nil && normalizeProvider(providerName) == "openrouter" {
+		// OpenRouter's model catalog is public even when generation credentials
+		// have not been configured yet.
+		instance, providerErr = openrouter.New(openrouter.Config{BaseURL: candidate.BaseURL, AppName: "Notch"}), nil
+	}
+	var fetch modelregistry.Fetcher
+	if providerErr == nil {
+		if lister, ok := instance.(model.ModelLister); ok {
+			fetch = lister.ListModels
+		} else {
+			providerErr = errors.New("provider does not support model listing")
+		}
+	}
+	models, registryErr := registry.List(ctx, normalizeProvider(providerName), modelregistry.Scope(normalizeProvider(providerName), candidate.BaseURL), force, fetch)
+	return models, errors.Join(providerErr, registryErr)
+}
+
+func runListModels(args []string) error {
+	flags := flag.NewFlagSet("notch models", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	force := flags.Bool("refresh", false, "refresh the provider model cache")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() > 1 {
+		return errors.New("usage: notch models [--refresh] [provider]")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	cfg, err := config.Load(home, cwd)
+	if err != nil {
+		return err
+	}
+	providerName := cfg.Provider
+	if flags.NArg() == 1 {
+		providerName = flags.Arg(0)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	registry := modelRegistryFor(cfg)
+	models, listErr := discoverModels(ctx, registry, cfg, credentials.New(cfg.AuthFile), providerName, *force)
+	if len(models) == 0 {
+		return listErr
+	}
+	if listErr != nil {
+		fmt.Fprintln(os.Stderr, "notch: model registry:", listErr, "(showing fallback data)")
+	}
+	for _, entry := range models {
+		contextText := "-"
+		if entry.ContextWindow > 0 {
+			contextText = fmt.Sprintf("%d", entry.ContextWindow)
+		}
+		reasoning := ""
+		if entry.Reasoning {
+			reasoning = "reasoning"
+		}
+		fmt.Printf("%-16s %-42s %-10s %-10s %s\n", entry.Provider, entry.ID, contextText, reasoning, entry.Name)
+	}
+	return nil
 }
 
 func makeProvider(ctx context.Context, cfg config.Config, store *credentials.Store) (model.Provider, error) {
@@ -318,6 +522,32 @@ func defaultModelFor(provider string) string {
 	default:
 		return "gpt-5"
 	}
+}
+
+func contextWindowFor(provider, modelName string) int {
+	provider, modelName = normalizeProvider(provider), strings.ToLower(modelName)
+	switch provider {
+	case "openai-codex":
+		return 272000
+	case "anthropic":
+		if strings.Contains(modelName, "claude-") {
+			return 1000000
+		}
+		return 200000
+	case "openrouter":
+		return 128000
+	default:
+		return 128000
+	}
+}
+
+func currentGitBranch(cwd string) string {
+	command := exec.Command("git", "-C", cwd, "branch", "--show-current")
+	output, err := command.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(output))
 }
 
 func resolveCredential(ctx context.Context, store *credentials.Store, provider string) (credentials.Credential, error) {
@@ -420,13 +650,13 @@ func runAuth(args []string) error {
 	return fmt.Errorf("unknown auth command %q", args[0])
 }
 
-func handleCommand(ctx context.Context, input string, registry *extension.Registry, catalog *resources.Catalog, terminal *ui.Terminal) (handled, exit bool, err error) {
+func handleCommand(ctx context.Context, input string, registry *extension.Registry, catalog *resources.Catalog, terminal *ui.Terminal, runner *agent.Agent) (handled, exit bool, err error) {
 	name, args, _ := strings.Cut(strings.TrimPrefix(input, "/"), " ")
 	switch name {
 	case "exit", "quit":
 		return true, true, nil
 	case "help":
-		fmt.Fprintln(os.Stderr, "/help  /tools  /skills  /exit")
+		fmt.Fprintln(os.Stderr, "/help  /tools  /skills  /new  /compact  /thinking  /exit")
 		for _, command := range registry.Commands() {
 			fmt.Fprintf(os.Stderr, "/%s — %s\n", command.Name, command.Description)
 		}
@@ -436,6 +666,33 @@ func handleCommand(ctx context.Context, input string, registry *extension.Regist
 			fmt.Fprintf(os.Stderr, "%s\t%s\n", tool.Definition.Name, tool.Source)
 		}
 		return true, false, nil
+	case "new":
+		_, resetErr := runner.ResetConversation(nil)
+		if resetErr == nil {
+			fmt.Fprintln(os.Stderr, "new conversation")
+		}
+		return true, false, resetErr
+	case "compact":
+		compactErr := runner.Compact(ctx, strings.TrimSpace(args), false, terminal.Render)
+		if compactErr == nil {
+			fmt.Fprintln(os.Stderr, "context compacted")
+		}
+		if errors.Is(compactErr, agent.ErrNothingToCompact) {
+			fmt.Fprintln(os.Stderr, "nothing to compact")
+			compactErr = nil
+		}
+		return true, false, compactErr
+	case "thinking":
+		level := strings.TrimSpace(args)
+		if level == "" {
+			fmt.Fprintln(os.Stderr, runner.ThinkingLevel())
+			return true, false, nil
+		}
+		thinkingErr := runner.SetThinkingLevel(level)
+		if thinkingErr == nil {
+			fmt.Fprintln(os.Stderr, "thinking level:", level)
+		}
+		return true, false, thinkingErr
 	case "skills":
 		names := make([]string, 0, len(catalog.Skills))
 		for n := range catalog.Skills {
@@ -472,6 +729,7 @@ func initialize(home, cwd string, cfg config.Config) error {
 	}
 	data, _ := json.MarshalIndent(map[string]any{
 		"provider": cfg.Provider, "model": cfg.Model, "max_tokens": cfg.MaxTokens,
+		"theme": cfg.Theme, "thinking_level": cfg.ThinkingLevel, "compaction": cfg.Compaction,
 	}, "", "  ")
 	data = append(data, '\n')
 	if err := os.MkdirAll(root, 0o700); err != nil {

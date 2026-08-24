@@ -39,6 +39,15 @@ type Header struct {
 // Metadata is retained as a descriptive alias for Header.
 type Metadata = Header
 
+// Info is lightweight session metadata used by resume pickers.
+type Info struct {
+	Path         string
+	Header       Header
+	ModifiedAt   time.Time
+	MessageCount int
+	Preview      string
+}
+
 // Entry is the on-disk representation used by AppendMessage. Other kinds of
 // entries may be appended with AppendEntry and are retained in Session.Entries.
 type Entry struct {
@@ -55,9 +64,25 @@ type CustomEntry struct {
 	Data      any       `json:"data"`
 }
 
+// CompactionEntry replaces the conversation context with a compacted summary
+// and the messages needed to continue the conversation.
+type CompactionEntry struct {
+	Type      string          `json:"type"`
+	Timestamp time.Time       `json:"timestamp"`
+	Summary   string          `json:"summary"`
+	Messages  []model.Message `json:"messages"`
+	Auto      bool            `json:"auto"`
+}
+
+// ResetEntry clears the conversation context.
+type ResetEntry struct {
+	Type      string    `json:"type"`
+	Timestamp time.Time `json:"timestamp"`
+}
+
 // Session is a loaded or newly-created session. Entries contains the exact
-// JSON for every record after the header, and Messages contains message
-// records in file order.
+// JSON for every record after the header, and Messages contains the effective
+// conversation context after applying message, compaction, and reset records.
 type Session struct {
 	Header   Header
 	Metadata Metadata
@@ -128,6 +153,111 @@ func Load(path string) (*Session, error) {
 	return s, nil
 }
 
+// List returns valid sessions ordered from most recently modified to oldest.
+func List(dir string) ([]Info, error) {
+	items, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("read session directory %q: %w", dir, err)
+	}
+	infos := make([]Info, 0, len(items))
+	for _, item := range items {
+		if item.IsDir() || !strings.HasSuffix(item.Name(), fileExtension) {
+			continue
+		}
+		path := filepath.Join(dir, item.Name())
+		stat, err := item.Info()
+		if err != nil {
+			return nil, fmt.Errorf("stat session %q: %w", path, err)
+		}
+		file, err := os.Open(path)
+		if err != nil {
+			return nil, fmt.Errorf("inspect session %q: %w", path, err)
+		}
+		loaded := &Session{path: path}
+		decodeErr := loaded.decode(file)
+		closeErr := file.Close()
+		if decodeErr != nil {
+			return nil, fmt.Errorf("inspect session %q: %w", path, decodeErr)
+		}
+		if closeErr != nil {
+			return nil, fmt.Errorf("close session %q: %w", path, closeErr)
+		}
+		info := Info{Path: path, Header: loaded.Header, ModifiedAt: stat.ModTime(), MessageCount: len(loaded.Messages)}
+		info.Preview = sessionPreview(loaded.Messages)
+		infos = append(infos, info)
+	}
+	sort.Slice(infos, func(i, j int) bool {
+		if infos[i].ModifiedAt.Equal(infos[j].ModifiedAt) {
+			return infos[i].Header.ID > infos[j].Header.ID
+		}
+		return infos[i].ModifiedAt.After(infos[j].ModifiedAt)
+	})
+	return infos, nil
+}
+
+// Resolve finds a session by exact path, ID, filename, or an unambiguous ID prefix.
+func Resolve(dir, query string) (string, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return "", errors.New("resume session: empty session")
+	}
+	if strings.ContainsRune(query, filepath.Separator) || filepath.IsAbs(query) {
+		path := query
+		if !filepath.IsAbs(path) {
+			path = filepath.Clean(path)
+		}
+		if _, err := os.Stat(path); err != nil {
+			return "", fmt.Errorf("resume session %q: %w", query, err)
+		}
+		return path, nil
+	}
+	infos, err := List(dir)
+	if err != nil {
+		return "", err
+	}
+	var matches []string
+	for _, info := range infos {
+		filename := filepath.Base(info.Path)
+		base := strings.TrimSuffix(filename, fileExtension)
+		if query == info.Header.ID || query == filename || query == base {
+			return info.Path, nil
+		}
+		if strings.HasPrefix(info.Header.ID, query) || strings.HasPrefix(base, query) {
+			matches = append(matches, info.Path)
+		}
+	}
+	if len(matches) == 1 {
+		return matches[0], nil
+	}
+	if len(matches) > 1 {
+		return "", fmt.Errorf("resume session %q: ambiguous prefix (%d matches)", query, len(matches))
+	}
+	return "", fmt.Errorf("resume session %q: not found", query)
+}
+
+func sessionPreview(messages []model.Message) string {
+	for _, message := range messages {
+		if message.Role != "user" {
+			continue
+		}
+		for _, block := range message.Content {
+			if block.Type != "text" {
+				continue
+			}
+			preview := strings.Join(strings.Fields(block.Text), " ")
+			if preview == "" {
+				continue
+			}
+			runes := []rune(preview)
+			if len(runes) > 80 {
+				preview = string(runes[:79]) + "…"
+			}
+			return preview
+		}
+	}
+	return "(empty session)"
+}
+
 // Latest loads the most recently modified session JSONL file in dir.
 func Latest(dir string) (*Session, error) {
 	items, err := os.ReadDir(dir)
@@ -171,6 +301,38 @@ func (s *Session) AppendMessage(message model.Message) error {
 	}
 	return s.appendLine(line, func() {
 		s.Messages = append(s.Messages, message)
+		s.Entries = append(s.Entries, cloneRaw(line[:len(line)-1]))
+	})
+}
+
+// AppendCompaction durably appends a compaction record, then replaces the
+// in-memory conversation context with an independent copy of messages.
+func (s *Session) AppendCompaction(summary string, messages []model.Message, auto bool) error {
+	snapshot := cloneMessages(messages)
+	entry := CompactionEntry{
+		Type: "compaction", Timestamp: time.Now().UTC(), Summary: summary,
+		Messages: snapshot, Auto: auto,
+	}
+	line, err := marshalLine(entry)
+	if err != nil {
+		return fmt.Errorf("encode compaction: %w", err)
+	}
+	return s.appendLine(line, func() {
+		s.Messages = snapshot
+		s.Entries = append(s.Entries, cloneRaw(line[:len(line)-1]))
+	})
+}
+
+// AppendReset durably appends a reset record, then clears the in-memory
+// conversation context.
+func (s *Session) AppendReset() error {
+	entry := ResetEntry{Type: "reset", Timestamp: time.Now().UTC()}
+	line, err := marshalLine(entry)
+	if err != nil {
+		return fmt.Errorf("encode reset: %w", err)
+	}
+	return s.appendLine(line, func() {
+		s.Messages = nil
 		s.Entries = append(s.Entries, cloneRaw(line[:len(line)-1]))
 	})
 }
@@ -282,7 +444,8 @@ func (s *Session) decode(r io.Reader) error {
 				if discriminator.Type == "metadata" || discriminator.Type == "session" {
 					return fmt.Errorf("line %d: metadata header may only appear on line 1", lineNumber)
 				}
-				if discriminator.Type == "message" {
+				switch discriminator.Type {
+				case "message":
 					var entry Entry
 					if decodeErr := decodeStrict(trimmed, &entry); decodeErr != nil {
 						return fmt.Errorf("line %d: invalid message entry: %w", lineNumber, decodeErr)
@@ -291,6 +454,18 @@ func (s *Session) decode(r io.Reader) error {
 						return fmt.Errorf("line %d: message entry has no message", lineNumber)
 					}
 					s.Messages = append(s.Messages, *entry.Message)
+				case "compaction":
+					var entry CompactionEntry
+					if decodeErr := decodeStrict(trimmed, &entry); decodeErr != nil {
+						return fmt.Errorf("line %d: invalid compaction entry: %w", lineNumber, decodeErr)
+					}
+					s.Messages = cloneMessages(entry.Messages)
+				case "reset":
+					var entry ResetEntry
+					if decodeErr := decodeStrict(trimmed, &entry); decodeErr != nil {
+						return fmt.Errorf("line %d: invalid reset entry: %w", lineNumber, decodeErr)
+					}
+					s.Messages = nil
 				}
 				s.Entries = append(s.Entries, cloneRaw(trimmed))
 			}
@@ -383,4 +558,22 @@ func validateOneJSON(data []byte) error {
 
 func cloneRaw(data []byte) json.RawMessage {
 	return append(json.RawMessage(nil), data...)
+}
+
+func cloneMessages(messages []model.Message) []model.Message {
+	if messages == nil {
+		return nil
+	}
+	cloned := make([]model.Message, len(messages))
+	for i, message := range messages {
+		cloned[i].Role = message.Role
+		if message.Content != nil {
+			cloned[i].Content = make([]model.Block, len(message.Content))
+			copy(cloned[i].Content, message.Content)
+			for j := range cloned[i].Content {
+				cloned[i].Content[j].Arguments = cloneRaw(message.Content[j].Arguments)
+			}
+		}
+	}
+	return cloned
 }

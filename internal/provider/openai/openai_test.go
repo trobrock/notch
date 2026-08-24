@@ -14,6 +14,59 @@ import (
 	"github.com/trobrock/notch/internal/model"
 )
 
+func TestRequestBodyReasoningLevels(t *testing.T) {
+	for _, tc := range []struct {
+		level      string
+		wantEffort string
+	}{
+		{level: "off"},
+		{level: "medium", wantEffort: "medium"},
+		{level: "xhigh", wantEffort: "xhigh"},
+		{level: "invalid"},
+	} {
+		t.Run(tc.level, func(t *testing.T) {
+			body, err := json.Marshal(makeRequest(model.Request{Model: "gpt-test", ReasoningLevel: tc.level}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var request map[string]any
+			if err := json.Unmarshal(body, &request); err != nil {
+				t.Fatal(err)
+			}
+			reasoning, present := request["reasoning"].(map[string]any)
+			if tc.wantEffort == "" {
+				if present {
+					t.Fatalf("reasoning must be omitted: %s", body)
+				}
+			} else if !present || reasoning["effort"] != tc.wantEffort || reasoning["summary"] != "auto" {
+				t.Fatalf("reasoning = %#v, want effort %q with summary", request["reasoning"], tc.wantEffort)
+			}
+			if _, present := request["temperature"]; present {
+				t.Fatalf("temperature must be omitted: %s", body)
+			}
+		})
+	}
+}
+
+func TestListModels(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" || r.Header.Get("Authorization") != "Bearer secret" {
+			t.Errorf("request = %s auth=%q", r.URL.Path, r.Header.Get("Authorization"))
+		}
+		fmt.Fprint(w, `{"data":[{"id":"gpt-5"},{"id":"text-embedding-3-small"}]}`)
+	}))
+	defer server.Close()
+	provider := New(Config{APIKey: "secret", BaseURL: server.URL, HTTPClient: server.Client()})
+	models, err := provider.(model.ModelLister).ListModels(context.Background())
+	if err != nil || len(models) != 2 || models[0].ID != "gpt-5" || !models[0].Reasoning {
+		t.Fatalf("models = %#v, %v", models, err)
+	}
+	codex := New(Config{CodexMode: true})
+	if _, err := codex.(model.ModelLister).ListModels(context.Background()); err == nil {
+		t.Fatal("codex listing unexpectedly succeeded")
+	}
+}
+
 func TestStreamTextFunctionCallAndUsage(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/responses" {
@@ -102,6 +155,33 @@ func TestStreamTextFunctionCallAndUsage(t *testing.T) {
 	}
 	if fmt.Sprint(streamed) != fmt.Sprint(wantEvents) {
 		t.Errorf("stream events = %#v, want %#v", streamed, wantEvents)
+	}
+}
+
+func TestStreamReasoningSummary(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, data := range []string{
+			`{"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"r-1","summary":[]}}`,
+			`{"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"Checked "}`,
+			`{"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"the files."}`,
+			`{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"r-1","summary":[{"type":"summary_text","text":"Checked the files."}]}}`,
+			`{"type":"response.completed","response":{"status":"completed"}}`,
+		} {
+			fmt.Fprintf(w, "data: %s\n\n", data)
+		}
+	}))
+	defer server.Close()
+	var events []model.StreamEvent
+	response, err := New(Config{BaseURL: server.URL, HTTPClient: server.Client()}).Stream(context.Background(), model.Request{ReasoningLevel: "medium"}, func(event model.StreamEvent) { events = append(events, event) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Content) != 1 || response.Content[0].Type != "thinking" || response.Content[0].Text != "Checked the files." {
+		t.Fatalf("content = %#v", response.Content)
+	}
+	if got := fmt.Sprint(events); got != fmt.Sprint([]model.StreamEvent{{Type: "thinking_delta", Text: "Checked "}, {Type: "thinking_delta", Text: "the files."}}) {
+		t.Fatalf("events = %#v", events)
 	}
 }
 

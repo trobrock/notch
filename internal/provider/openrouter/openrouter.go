@@ -52,12 +52,17 @@ func New(cfg Config) model.Provider {
 }
 
 type wireRequest struct {
-	Model         string        `json:"model"`
-	Messages      []wireMessage `json:"messages"`
-	Tools         []wireTool    `json:"tools,omitempty"`
-	MaxTokens     int           `json:"max_tokens,omitempty"`
-	Stream        bool          `json:"stream"`
-	StreamOptions streamOptions `json:"stream_options"`
+	Model         string         `json:"model"`
+	Messages      []wireMessage  `json:"messages"`
+	Tools         []wireTool     `json:"tools,omitempty"`
+	MaxTokens     int            `json:"max_tokens,omitempty"`
+	Reasoning     *wireReasoning `json:"reasoning,omitempty"`
+	Stream        bool           `json:"stream"`
+	StreamOptions streamOptions  `json:"stream_options"`
+}
+
+type wireReasoning struct {
+	Effort string `json:"effort"`
 }
 
 type streamOptions struct {
@@ -91,6 +96,22 @@ type wireToolFunction struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description,omitempty"`
 	Parameters  map[string]any `json:"parameters"`
+}
+
+func validReasoningLevel(level string) bool {
+	switch level {
+	case "", "off", "minimal", "low", "medium", "high", "xhigh":
+		return true
+	default:
+		return false
+	}
+}
+
+func reasoningForLevel(level string) *wireReasoning {
+	if level == "" || level == "off" || !validReasoningLevel(level) {
+		return nil
+	}
+	return &wireReasoning{Effort: level}
 }
 
 func makeRequest(req model.Request) wireRequest {
@@ -169,7 +190,7 @@ func makeRequest(req model.Request) wireRequest {
 	}
 	return wireRequest{
 		Model: req.Model, Messages: messages, Tools: tools, MaxTokens: req.MaxTokens,
-		Stream: true, StreamOptions: streamOptions{IncludeUsage: true},
+		Reasoning: reasoningForLevel(req.ReasoningLevel), Stream: true, StreamOptions: streamOptions{IncludeUsage: true},
 	}
 }
 
@@ -187,8 +208,10 @@ type streamEnvelope struct {
 	Choices []struct {
 		Index int `json:"index"`
 		Delta struct {
-			Content   string           `json:"content"`
-			ToolCalls []streamToolCall `json:"tool_calls"`
+			Content          string           `json:"content"`
+			Reasoning        string           `json:"reasoning"`
+			ReasoningContent string           `json:"reasoning_content"`
+			ToolCalls        []streamToolCall `json:"tool_calls"`
 		} `json:"delta"`
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
@@ -211,7 +234,60 @@ type accumulatedCall struct {
 	arguments strings.Builder
 }
 
+func (p *provider) ListModels(ctx context.Context) ([]model.ModelInfo, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+"/models", nil)
+	if err != nil {
+		return nil, fmt.Errorf("openrouter: create model-list request: %w", err)
+	}
+	if p.apiKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
+	}
+	if p.appName != "" {
+		httpReq.Header.Set("X-Title", p.appName)
+	}
+	if p.referer != "" {
+		httpReq.Header.Set("HTTP-Referer", p.referer)
+	}
+	httpResp, err := p.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("openrouter: list models: %w", err)
+	}
+	defer httpResp.Body.Close()
+	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+		return nil, httpStatusError(httpResp)
+	}
+	var envelope struct {
+		Data []struct {
+			ID                  string   `json:"id"`
+			Name                string   `json:"name"`
+			ContextLength       int      `json:"context_length"`
+			SupportedParameters []string `json:"supported_parameters"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(io.LimitReader(httpResp.Body, 32<<20)).Decode(&envelope); err != nil {
+		return nil, fmt.Errorf("openrouter: decode model list: %w", err)
+	}
+	models := make([]model.ModelInfo, 0, len(envelope.Data))
+	for _, item := range envelope.Data {
+		if strings.TrimSpace(item.ID) == "" {
+			continue
+		}
+		reasoning := false
+		for _, parameter := range item.SupportedParameters {
+			if parameter == "reasoning" || parameter == "include_reasoning" {
+				reasoning = true
+				break
+			}
+		}
+		models = append(models, model.ModelInfo{ID: item.ID, Name: item.Name, ContextWindow: item.ContextLength, Reasoning: reasoning})
+	}
+	return models, nil
+}
+
 func (p *provider) Stream(ctx context.Context, req model.Request, onEvent func(model.StreamEvent)) (model.Response, error) {
+	if !validReasoningLevel(req.ReasoningLevel) {
+		return model.Response{}, fmt.Errorf("openrouter: invalid reasoning level %q", req.ReasoningLevel)
+	}
 	body, err := json.Marshal(makeRequest(req))
 	if err != nil {
 		return model.Response{}, fmt.Errorf("openrouter: encode request: %w", err)
@@ -245,7 +321,7 @@ func (p *provider) Stream(ctx context.Context, req model.Request, onEvent func(m
 	}
 
 	var result model.Response
-	var text strings.Builder
+	var thinking, text strings.Builder
 	calls := make(map[int]*accumulatedCall)
 	err = readSSE(httpResp.Body, func(event, data string) (bool, error) {
 		if err := ctx.Err(); err != nil {
@@ -272,6 +348,16 @@ func (p *provider) Stream(ctx context.Context, req model.Request, onEvent func(m
 			// alternatives rather than combining independent answers.
 			if choice.Index != 0 {
 				continue
+			}
+			reasoning := choice.Delta.Reasoning
+			if reasoning == "" {
+				reasoning = choice.Delta.ReasoningContent
+			}
+			if reasoning != "" {
+				thinking.WriteString(reasoning)
+				if onEvent != nil {
+					onEvent(model.StreamEvent{Type: "thinking_delta", Text: reasoning})
+				}
 			}
 			if choice.Delta.Content != "" {
 				text.WriteString(choice.Delta.Content)
@@ -308,6 +394,9 @@ func (p *provider) Stream(ctx context.Context, req model.Request, onEvent func(m
 		return model.Response{}, ctxErr
 	}
 
+	if thinking.Len() != 0 {
+		result.Content = append(result.Content, model.Block{Type: "thinking", Text: thinking.String()})
+	}
 	if text.Len() != 0 {
 		result.Content = append(result.Content, model.Block{Type: "text", Text: text.String()})
 	}

@@ -3,10 +3,15 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/trobrock/notch/internal/extension"
 	"github.com/trobrock/notch/internal/model"
+	"github.com/trobrock/notch/internal/session"
 )
 
 type fakeProvider struct{ calls int }
@@ -16,6 +21,7 @@ func (f *fakeProvider) Stream(_ context.Context, req model.Request, emit func(mo
 	if f.calls == 1 {
 		return model.Response{Content: []model.Block{{Type: "tool_use", ID: "1", Name: "echo", Arguments: json.RawMessage(`{"value":"hello"}`)}}, StopReason: "tool_use"}, nil
 	}
+	emit(model.StreamEvent{Type: "thinking_delta", Text: "checked"})
 	emit(model.StreamEvent{Type: "text_delta", Text: "done"})
 	return model.Response{Content: []model.Block{{Type: "text", Text: "done"}}, StopReason: "end_turn"}, nil
 }
@@ -33,10 +39,17 @@ func TestPromptExecutesToolAndContinues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var text string
+	var text, thinking string
+	var toolArgs json.RawMessage
 	if err := a.Prompt(context.Background(), "go", func(e Event) {
 		if e.Type == "text_delta" {
 			text += e.Text
+		}
+		if e.Type == "thinking_delta" {
+			thinking += e.Text
+		}
+		if e.Type == "tool_start" {
+			toolArgs = append(json.RawMessage(nil), e.Arguments...)
 		}
 	}); err != nil {
 		t.Fatal(err)
@@ -44,12 +57,303 @@ func TestPromptExecutesToolAndContinues(t *testing.T) {
 	if provider.calls != 2 {
 		t.Fatalf("provider calls = %d", provider.calls)
 	}
-	if text != "done" {
-		t.Fatalf("text = %q", text)
+	if text != "done" || thinking != "checked" {
+		t.Fatalf("text = %q, thinking = %q", text, thinking)
+	}
+	if string(toolArgs) != `{"value":"hello"}` {
+		t.Fatalf("tool arguments = %s", toolArgs)
 	}
 	messages := a.Messages()
 	if len(messages) != 4 || messages[2].Content[0].Type != "tool_result" {
 		t.Fatalf("unexpected messages: %#v", messages)
+	}
+}
+
+type recordingProvider struct {
+	mu       sync.Mutex
+	requests []model.Request
+	block    <-chan struct{}
+}
+
+func (p *recordingProvider) Stream(ctx context.Context, req model.Request, _ func(model.StreamEvent)) (model.Response, error) {
+	p.mu.Lock()
+	p.requests = append(p.requests, req)
+	p.mu.Unlock()
+	if p.block != nil {
+		select {
+		case <-p.block:
+		case <-ctx.Done():
+			return model.Response{}, ctx.Err()
+		}
+	}
+	text := "done"
+	if len(req.Tools) == 0 && len(req.Messages) == 1 && req.SystemPrompt != "" {
+		text = "old work summarized"
+	}
+	return model.Response{Content: []model.Block{{Type: "text", Text: text}}, InputTokens: 20}, nil
+}
+
+func TestSteeringAndFollowUpQueues(t *testing.T) {
+	started, release := make(chan struct{}), make(chan struct{})
+	provider := &queueTestProvider{started: started, release: release}
+	a, err := New(Config{Provider: provider, Registry: extension.NewRegistry(), Model: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Steer("too early"); err == nil {
+		t.Fatal("idle steering succeeded")
+	}
+	var mu sync.Mutex
+	var events []Event
+	done := make(chan error, 1)
+	go func() {
+		done <- a.Prompt(context.Background(), "initial", func(event Event) { mu.Lock(); events = append(events, event); mu.Unlock() })
+	}()
+	<-started
+	steer, err := a.Steer("change direction")
+	if err != nil {
+		t.Fatal(err)
+	}
+	follow, err := a.FollowUp("then summarize")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if steer.Mode != "steer" || follow.Mode != "follow_up" || steer.ID == follow.ID {
+		t.Fatalf("queued = %#v / %#v", steer, follow)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	messages := a.Messages()
+	if len(messages) != 6 || messages[2].Content[0].Text != "change direction" || messages[4].Content[0].Text != "then summarize" {
+		t.Fatalf("messages = %#v", messages)
+	}
+	provider.mu.Lock()
+	requests := append([]model.Request(nil), provider.requests...)
+	provider.mu.Unlock()
+	if len(requests) != 3 || requests[1].Messages[len(requests[1].Messages)-1].Content[0].Text != "change direction" || requests[2].Messages[len(requests[2].Messages)-1].Content[0].Text != "then summarize" {
+		t.Fatalf("requests = %#v", requests)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	var delivered []string
+	for _, event := range events {
+		if event.Type == "queue_delivered" && event.Queued != nil {
+			delivered = append(delivered, event.Queued.Mode)
+		}
+	}
+	if strings.Join(delivered, ",") != "steer,follow_up" {
+		t.Fatalf("delivered = %#v events=%#v", delivered, events)
+	}
+}
+
+type queueTestProvider struct {
+	mu       sync.Mutex
+	requests []model.Request
+	started  chan struct{}
+	release  chan struct{}
+	calls    int
+}
+
+func (p *queueTestProvider) Stream(ctx context.Context, request model.Request, _ func(model.StreamEvent)) (model.Response, error) {
+	p.mu.Lock()
+	p.calls++
+	call := p.calls
+	p.requests = append(p.requests, request)
+	p.mu.Unlock()
+	if call == 1 {
+		close(p.started)
+		select {
+		case <-p.release:
+		case <-ctx.Done():
+			return model.Response{}, ctx.Err()
+		}
+	}
+	return model.Response{Content: []model.Block{{Type: "text", Text: fmt.Sprintf("answer-%d", call)}}, StopReason: "end_turn"}, nil
+}
+
+func TestThinkingLevelForwardedAndSetDoesNotWaitForPrompt(t *testing.T) {
+	blocked := make(chan struct{})
+	provider := &recordingProvider{block: blocked}
+	a, err := New(Config{Provider: provider, Registry: extension.NewRegistry(), Model: "fake", ThinkingLevel: "low"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- a.Prompt(context.Background(), "go", nil) }()
+	for deadline := time.Now().Add(time.Second); ; {
+		provider.mu.Lock()
+		started := len(provider.requests) != 0
+		provider.mu.Unlock()
+		if started {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("prompt did not reach provider")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	setDone := make(chan error, 1)
+	go func() { setDone <- a.SetThinkingLevel("xhigh") }()
+	select {
+	case err := <-setDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("SetThinkingLevel waited for active Prompt")
+	}
+	close(blocked)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	provider.mu.Lock()
+	got := provider.requests[0].ReasoningLevel
+	provider.mu.Unlock()
+	if got != "low" {
+		t.Fatalf("reasoning level = %q", got)
+	}
+}
+
+func TestManualCompactionPersists(t *testing.T) {
+	store, err := session.New(t.TempDir(), t.TempDir(), "fake", "fake")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	for _, message := range []model.Message{
+		model.TextMessage("user", "old task"), model.TextMessage("assistant", "old answer"),
+		model.TextMessage("user", "recent task"), model.TextMessage("assistant", "recent answer"),
+	} {
+		if err := store.AppendMessage(message); err != nil {
+			t.Fatal(err)
+		}
+	}
+	provider := &recordingProvider{}
+	a, err := New(Config{
+		Provider: provider, Registry: extension.NewRegistry(), Session: store, Model: "fake",
+		Compaction: CompactionConfig{Enabled: false, ContextWindow: 128000, ReserveTokens: 16384, KeepRecentTokens: 20000},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Compact(context.Background(), "focus on files", false, nil); err != nil {
+		t.Fatal(err)
+	}
+	var entry session.CompactionEntry
+	if err := json.Unmarshal(store.Entries[len(store.Entries)-1], &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry.Type != "compaction" || entry.Auto || entry.Summary != "old work summarized" {
+		t.Fatalf("unexpected compaction entry: %#v", entry)
+	}
+}
+
+func TestAutomaticCompactionAndReset(t *testing.T) {
+	store, err := session.New(t.TempDir(), t.TempDir(), "fake", "fake")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	for _, message := range []model.Message{
+		model.TextMessage("user", "first task with substantial old context"),
+		model.TextMessage("assistant", "first answer with substantial old context"),
+		model.TextMessage("user", "recent task"),
+	} {
+		if err := store.AppendMessage(message); err != nil {
+			t.Fatal(err)
+		}
+	}
+	provider := &recordingProvider{}
+	a, err := New(Config{
+		Provider: provider, Registry: extension.NewRegistry(), Session: store, Model: "fake",
+		Compaction: CompactionConfig{Enabled: true, ContextWindow: 50, ReserveTokens: 10, KeepRecentTokens: 20},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var starts, ends int
+	if err := a.Prompt(context.Background(), "newest task", func(event Event) {
+		if event.Type == "compaction_start" && event.Auto {
+			starts++
+		}
+		if event.Type == "compaction_end" && event.Auto {
+			ends++
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if starts != 1 || ends != 1 {
+		t.Fatalf("compaction events = %d/%d", starts, ends)
+	}
+	messages := a.Messages()
+	if len(messages) < 2 || messages[0].Content[0].Text[:22] != "[Conversation summary]" {
+		t.Fatalf("messages were not compacted: %#v", messages)
+	}
+	if messages[1].Content[0].Type == "tool_result" {
+		t.Fatal("recent context starts with a tool result")
+	}
+	if _, err := a.ResetConversation(store); err != nil {
+		t.Fatal(err)
+	}
+	if len(a.Messages()) != 0 || len(store.Messages) != 0 {
+		t.Fatal("reset did not clear conversation")
+	}
+}
+
+func TestSwitchProviderPreservesContextAndRecordsSession(t *testing.T) {
+	store, err := session.New(t.TempDir(), "/work", "old", "old-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.AppendMessage(model.TextMessage("user", "keep me")); err != nil {
+		t.Fatal(err)
+	}
+	oldProvider, nextProvider := &recordingProvider{}, &recordingProvider{}
+	a, err := New(Config{Provider: oldProvider, Registry: extension.NewRegistry(), Model: "old-model", Session: store, Compaction: CompactionConfig{ContextWindow: 100}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.SwitchProvider("new", nextProvider, "new-model", 999); err != nil {
+		t.Fatal(err)
+	}
+	if len(a.Messages()) != 1 || a.Messages()[0].Content[0].Text != "keep me" || a.model != "new-model" || a.provider != nextProvider || a.compaction.ContextWindow != 999 {
+		t.Fatalf("switched agent = %#v", a)
+	}
+	if len(store.Entries) != 2 || !strings.Contains(string(store.Entries[1]), `"type":"model_change"`) {
+		t.Fatalf("session entries = %s", store.Entries)
+	}
+}
+
+func TestResumeSessionRestoresMessages(t *testing.T) {
+	oldSession, err := session.New(t.TempDir(), "/old", "p", "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer oldSession.Close()
+	nextSession, err := session.New(t.TempDir(), "/next", "p", "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nextSession.Close()
+	if err := nextSession.AppendMessage(model.TextMessage("user", "restored")); err != nil {
+		t.Fatal(err)
+	}
+	a, err := New(Config{Provider: &recordingProvider{}, Registry: extension.NewRegistry(), Model: "m", Session: oldSession})
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, err := a.ResumeSession(nextSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if old != oldSession || len(a.Messages()) != 1 || a.Messages()[0].Content[0].Text != "restored" {
+		t.Fatalf("resume = old %p messages %#v", old, a.Messages())
+	}
+	if _, err := a.ResumeSession(nil); err == nil {
+		t.Fatal("nil session resumed")
 	}
 }
 

@@ -13,6 +13,7 @@ type Block struct {
 	Name      string          `json:"name,omitempty"`
 	Arguments json.RawMessage `json:"arguments,omitempty"`
 	ToolUseID string          `json:"tool_use_id,omitempty"`
+	Signature string          `json:"signature,omitempty"`
 	IsError   bool            `json:"is_error,omitempty"`
 }
 
@@ -32,11 +33,12 @@ type ToolDefinition struct {
 }
 
 type Request struct {
-	Model        string           `json:"model"`
-	SystemPrompt string           `json:"system_prompt"`
-	Messages     []Message        `json:"messages"`
-	Tools        []ToolDefinition `json:"tools,omitempty"`
-	MaxTokens    int              `json:"max_tokens,omitempty"`
+	Model          string           `json:"model"`
+	SystemPrompt   string           `json:"system_prompt"`
+	Messages       []Message        `json:"messages"`
+	Tools          []ToolDefinition `json:"tools,omitempty"`
+	MaxTokens      int              `json:"max_tokens,omitempty"`
+	ReasoningLevel string           `json:"reasoning_level,omitempty"`
 }
 
 type StreamEvent struct {
@@ -53,4 +55,17 @@ type Response struct {
 
 type Provider interface {
 	Stream(ctx context.Context, req Request, onEvent func(StreamEvent)) (Response, error)
+}
+
+// ModelInfo is provider-discovered metadata used by the runtime model registry.
+type ModelInfo struct {
+	ID            string `json:"id"`
+	Name          string `json:"name,omitempty"`
+	ContextWindow int    `json:"context_window,omitempty"`
+	Reasoning     bool   `json:"reasoning,omitempty"`
+}
+
+// ModelLister is optionally implemented by providers with a model-list API.
+type ModelLister interface {
+	ListModels(ctx context.Context) ([]ModelInfo, error)
 }
