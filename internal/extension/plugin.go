@@ -644,6 +644,17 @@ func (p *Plugin) dispatchHost(method string, params json.RawMessage) (any, *rpcE
 		}
 		p.host.Notify(value.Message, value.Level)
 		return nil, nil
+	case "host.follow_up":
+		var value struct {
+			Message string `json:"message"`
+		}
+		if err := json.Unmarshal(params, &value); err != nil {
+			return badParams(err)
+		}
+		if err := p.host.FollowUp(value.Message); err != nil {
+			return hostError(err)
+		}
+		return nil, nil
 	case "host.ui.set_status":
 		var value struct {
 			Key   string `json:"key"`

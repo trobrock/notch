@@ -93,6 +93,7 @@ type Host interface {
 	Input(context.Context, string, string) (string, error)
 	Select(context.Context, string, []string) (string, error)
 	Notify(context.Context, string, string) error
+	FollowUp(context.Context, string) error
 	SetStatus(context.Context, string, string) error
 	SetPanel(context.Context, string, string, []string) error
 }
@@ -632,6 +633,13 @@ func (c *Client) Notify(ctx context.Context, message, level string) error {
 	}{message, level}, &result)
 }
 
+func (c *Client) FollowUp(ctx context.Context, message string) error {
+	var result any
+	return c.call(ctx, "host.follow_up", struct {
+		Message string `json:"message"`
+	}{message}, &result)
+}
+
 // SetStatus asks the host to publish or clear a keyed persistent status.
 func (c *Client) SetStatus(ctx context.Context, key, value string) error {
 	var result any
@@ -694,6 +702,14 @@ func Notify(ctx context.Context, message, level string) error {
 		return err
 	}
 	return client.Notify(ctx, message, level)
+}
+
+func FollowUp(ctx context.Context, message string) error {
+	client, err := clientFor(ctx)
+	if err != nil {
+		return err
+	}
+	return client.FollowUp(ctx, message)
 }
 
 // SetStatus publishes or clears a keyed persistent status through the host.

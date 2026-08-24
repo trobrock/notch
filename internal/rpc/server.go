@@ -105,6 +105,20 @@ func (s *Server) Notify(message, level string) {
 	_ = s.write(map[string]any{"type": "notification", "message": message, "level": level})
 }
 
+func (s *Server) FollowUp(message string) error {
+	s.mu.Lock()
+	runner, active := s.runner, s.active
+	s.mu.Unlock()
+	if runner == nil {
+		return errors.New("RPC server is not configured")
+	}
+	if !active {
+		return errors.New("extension follow-up requires an active RPC prompt")
+	}
+	_, err := runner.FollowUp(message)
+	return err
+}
+
 func (s *Server) SetStatus(key, value string) {
 	_ = s.write(map[string]any{"type": "status", "key": key, "value": value})
 }

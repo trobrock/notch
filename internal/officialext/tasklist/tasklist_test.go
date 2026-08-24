@@ -30,6 +30,7 @@ func (*testHost) Select(context.Context, string, []string) (string, error) {
 	return "", errors.New("unexpected select")
 }
 func (*testHost) Notify(string, string) {}
+func (*testHost) FollowUp(string) error { return nil }
 func (h *testHost) SetStatus(key, value string) {
 	h.statuses = append(h.statuses, [2]string{key, value})
 }

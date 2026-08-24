@@ -44,6 +44,9 @@ type Host interface {
 	Input(ctx context.Context, prompt, placeholder string) (string, error)
 	Select(ctx context.Context, prompt string, options []string) (string, error)
 	Notify(message, level string)
+	// FollowUp delivers a synthetic user message when the active agent becomes
+	// idle, or starts a new prompt when it is already idle.
+	FollowUp(message string) error
 	// SetStatus publishes a short keyed status for persistent UI display. An
 	// empty value removes the status. Headless hosts may expose it as an event.
 	SetStatus(key, value string)

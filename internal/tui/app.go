@@ -110,6 +110,7 @@ type appEvent struct {
 	notice     *noticeEvent
 	status     *statusEvent
 	panel      *panelEvent
+	followUp   string
 	readErr    error
 }
 
@@ -521,6 +522,22 @@ func (a *App) applyEvent(runCtx context.Context, event appEvent) bool {
 			delete(a.state.layout.Panels, event.panel.key)
 		} else {
 			a.state.layout.Panels[event.panel.key] = ExtensionPanel{Key: event.panel.key, Title: event.panel.title, Lines: append([]string(nil), event.panel.lines...)}
+		}
+		changed = true
+	}
+	if event.followUp != "" {
+		if a.state.activeModel {
+			if queued, err := a.runner.FollowUp(event.followUp); err == nil {
+				if a.state.queuedText == nil {
+					a.state.queuedText = make(map[string]string)
+				}
+				a.state.queuedText[queued.ID] = event.followUp
+				a.state.layout.PendingMessages = append(a.state.layout.PendingMessages, PendingMessage{ID: queued.ID, Mode: queued.Mode, Text: event.followUp})
+			} else {
+				a.addNotice(err.Error(), "error")
+			}
+		} else {
+			changed = a.submit(runCtx, event.followUp) || changed
 		}
 		changed = true
 	}
@@ -1930,6 +1947,15 @@ func (a *App) hostPrompt(ctx context.Context, request *hostRequest) (string, err
 func (a *App) Notify(message, level string) {
 	notice := &noticeEvent{message: message, level: level}
 	a.post(context.Background(), appEvent{notice: notice}, true)
+}
+
+func (a *App) FollowUp(message string) error {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return errors.New("follow-up message is empty")
+	}
+	a.post(context.Background(), appEvent{followUp: message}, true)
+	return nil
 }
 
 // SetStatus publishes a keyed extension status in the footer. Reusing a key

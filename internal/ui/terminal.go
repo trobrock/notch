@@ -107,6 +107,9 @@ func (t *Terminal) Notify(message, level string) {
 	fmt.Fprintf(t.errOut, "[%s] %s\n", level, message)
 }
 
+func (t *Terminal) FollowUp(string) error {
+	return errors.New("extension follow-up is unavailable in line mode")
+}
 func (t *Terminal) SetStatus(string, string)          {}
 func (t *Terminal) SetPanel(string, string, []string) {}
 

@@ -81,6 +81,16 @@ func installAPI(L *lua.LState, decls *declarations, host extension.Host) {
 		return 0
 	}))
 
+	L.SetField(notch, "follow_up", L.NewFunction(func(L *lua.LState) int {
+		if host == nil {
+			L.RaiseError("notch.follow_up is unavailable: extension host is nil")
+		}
+		if err := host.FollowUp(L.CheckString(1)); err != nil {
+			L.RaiseError("follow_up: %v", err)
+		}
+		return 0
+	}))
+
 	L.SetField(notch, "cwd", L.NewFunction(func(L *lua.LState) int {
 		if host == nil {
 			L.RaiseError("notch.cwd is unavailable: extension host is nil")

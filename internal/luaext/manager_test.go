@@ -39,6 +39,7 @@ func (h *testHost) Notify(message, level string) {
 	defer h.mu.Unlock()
 	h.notifications = append(h.notifications, level+":"+message)
 }
+func (h *testHost) FollowUp(string) error { return nil }
 func (h *testHost) SetStatus(key, value string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
