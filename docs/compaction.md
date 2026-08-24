@@ -35,7 +35,7 @@ These settings can be placed in global or project config using the normal layeri
 
 ## Threshold and context indicator
 
-Before each provider request, Notch estimates the system prompt, tool schemas, and conversation context, incorporating provider-reported input usage when available. Automatic compaction is attempted when:
+Before each provider request, Notch estimates the system prompt, tool schemas, and conversation context, incorporating provider-reported input usage when available. Text added since the latest provider count uses a conservative three UTF-8 bytes per token; the next successful provider response re-anchors the estimate. Automatic compaction is attempted when:
 
 ```text
 estimated context tokens >= context window - reserveTokens

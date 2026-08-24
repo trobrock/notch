@@ -258,6 +258,27 @@ func TestThinkingLevelForwardedAndSetDoesNotWaitForPrompt(t *testing.T) {
 	}
 }
 
+func TestEstimatedTokensUsesUTF8Bytes(t *testing.T) {
+	tests := []struct {
+		name string
+		data []byte
+		want int
+	}{
+		{name: "empty", data: nil, want: 0},
+		{name: "ascii", data: []byte("abcdefghijkl"), want: 4},
+		{name: "round up", data: []byte("abcd"), want: 2},
+		{name: "multibyte", data: []byte("你好"), want: 2},
+		{name: "malformed", data: []byte{0xff, 0xfe, 0xfd, 0xfc}, want: 2},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := estimatedTokens(test.data); got != test.want {
+				t.Fatalf("estimatedTokens(%q) = %d, want %d", test.data, got, test.want)
+			}
+		})
+	}
+}
+
 func TestManualCompactionPersists(t *testing.T) {
 	store, err := session.New(t.TempDir(), t.TempDir(), "fake", "fake")
 	if err != nil {

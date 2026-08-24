@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/trobrock/notch/internal/model"
 	"github.com/trobrock/notch/internal/session"
@@ -112,22 +111,14 @@ func (a *Agent) shouldAutoCompactLocked() bool {
 	return a.contextUsageLocked().Tokens >= threshold
 }
 
-// Conservative here means deliberately favoring an early compaction over an
-// overfull request. UTF-8 text and JSON average substantially more than three
-// bytes per token for code-heavy conversations, and fixed framing also costs
-// tokens.
+// Three UTF-8 bytes per token deliberately favors a slightly early compaction
+// for code-heavy conversations while remaining close to provider tokenizers.
+// Counting bytes also keeps malformed/raw JSON bytes in the estimate.
 func estimatedTokens(data []byte) int {
 	if len(data) == 0 {
 		return 0
 	}
-	// Count malformed bytes as individual runes. This prevents invalid/raw JSON
-	// bytes from disappearing from the estimate.
-	runes := utf8.RuneCount(data)
-	byBytes := (len(data) + 2) / 3
-	if runes > byBytes {
-		byBytes = runes
-	}
-	return byBytes
+	return (len(data) + 2) / 3
 }
 
 func estimateMessage(message model.Message) int {
