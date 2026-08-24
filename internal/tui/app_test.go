@@ -200,10 +200,16 @@ func TestAppAgentEventsBuildTranscriptAndUsage(t *testing.T) {
 func TestAppThinkingSummaryAndFallbackIndicator(t *testing.T) {
 	a := NewApp(AppConfig{ThinkingLevel: "medium"})
 	a.handleAgentEvent(agent.Event{Type: "turn_start"})
+	if !a.pendingThinkingIndicator() {
+		t.Fatalf("thinking indicator is not active: %#v", a.state.layout.Transcript)
+	}
 	if len(a.state.layout.Transcript) != 1 || a.state.layout.Transcript[0].Kind != KindThinking || !a.state.layout.Transcript[0].Pending {
 		t.Fatalf("missing thinking indicator: %#v", a.state.layout.Transcript)
 	}
 	a.handleAgentEvent(agent.Event{Type: "thinking_delta", Text: "Checking "})
+	if a.pendingThinkingIndicator() {
+		t.Fatal("spinner remained active after thinking text arrived")
+	}
 	a.handleAgentEvent(agent.Event{Type: "thinking_delta", Text: "the files."})
 	a.handleAgentEvent(agent.Event{Type: "text_delta", Text: "Done"})
 	a.handleAgentEvent(agent.Event{Type: "turn_end"})

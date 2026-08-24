@@ -252,9 +252,15 @@ func TestCommandSuggestionsRenderAboveComposer(t *testing.T) {
 
 func TestThinkingIndicatorAndSummaryRendering(t *testing.T) {
 	theme := DefaultTheme()
-	pending := renderTranscript(&LayoutState{Transcript: []TranscriptEntry{{Kind: KindThinking, Pending: true}}}, 40, theme)
-	if got := plainANSI(strings.Join(pending, "\n")); !strings.Contains(got, "● Thinking…") {
+	state := &LayoutState{Transcript: []TranscriptEntry{{Kind: KindThinking, Pending: true}}}
+	pending := renderTranscript(state, 40, theme)
+	if got := plainANSI(strings.Join(pending, "\n")); !strings.Contains(got, "◐ Thinking…") {
 		t.Fatalf("pending thinking = %q", got)
+	}
+	state.ThinkingFrame = 1
+	pending = renderTranscript(state, 40, theme)
+	if got := plainANSI(strings.Join(pending, "\n")); !strings.Contains(got, "◓ Thinking…") {
+		t.Fatalf("animated thinking = %q", got)
 	}
 	summary := renderTranscript(&LayoutState{Transcript: []TranscriptEntry{{Kind: KindThinking, Text: "Checked **three** files."}}}, 40, theme)
 	plain := plainANSI(strings.Join(summary, "\n"))

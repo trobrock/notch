@@ -24,8 +24,9 @@ import (
 )
 
 const (
-	appEventBuffer = 128
-	deltaDelay     = 33 * time.Millisecond
+	appEventBuffer     = 128
+	deltaDelay         = 33 * time.Millisecond
+	thinkingFrameDelay = 120 * time.Millisecond
 )
 
 // AppConfig describes the terminal and the labels shown in the status line.
@@ -354,7 +355,28 @@ func (a *App) Run(ctx context.Context) (retErr error) {
 	}
 	defer stopDeltaTimer()
 
+	var thinkingTimer *time.Timer
+	var thinkingC <-chan time.Time
+	stopThinkingTimer := func() {
+		if thinkingTimer != nil && !thinkingTimer.Stop() {
+			select {
+			case <-thinkingTimer.C:
+			default:
+			}
+		}
+		thinkingTimer, thinkingC = nil, nil
+	}
+	defer stopThinkingTimer()
+
 	for {
+		if a.pendingThinkingIndicator() {
+			if thinkingTimer == nil {
+				thinkingTimer = a.newTimer(thinkingFrameDelay)
+				thinkingC = thinkingTimer.C
+			}
+		} else {
+			stopThinkingTimer()
+		}
 		dirty := false
 		select {
 		case <-ctx.Done():
@@ -374,6 +396,10 @@ func (a *App) Run(ctx context.Context) (retErr error) {
 			}
 		case <-deltaC:
 			dirty = flushDelta(true)
+		case <-thinkingC:
+			thinkingTimer, thinkingC = nil, nil
+			a.state.layout.ThinkingFrame++
+			dirty = true
 		case event := <-a.events:
 			isStreamDelta := event.agent != nil && (event.agent.Type == "text_delta" || event.agent.Type == "thinking_delta")
 			if isStreamDelta {
@@ -780,6 +806,7 @@ func (a *App) handleAgentEvent(event agent.Event) bool {
 	switch event.Type {
 	case "turn_start":
 		a.state.assistant, a.state.thinking = -1, -1
+		a.state.layout.ThinkingFrame = 0
 		if a.state.layout.ThinkingLevel != "off" {
 			a.state.layout.Transcript = append(a.state.layout.Transcript, TranscriptEntry{Kind: KindThinking, Pending: true})
 			a.state.thinking = len(a.state.layout.Transcript) - 1
@@ -897,6 +924,14 @@ func (a *App) handleAgentEvent(event agent.Event) bool {
 	return true
 }
 
+func (a *App) pendingThinkingIndicator() bool {
+	i := a.state.thinking
+	return i >= 0 && i < len(a.state.layout.Transcript) &&
+		a.state.layout.Transcript[i].Kind == KindThinking &&
+		a.state.layout.Transcript[i].Pending &&
+		strings.TrimSpace(a.state.layout.Transcript[i].Text) == ""
+}
+
 func (a *App) streamDeltaEntry(eventType string) int {
 	if eventType == "thinking_delta" {
 		return a.ensureThinking()
@@ -911,6 +946,7 @@ func (a *App) ensureThinking() int {
 	if i >= 0 && i < len(a.state.layout.Transcript) && a.state.layout.Transcript[i].Kind == KindThinking {
 		return i
 	}
+	a.state.layout.ThinkingFrame = 0
 	a.state.layout.Transcript = append(a.state.layout.Transcript, TranscriptEntry{Kind: KindThinking, Pending: true})
 	a.state.thinking = len(a.state.layout.Transcript) - 1
 	return a.state.thinking

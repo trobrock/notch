@@ -92,6 +92,7 @@ type LayoutState struct {
 	ContextWindow      int
 	AutoCompact        bool
 	ThinkingLevel      string
+	ThinkingFrame      int
 	ThemeName          string
 	CommandSuggestions []CommandSuggestion
 	CommandSelection   int
@@ -398,7 +399,12 @@ func renderTranscript(state *LayoutState, width int, theme Theme) []string {
 		case TranscriptThinking:
 			style := theme.Muted + "\x1b[3m"
 			if entry.Pending && strings.TrimSpace(entry.Text) == "" {
-				result = append(result, styleFull(style, " ● Thinking…", width, theme.Reset))
+				spinner := []string{"◐", "◓", "◑", "◒"}
+				frame := state.ThinkingFrame % len(spinner)
+				if frame < 0 {
+					frame += len(spinner)
+				}
+				result = append(result, styleFull(style, " "+spinner[frame]+" Thinking…", width, theme.Reset))
 				break
 			}
 			result = append(result, styleFull(style, " ◆ Thinking", width, theme.Reset))
