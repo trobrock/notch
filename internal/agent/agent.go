@@ -51,6 +51,7 @@ type CompactionConfig struct {
 
 type Config struct {
 	Provider      model.Provider
+	ProviderName  string
 	Registry      *extension.Registry
 	Session       *session.Session
 	Model         string
@@ -62,14 +63,15 @@ type Config struct {
 }
 
 type Agent struct {
-	provider   model.Provider
-	registry   *extension.Registry
-	session    *session.Session
-	model      string
-	system     string
-	maxTokens  int
-	maxTurns   int
-	compaction CompactionConfig
+	provider     model.Provider
+	providerName string
+	registry     *extension.Registry
+	session      *session.Session
+	model        string
+	system       string
+	maxTokens    int
+	maxTurns     int
+	compaction   CompactionConfig
 
 	// mu serializes operations which mutate conversation or session state.
 	mu                  sync.Mutex
@@ -114,8 +116,12 @@ func New(cfg Config) (*Agent, error) {
 		return nil, fmt.Errorf("invalid thinking level %q", cfg.ThinkingLevel)
 	}
 	cfg.Compaction = defaultCompactionConfig(cfg.Compaction)
+	providerName := strings.TrimSpace(cfg.ProviderName)
+	if providerName == "" && cfg.Session != nil {
+		providerName = cfg.Session.Header.Provider
+	}
 	a := &Agent{
-		provider: cfg.Provider, registry: cfg.Registry, session: cfg.Session,
+		provider: cfg.Provider, providerName: providerName, registry: cfg.Registry, session: cfg.Session,
 		model: cfg.Model, system: cfg.SystemPrompt, maxTokens: cfg.MaxTokens,
 		maxTurns: cfg.MaxTurns, thinkingLevel: cfg.ThinkingLevel,
 		compaction: cfg.Compaction,
@@ -151,6 +157,15 @@ func (a *Agent) appendMessage(message model.Message) error {
 		return a.session.AppendMessage(message)
 	}
 	return nil
+}
+
+func (a *Agent) appendUsage(response model.Response) error {
+	if a.session == nil {
+		return nil
+	}
+	return a.session.AppendUsage(a.providerName, a.model, session.TokenUsage{
+		InputTokens: response.InputTokens, OutputTokens: response.OutputTokens,
+	}, response.StopReason)
 }
 
 // Prompt runs until the model produces a final response without tool calls.
@@ -331,6 +346,9 @@ func (a *Agent) PromptWithStart(ctx context.Context, text string, emit func(Even
 		}
 
 		usage := &Usage{InputTokens: response.InputTokens, OutputTokens: response.OutputTokens}
+		if err := a.appendUsage(response); err != nil {
+			return err
+		}
 		contextUsage := a.contextUsageLocked()
 		emit(Event{Type: "turn_end", Usage: usage, ContextUsage: &contextUsage, Message: &assistant, StopReason: response.StopReason})
 		calls := toolCalls(response.Content)

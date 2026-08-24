@@ -199,3 +199,27 @@ func (r *Registry) RunHooks(ctx context.Context, name string, event map[string]a
 	}
 	return event, nil
 }
+
+// RunHooksBestEffort invokes every registered handler even when an earlier
+// handler fails. It is intended for shutdown paths where one broken extension
+// must not prevent the remaining extensions from cleaning up.
+func (r *Registry) RunHooksBestEffort(ctx context.Context, name string, event map[string]any) (map[string]any, error) {
+	r.mu.RLock()
+	hooks := append([]namedHook(nil), r.hooks[name]...)
+	r.mu.RUnlock()
+	if event == nil {
+		event = map[string]any{}
+	}
+	var hookErrors []error
+	for _, hook := range hooks {
+		result, err := hook.handler(ctx, event)
+		if err != nil {
+			hookErrors = append(hookErrors, fmt.Errorf("%s hook from %s: %w", name, hook.source, err))
+			continue
+		}
+		for key, value := range result {
+			event[key] = value
+		}
+	}
+	return event, errors.Join(hookErrors...)
+}

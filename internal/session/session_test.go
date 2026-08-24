@@ -34,6 +34,9 @@ func TestNewAppendLoad(t *testing.T) {
 	if err := s.AppendEntry(map[string]any{"type": "note", "text": "remember"}); err != nil {
 		t.Fatal(err)
 	}
+	if err := s.AppendUsage("anthropic", "test-model", TokenUsage{InputTokens: 12, OutputTokens: 7}, "end_turn"); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -55,8 +58,11 @@ func TestNewAppendLoad(t *testing.T) {
 	if len(loaded.Messages) != 1 || loaded.Messages[0].Role != "user" {
 		t.Fatalf("bad messages: %+v", loaded.Messages)
 	}
-	if len(loaded.Entries) != 3 {
+	if len(loaded.Entries) != 4 {
 		t.Fatalf("got %d entries", len(loaded.Entries))
+	}
+	if len(loaded.UsageEntries) != 1 || loaded.UsageEntries[0].Provider != "anthropic" || loaded.UsageEntries[0].Model != "test-model" || loaded.UsageEntries[0].Usage.InputTokens != 12 || loaded.UsageEntries[0].Usage.OutputTokens != 7 || loaded.UsageEntries[0].StopReason != "end_turn" {
+		t.Fatalf("bad usage entries: %+v", loaded.UsageEntries)
 	}
 	var custom CustomEntry
 	if err := json.Unmarshal(loaded.Entries[1], &custom); err != nil {

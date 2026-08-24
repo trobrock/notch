@@ -222,6 +222,9 @@ func (a *Agent) compactLocked(ctx context.Context, instructions string, auto boo
 	if err != nil {
 		return fmt.Errorf("compact conversation: summarize: %w", err)
 	}
+	if err := a.appendUsage(response); err != nil {
+		return fmt.Errorf("compact conversation: persist usage: %w", err)
+	}
 	summary := responseText(response.Content)
 	if summary == "" {
 		return errors.New("compact conversation: provider returned an empty summary")
@@ -338,6 +341,7 @@ func (a *Agent) SwitchProvider(providerName string, next model.Provider, modelNa
 		}
 	}
 	a.provider = next
+	a.providerName = providerName
 	a.model = modelName
 	if contextWindow > 0 {
 		a.compaction.ContextWindow = contextWindow

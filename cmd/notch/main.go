@@ -48,9 +48,9 @@ var (
 )
 
 type options struct {
-	provider, modelName, prompt, mcpConfig, resumeSession, mode, toolAllow, toolExclude string
-	continueSession, noSession, jsonOutput, noTUI, init, showVersion, rpcMode           bool
-	noTools, noBuiltinTools                                                             bool
+	provider, modelName, thinking, prompt, mcpConfig, resumeSession, mode, toolAllow, toolExclude string
+	continueSession, noSession, jsonOutput, noTUI, init, showVersion, rpcMode                     bool
+	noTools, noBuiltinTools                                                                       bool
 }
 
 func main() {
@@ -80,6 +80,7 @@ func run(args []string) error {
 	flags.StringVar(&opts.provider, "p", "", "model provider (shorthand)")
 	flags.StringVar(&opts.modelName, "model", "", "model ID")
 	flags.StringVar(&opts.modelName, "m", "", "model ID (shorthand)")
+	flags.StringVar(&opts.thinking, "thinking", "", "reasoning effort: off, minimal, low, medium, high, or xhigh")
 	flags.StringVar(&opts.prompt, "print", "", "run one prompt and exit")
 	flags.StringVar(&opts.mcpConfig, "mcp-config", "", "path to MCP JSON config")
 	flags.BoolVar(&opts.continueSession, "continue", false, "continue the latest session")
@@ -151,6 +152,12 @@ func run(args []string) error {
 	}
 	if opts.modelName != "" {
 		cfg.Model = opts.modelName
+	}
+	if opts.thinking != "" {
+		cfg.ThinkingLevel = strings.ToLower(strings.TrimSpace(opts.thinking))
+		if !validThinkingLevel(cfg.ThinkingLevel) {
+			return fmt.Errorf("invalid thinking level %q (expected off, minimal, low, medium, high, or xhigh)", opts.thinking)
+		}
 	}
 	if opts.mcpConfig != "" {
 		cfg.MCPConfig = opts.mcpConfig
@@ -310,13 +317,35 @@ func run(args []string) error {
 		contextWindow = contextWindowFor(cfg.Provider, cfg.Model)
 	}
 	runner, err := agent.New(agent.Config{
-		Provider: provider, Registry: registry, Session: store, Model: cfg.Model,
+		Provider: provider, ProviderName: normalizeProvider(cfg.Provider), Registry: registry, Session: store, Model: cfg.Model,
 		SystemPrompt: systemPrompt, MaxTokens: cfg.MaxTokens, ThinkingLevel: cfg.ThinkingLevel,
 		Compaction: agent.CompactionConfig{Enabled: compactionEnabled, ContextWindow: contextWindow, ReserveTokens: reserveTokens, KeepRecentTokens: keepRecentTokens},
 	})
 	if err != nil {
 		return err
 	}
+	lifecycleEvent := map[string]any{
+		"cwd": cwd, "provider": normalizeProvider(cfg.Provider), "model": cfg.Model,
+		"thinking_level": cfg.ThinkingLevel, "mode": runMode(rpcMode, useFullscreen, opts),
+		"resumed": opts.continueSession || opts.resumeSession != "",
+	}
+	if store != nil {
+		lifecycleEvent["session_id"] = store.Header.ID
+		lifecycleEvent["session_file"] = store.Path()
+	}
+	shutdownLifecycle, err := beginSessionLifecycle(ctx, registry, lifecycleEvent)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		reason := "exit"
+		if ctx.Err() != nil {
+			reason = "canceled"
+		}
+		if shutdownErr := shutdownLifecycle(reason); shutdownErr != nil {
+			terminal.Notify(shutdownErr.Error(), "warning")
+		}
+	}()
 	if rpcServer != nil {
 		sessionFile, sessionID := "", ""
 		if store != nil {
@@ -432,6 +461,48 @@ func run(args []string) error {
 		if !opts.jsonOutput {
 			fmt.Println()
 		}
+	}
+}
+
+const sessionLifecycleTimeout = 10 * time.Second
+
+func beginSessionLifecycle(parent context.Context, registry *extension.Registry, fields map[string]any) (func(string) error, error) {
+	startCtx, cancelStart := context.WithTimeout(parent, sessionLifecycleTimeout)
+	_, err := registry.RunHooks(startCtx, "session_start", cloneEvent(fields))
+	cancelStart()
+	if err != nil {
+		return nil, err
+	}
+	return func(reason string) error {
+		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), sessionLifecycleTimeout)
+		defer cancelShutdown()
+		event := cloneEvent(fields)
+		event["reason"] = reason
+		_, shutdownErr := registry.RunHooksBestEffort(shutdownCtx, "session_shutdown", event)
+		return shutdownErr
+	}, nil
+}
+
+func cloneEvent(event map[string]any) map[string]any {
+	cloned := make(map[string]any, len(event))
+	for key, value := range event {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func runMode(rpcMode, fullscreen bool, opts options) string {
+	switch {
+	case rpcMode:
+		return "rpc"
+	case fullscreen:
+		return "tui"
+	case opts.jsonOutput:
+		return "json"
+	case opts.prompt != "":
+		return "print"
+	default:
+		return "line"
 	}
 }
 
@@ -573,11 +644,13 @@ func runListModels(args []string) error {
 	flags := flag.NewFlagSet("notch models", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	force := flags.Bool("refresh", false, "refresh the provider model cache")
+	jsonOutput := flags.Bool("json", false, "emit a stable JSON model catalog")
+	all := flags.Bool("all", false, "list models from every supported provider")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if flags.NArg() > 1 {
-		return errors.New("usage: notch models [--refresh] [provider]")
+	if flags.NArg() > 1 || (*all && flags.NArg() != 0) {
+		return errors.New("usage: notch models [--refresh] [--json] [--all | provider]")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -591,19 +664,43 @@ func runListModels(args []string) error {
 	if err != nil {
 		return err
 	}
-	providerName := cfg.Provider
+	providers := []string{cfg.Provider}
 	if flags.NArg() == 1 {
-		providerName = flags.Arg(0)
+		providers[0] = flags.Arg(0)
+	} else if *all {
+		providers = modelregistry.Providers()
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	registry := modelRegistryFor(cfg)
-	models, listErr := discoverModels(ctx, registry, cfg, credentials.New(cfg.AuthFile), providerName, *force)
-	if len(models) == 0 {
-		return listErr
+	store := credentials.New(cfg.AuthFile)
+	var models []modelregistry.Entry
+	var listErrors []error
+	for _, providerName := range providers {
+		entries, listErr := discoverModels(ctx, registry, cfg, store, providerName, *force)
+		models = append(models, entries...)
+		if listErr != nil {
+			listErrors = append(listErrors, fmt.Errorf("%s: %w", normalizeProvider(providerName), listErr))
+			if len(entries) != 0 {
+				fmt.Fprintln(os.Stderr, "notch: model registry:", listErr, "(showing fallback data)")
+			}
+		}
 	}
-	if listErr != nil {
-		fmt.Fprintln(os.Stderr, "notch: model registry:", listErr, "(showing fallback data)")
+	if len(models) == 0 {
+		if err := errors.Join(listErrors...); err != nil {
+			return err
+		}
+		return errors.New("no models found")
+	}
+	return writeModelList(os.Stdout, models, *jsonOutput)
+}
+
+func writeModelList(w io.Writer, models []modelregistry.Entry, jsonOutput bool) error {
+	if jsonOutput {
+		return json.NewEncoder(w).Encode(struct {
+			Version int                   `json:"version"`
+			Models  []modelregistry.Entry `json:"models"`
+		}{Version: 1, Models: models})
 	}
 	for _, entry := range models {
 		contextText := "-"
@@ -614,7 +711,9 @@ func runListModels(args []string) error {
 		if entry.Reasoning {
 			reasoning = "reasoning"
 		}
-		fmt.Printf("%-16s %-42s %-10s %-10s %s\n", entry.Provider, entry.ID, contextText, reasoning, entry.Name)
+		if _, err := fmt.Fprintf(w, "%-16s %-42s %-10s %-10s %s\n", entry.Provider, entry.ID, contextText, reasoning, entry.Name); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -719,6 +818,15 @@ func rpcAPIForProvider(provider string) string {
 		return "openai-codex-responses"
 	default:
 		return "openai-responses"
+	}
+}
+
+func validThinkingLevel(level string) bool {
+	switch level {
+	case "off", "minimal", "low", "medium", "high", "xhigh":
+		return true
+	default:
+		return false
 	}
 }
 

@@ -119,6 +119,7 @@ notch [flags] [prompt words...]
 
   --provider, -p string   openai-codex, openrouter, anthropic, or openai
   --model, -m string      model ID
+  --thinking string       off, minimal, low, medium, high, or xhigh
   --print string          run one prompt and exit
   --continue              continue the most recently modified session
   --no-session            do not create or update a session
@@ -158,6 +159,7 @@ notch --print "Explain internal/agent"
 notch --json "Run the tests and report failures" | jq -c .
 printf '%s\n' '{"id":"s","type":"get_state"}' | notch --mode rpc --no-session --tools read,grep
 notch models openrouter
+notch models --json --all
 notch models --refresh anthropic
 notch --continue
 notch --resume 20260823T221401
@@ -171,7 +173,7 @@ Fullscreen interactive commands include `/help`, `/model [refresh]`, `/tools`, `
 
 An interactive invocation uses the fullscreen TUI only when both stdin and stdout are terminals. `--no-tui`, `--json`, and one-shot prompts use the line-oriented path; redirected input/output does too unless RPC mode was selected explicitly. The fullscreen UI runs in the terminal's alternate screen. While a model is active, Enter queues steering for the next safe turn boundary and Alt-Enter queues a follow-up for after the run would otherwise settle; pending messages remain visible above the composer until delivered. It mirrors Pi's presentation: padded full-width user background boxes, plain assistant prose, Markdown styling, provider-supplied thinking summaries with a static fallback indicator, and tool cards with state-colored backgrounds and pending/success/error icons. Transcript entries use consistent blank-row spacing; tool arguments are compact, while output is visually barred and shortened when large. Rendering wraps by terminal display width (including Unicode), is cached by text, width, and theme where styling applies, and sanitizes untrusted text so model/tool content cannot inject terminal controls. See [the TUI guide](docs/tui.md) for details, keys, extension prompts, and fallback behavior.
 
-`--continue` selects the latest session globally in the configured session directory. `--resume ID-OR-PREFIX` opens a specific session by ID, filename, unambiguous prefix, or path. Fullscreen `/resume` presents saved sessions with time, original directory, model, and prompt preview. Resumed requests use the current provider/model configuration while preserving the selected session's conversation context.
+`--continue` selects the latest session globally in the configured session directory. `--resume ID-OR-PREFIX` opens a specific session by ID, filename, unambiguous prefix, or path. Fullscreen `/resume` presents saved sessions with time, original directory, model, and prompt preview. Resumed requests use the current provider/model configuration while preserving the selected session's conversation context. Each completed provider response, including compaction summaries, appends a `usage` record with provider, model, input/output token counts, and stop reason to the session JSONL.
 
 ## Configuration
 
@@ -180,7 +182,7 @@ Configuration is JSON. Notch starts with defaults, then merges:
 1. `$NOTCH_HOME/config.json`, when `NOTCH_HOME` is set, otherwise `~/.notch/config.json`
 2. `<working-directory>/.notch/config.json`
 3. `NOTCH_PROVIDER`, `NOTCH_MODEL`, and `NOTCH_THINKING_LEVEL`
-4. CLI overrides such as `--provider` and `--model`
+4. CLI overrides such as `--provider`, `--model`, and `--thinking`
 
 Later non-empty values replace earlier ones, so CLI flags take precedence over environment variables and environment variables take precedence over project and user config. Empty or whitespace-only values for the three runtime environment variables are ignored and fall back to the merged config files. Non-empty directory arrays replace the complete earlier array; they are not appended. API keys can come from environment variables; OAuth credentials are kept separately from config in the protected auth store.
 
@@ -228,7 +230,7 @@ For example, a shell or per-command override can select a runtime without editin
 NOTCH_PROVIDER=openai-codex NOTCH_MODEL=gpt-5.6-sol NOTCH_THINKING_LEVEL=high notch
 ```
 
-Provider and model overrides are independent: if only one environment variable is set, the other value comes from the merged config. `notch models [provider]` lists provider-discovered or fallback models; add `--refresh` to bypass the cache. Fullscreen `/model` selects a provider and filters its models, while `/model refresh` forces discovery. Runtime selection changes subsequent turns and new sessions but does not edit config files. The paths above illustrate the defaults; actual home and working-directory paths are resolved at startup. `NOTCH_HOME` relocates user config, user resources, user extensions, the default MCP file, and sessions. Project resources remain under `<cwd>/.notch`. Configured resource directories are created automatically. Notch also discovers shared skills in `~/.agents/skills` and `<cwd>/.agents/skills`, plus command templates in `~/.agents/commands` and `<cwd>/.agents/commands`; these shared directories are discovered but never created by Notch. `theme` and `thinking_level` can be set in either global or project config. Direct JSON files in `theme_dirs` add or override themes; see [themes](docs/themes.md) for the small semantic schema. The mode-0600 model cache refreshes stale selected-provider data on startup or selector use without a polling timer; `model_refresh_hours` defaults to 24. `context_window: 0` means use the provider/model default; omit it for the same behavior. The compaction object deliberately uses Pi-compatible camelCase keys. See [themes](docs/themes.md), [thinking controls](docs/tui.md#commands-and-thinking-level), and [compaction](docs/compaction.md).
+Provider and model overrides are independent: if only one environment variable is set, the other value comes from the merged config. `notch models [provider]` lists provider-discovered or fallback models; add `--refresh` to bypass the cache, `--json` for a versioned machine-readable catalog, or `--all` for every supported provider. Fullscreen `/model` selects a provider and filters its models, while `/model refresh` forces discovery. Runtime selection changes subsequent turns and new sessions but does not edit config files. The paths above illustrate the defaults; actual home and working-directory paths are resolved at startup. `NOTCH_HOME` relocates user config, user resources, user extensions, the default MCP file, and sessions. Project resources remain under `<cwd>/.notch`. Configured resource directories are created automatically. Notch also discovers shared skills in `~/.agents/skills` and `<cwd>/.agents/skills`, plus command templates in `~/.agents/commands` and `<cwd>/.agents/commands`; these shared directories are discovered but never created by Notch. `theme` and `thinking_level` can be set in either global or project config. Direct JSON files in `theme_dirs` add or override themes; see [themes](docs/themes.md) for the small semantic schema. The mode-0600 model cache refreshes stale selected-provider data on startup or selector use without a polling timer; `model_refresh_hours` defaults to 24. `context_window: 0` means use the provider/model default; omit it for the same behavior. The compaction object deliberately uses Pi-compatible camelCase keys. See [themes](docs/themes.md), [thinking controls](docs/tui.md#commands-and-thinking-level), and [compaction](docs/compaction.md).
 
 Provider credentials:
 
@@ -288,7 +290,7 @@ A server must specify exactly one of `command` or `url`. `enabled` defaults to t
 
 ## Sessions and JSON output
 
-Unless `--no-session` is used, every new invocation creates a mode-0600 JSONL file under the configured session directory. The first record is metadata (format version, ID, time, CWD, provider, model); subsequent records contain messages and durable compaction records. Each append is synced before continuing. In the fullscreen UI, `/new` creates a distinct durable session and clears transcript context and input history; under `--no-session` it performs the same reset in memory. `/resume` switches to a selected saved session and restores its effective transcript, context, and submitted-input history.
+Unless `--no-session` is used, every new invocation creates a mode-0600 JSONL file under the configured session directory. The first record is metadata (format version, ID, time, CWD, provider, model); subsequent records contain messages, per-turn provider usage, and durable compaction records. Each append is synced before continuing. In the fullscreen UI, `/new` creates a distinct durable session and clears transcript context and input history; under `--no-session` it performs the same reset in memory. `/resume` switches to a selected saved session and restores its effective transcript, context, and submitted-input history.
 
 `--json` emits one JSON object per line. Current event types include `turn_start`, `text_delta`, `thinking_delta`, `turn_end` (with token usage), `tool_start`, `tool_update`, `tool_end`, `queue_update`, `queue_delivered`, compaction events, and `error`. The `--json` stream is a one-way event interface, not the on-disk session format. Use `--mode rpc` for bidirectional state, prompt, queue, and abort commands.
 

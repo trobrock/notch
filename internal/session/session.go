@@ -80,14 +80,31 @@ type ResetEntry struct {
 	Timestamp time.Time `json:"timestamp"`
 }
 
+// TokenUsage is the provider-reported token count for one model response.
+type TokenUsage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+}
+
+// UsageEntry records provider usage for one completed model turn.
+type UsageEntry struct {
+	Type       string     `json:"type"`
+	Timestamp  time.Time  `json:"timestamp"`
+	Provider   string     `json:"provider,omitempty"`
+	Model      string     `json:"model"`
+	Usage      TokenUsage `json:"usage"`
+	StopReason string     `json:"stop_reason,omitempty"`
+}
+
 // Session is a loaded or newly-created session. Entries contains the exact
 // JSON for every record after the header, and Messages contains the effective
 // conversation context after applying message, compaction, and reset records.
 type Session struct {
-	Header   Header
-	Metadata Metadata
-	Entries  []json.RawMessage
-	Messages []model.Message
+	Header       Header
+	Metadata     Metadata
+	Entries      []json.RawMessage
+	Messages     []model.Message
+	UsageEntries []UsageEntry
 
 	mu     sync.Mutex
 	path   string
@@ -337,6 +354,28 @@ func (s *Session) AppendReset() error {
 	})
 }
 
+// AppendUsage durably records provider-reported token usage for one model turn.
+func (s *Session) AppendUsage(provider, modelName string, usage TokenUsage, stopReason string) error {
+	if strings.TrimSpace(modelName) == "" {
+		return errors.New("append session usage: model is empty")
+	}
+	if usage.InputTokens < 0 || usage.OutputTokens < 0 {
+		return errors.New("append session usage: token counts cannot be negative")
+	}
+	entry := UsageEntry{
+		Type: "usage", Timestamp: time.Now().UTC(), Provider: provider, Model: modelName,
+		Usage: usage, StopReason: stopReason,
+	}
+	line, err := marshalLine(entry)
+	if err != nil {
+		return fmt.Errorf("encode session usage: %w", err)
+	}
+	return s.appendLine(line, func() {
+		s.UsageEntries = append(s.UsageEntries, entry)
+		s.Entries = append(s.Entries, cloneRaw(line[:len(line)-1]))
+	})
+}
+
 // AppendEntry appends an arbitrary JSON value and makes it durable. It may
 // also be called as AppendEntry(kind, value), which writes a CustomEntry
 // envelope. A nil value is rejected, as are metadata records (the header must
@@ -466,6 +505,15 @@ func (s *Session) decode(r io.Reader) error {
 						return fmt.Errorf("line %d: invalid reset entry: %w", lineNumber, decodeErr)
 					}
 					s.Messages = nil
+				case "usage":
+					var entry UsageEntry
+					if decodeErr := decodeStrict(trimmed, &entry); decodeErr != nil {
+						return fmt.Errorf("line %d: invalid usage entry: %w", lineNumber, decodeErr)
+					}
+					if entry.Model == "" || entry.Usage.InputTokens < 0 || entry.Usage.OutputTokens < 0 {
+						return fmt.Errorf("line %d: invalid usage entry values", lineNumber)
+					}
+					s.UsageEntries = append(s.UsageEntries, entry)
 				}
 				s.Entries = append(s.Entries, cloneRaw(trimmed))
 			}

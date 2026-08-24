@@ -69,6 +69,48 @@ func TestPromptExecutesToolAndContinues(t *testing.T) {
 	}
 }
 
+type usageProvider struct{}
+
+func (usageProvider) Stream(context.Context, model.Request, func(model.StreamEvent)) (model.Response, error) {
+	return model.Response{
+		Content: []model.Block{{Type: "text", Text: "done"}}, StopReason: "end_turn",
+		InputTokens: 123, OutputTokens: 45,
+	}, nil
+}
+
+func TestPromptPersistsProviderUsage(t *testing.T) {
+	store, err := session.New(t.TempDir(), "/work", "anthropic", "model-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := store.Path()
+	a, err := New(Config{
+		Provider: usageProvider{}, ProviderName: "anthropic", Registry: extension.NewRegistry(),
+		Session: store, Model: "model-a",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Prompt(context.Background(), "go", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := session.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer loaded.Close()
+	if len(loaded.UsageEntries) != 1 {
+		t.Fatalf("usage entries = %#v", loaded.UsageEntries)
+	}
+	entry := loaded.UsageEntries[0]
+	if entry.Provider != "anthropic" || entry.Model != "model-a" || entry.Usage.InputTokens != 123 || entry.Usage.OutputTokens != 45 || entry.StopReason != "end_turn" {
+		t.Fatalf("usage entry = %#v", entry)
+	}
+}
+
 type recordingProvider struct {
 	mu       sync.Mutex
 	requests []model.Request
@@ -247,6 +289,9 @@ func TestManualCompactionPersists(t *testing.T) {
 	}
 	if entry.Type != "compaction" || entry.Auto || entry.Summary != "old work summarized" {
 		t.Fatalf("unexpected compaction entry: %#v", entry)
+	}
+	if len(store.UsageEntries) != 1 || store.UsageEntries[0].Provider != "fake" || store.UsageEntries[0].Usage.InputTokens != 20 {
+		t.Fatalf("compaction usage = %#v", store.UsageEntries)
 	}
 }
 

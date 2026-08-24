@@ -122,6 +122,26 @@ In the fullscreen TUI, input and selection requests are queued and presented thr
 
 The current agent emits these hook names and fields:
 
+### `session_start`
+
+Runs once after the initial session and agent are ready, before any interactive or one-shot work starts:
+
+```json
+{"cwd":"/work","provider":"anthropic","model":"claude-sonnet-4-5","thinking_level":"medium","mode":"tui","resumed":false,"session_id":"...","session_file":"..."}
+```
+
+`mode` is `tui`, `line`, `print`, `json`, or `rpc`. The session fields are omitted with `--no-session`. Return fields are ignored; an error aborts startup.
+
+### `session_shutdown`
+
+Runs once before extensions are closed on normal exit, cancellation, and handled termination:
+
+```json
+{"cwd":"/work","provider":"anthropic","model":"claude-sonnet-4-5","thinking_level":"medium","mode":"tui","resumed":false,"session_id":"...","session_file":"...","reason":"exit"}
+```
+
+`reason` is `exit` or `canceled`. Shutdown gets a fresh bounded context even when the main run context was canceled. Every shutdown handler is attempted if another handler fails; errors are reported as warnings. `SIGKILL` and process crashes cannot run cleanup hooks.
+
 ### `before_agent_start`
 
 Runs before every model turn.
@@ -172,7 +192,7 @@ Runs when a model response has no tool calls:
 
 Return a non-empty string field `follow_up` to append it as a synthetic user message and continue the loop.
 
-Other hook names may be registered, but they do nothing unless core code or another registry caller emits them.
+Other hook names may be registered, but they do nothing unless core code or another registry caller emits them. Lifecycle hooks describe the Notch process's initial session; fullscreen `/new` changes the conversation session without restarting the process lifecycle.
 
 ## Executable plugin manifest
 
