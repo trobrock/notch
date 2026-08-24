@@ -487,6 +487,10 @@ func TestFormatToolArguments(t *testing.T) {
 	if got != `path="README.md" offset=2` {
 		t.Fatalf("arguments = %q", got)
 	}
+	got = formatToolArguments(json.RawMessage(`{"command":"make check && make build > out < in","url":"https://example.test?a=1&b=2"}`))
+	if strings.Contains(got, `\u0026`) || strings.Contains(got, `\u003e`) || strings.Contains(got, `\u003c`) || !strings.Contains(got, `&&`) {
+		t.Fatalf("HTML characters were escaped: %q", got)
+	}
 	long := formatToolArguments(json.RawMessage(`{"command":"` + strings.Repeat("x", 300) + `"}`))
 	if len([]rune(long)) > 180 || !strings.HasSuffix(long, "…") {
 		t.Fatalf("long arguments were not compacted: %q", long)

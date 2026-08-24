@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1868,10 +1869,19 @@ func formatToolArguments(raw json.RawMessage) string {
 	keys = append(keys, rest...)
 	parts := make([]string, 0, len(keys))
 	for _, key := range keys {
-		encoded, _ := json.Marshal(values[key])
-		parts = append(parts, key+"="+compactInline(string(encoded), 90))
+		parts = append(parts, key+"="+compactInline(marshalDisplayJSON(values[key]), 90))
 	}
 	return compactInline(strings.Join(parts, "  "), 180)
+}
+
+func marshalDisplayJSON(value any) string {
+	var out bytes.Buffer
+	encoder := json.NewEncoder(&out)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
+		return fmt.Sprint(value)
+	}
+	return strings.TrimSuffix(out.String(), "\n")
 }
 
 func compactInline(text string, limit int) string {
