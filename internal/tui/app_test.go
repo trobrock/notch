@@ -67,6 +67,79 @@ func TestAppKeyEditingAndBusySubmission(t *testing.T) {
 	}
 }
 
+func TestMouseSelectionAndCopy(t *testing.T) {
+	var copied string
+	a := NewApp(AppConfig{})
+	a.copyClipboard = func(_ context.Context, _ *os.File, text string) error { copied = text; return nil }
+	a.state.layout.Width, a.state.layout.Height = 20, 3
+	a.state.lastFrame = Frame{Rows: []string{"hello world", "second row", "footer"}}
+	for _, event := range []MouseEvent{
+		{Action: MousePress, Button: 0, Row: 0, Col: 3},
+		{Action: MouseDrag, Button: 0, Row: 1, Col: 5},
+		{Action: MouseRelease, Button: 0, Row: 1, Col: 5},
+	} {
+		if changed, _ := a.handleKey(context.Background(), KeyEvent{Mouse: &event}); !changed {
+			t.Fatalf("mouse event %#v did not change selection", event)
+		}
+	}
+	if changed, _ := a.handleKey(context.Background(), KeyEvent{Key: KeyCtrlY}); !changed {
+		t.Fatal("Ctrl-Y did not copy")
+	}
+	if copied != "lo world\nsecond" {
+		t.Fatalf("copied = %q", copied)
+	}
+	if a.state.layout.Status != "copied (sent)" {
+		t.Fatalf("status = %q", a.state.layout.Status)
+	}
+}
+
+func TestInputBatchSelectionLifecycle(t *testing.T) {
+	var copied string
+	a := NewApp(AppConfig{})
+	a.copyClipboard = func(_ context.Context, _ *os.File, text string) error { copied = text; return nil }
+	a.state.layout.Width, a.state.layout.Height = 20, 3
+	a.state.lastFrame = Frame{Rows: []string{"hello world", "", ""}}
+	press := KeyEvent{Mouse: &MouseEvent{Action: MousePress, Button: 0, Row: 0, Col: 0}}
+	release := KeyEvent{Mouse: &MouseEvent{Action: MouseRelease, Button: 0, Row: 0, Col: 4}}
+	for _, key := range []KeyEvent{press, release, {Key: KeyCtrlY}} {
+		a.handleKey(context.Background(), key)
+	}
+	if copied != "hello" {
+		t.Fatalf("batched-style copy = %q", copied)
+	}
+	a.handleKey(context.Background(), press)
+	a.handleKey(context.Background(), release)
+	a.clearSelection()
+	a.handleKey(context.Background(), KeyEvent{Text: "x"})
+	if a.state.selection != nil {
+		t.Fatal("normal input retained selection")
+	}
+}
+
+func TestSelectionClearsExplicitlyWhenFrameChanges(t *testing.T) {
+	a := NewApp(AppConfig{})
+	a.state.selection = &Selection{Start: SelectionPoint{}, End: SelectionPoint{Row: 1, Col: 1}}
+	a.state.selectionText = "frozen"
+	if !a.clearSelection() || a.state.selection != nil || a.state.selectionText != "" {
+		t.Fatal("selection was not cleared")
+	}
+	if a.clearSelection() {
+		t.Fatal("clearing an empty selection reported a change")
+	}
+}
+
+func TestMouseCaptureDisabledIgnoresMouseEvents(t *testing.T) {
+	disabled := false
+	a := NewApp(AppConfig{MouseCapture: &disabled})
+	a.state.layout.Width, a.state.layout.Height = 20, 10
+	if changed, _ := a.handleKey(context.Background(), KeyEvent{Mouse: &MouseEvent{Action: MousePress, Button: 0, Row: 1, Col: 1}}); changed || a.state.selection != nil {
+		t.Fatal("disabled mouse capture handled press")
+	}
+	if changed, _ := a.handleKey(context.Background(), KeyEvent{Key: KeyScrollUp}); changed {
+		t.Fatal("disabled mouse capture handled wheel")
+	}
+}
+
 func TestTranscriptScrollingKeysClampToContent(t *testing.T) {
 	a := NewApp(AppConfig{})
 	a.state.layout.Width, a.state.layout.Height = 40, 10

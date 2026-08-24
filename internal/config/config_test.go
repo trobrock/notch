@@ -18,7 +18,7 @@ func TestDefaultsAndNotchHome(t *testing.T) {
 	if cfg.Provider == "" || cfg.Model == "" || cfg.MaxTokens == 0 || cfg.SystemPrompt == "" {
 		t.Fatalf("incomplete defaults: %+v", cfg)
 	}
-	if cfg.Theme != "dark" || cfg.ThinkingLevel != "medium" || cfg.Compaction == nil || cfg.Compaction.Enabled == nil || !*cfg.Compaction.Enabled {
+	if cfg.Theme != "dark" || cfg.ThinkingLevel != "medium" || cfg.MouseCapture == nil || !*cfg.MouseCapture || cfg.Compaction == nil || cfg.Compaction.Enabled == nil || !*cfg.Compaction.Enabled {
 		t.Fatalf("interactive defaults are incomplete: %+v", cfg)
 	}
 	if cfg.MCPConfig != filepath.Join(root, "mcp.json") || cfg.SessionDir != filepath.Join(root, "sessions") || cfg.ModelCache != filepath.Join(root, "models.json") || cfg.ModelRefreshHours != 24 {
@@ -59,7 +59,7 @@ func TestLoadMergesUserThenProject(t *testing.T) {
 		"provider":"openai", "model":"global-model", "base_url":"https://global.test",
 		"max_tokens":123, "system_prompt":"global prompt", "extension_dirs":["global-ext"],
 		"skill_dirs":["global-skill"], "prompt_dirs":["global-prompt"], "theme_dirs":["global-theme"], "session_dir":"global-sessions",
-		"theme":"dracula", "thinking_level":"low", "context_window":99999, "model_cache":"custom-models.json", "model_refresh_hours":12,
+		"theme":"dracula", "thinking_level":"low", "mouse":false, "context_window":99999, "model_cache":"custom-models.json", "model_refresh_hours":12,
 		"compaction":{"enabled":false,"reserve_tokens":1000,"keep_recent_tokens":2000}
 	}`)
 	writeJSON(t, filepath.Join(cwd, ".notch", "config.json"), `{
@@ -78,7 +78,7 @@ func TestLoadMergesUserThenProject(t *testing.T) {
 	if cfg.SystemPrompt != "global prompt" || cfg.MCPConfig != "project-mcp.json" || cfg.SessionDir != "global-sessions" {
 		t.Fatalf("scalar inheritance failed: %+v", cfg)
 	}
-	if cfg.Theme != "dracula" || cfg.ThinkingLevel != "high" || cfg.ContextWindow != 99999 || cfg.ModelCache != "custom-models.json" || cfg.ModelRefreshHours != 12 || cfg.Compaction == nil || cfg.Compaction.Enabled == nil || *cfg.Compaction.Enabled || cfg.Compaction.ReserveTokens != 1000 || cfg.Compaction.KeepRecentTokens != 3000 {
+	if cfg.Theme != "dracula" || cfg.ThinkingLevel != "high" || cfg.MouseCapture == nil || *cfg.MouseCapture || cfg.ContextWindow != 99999 || cfg.ModelCache != "custom-models.json" || cfg.ModelRefreshHours != 12 || cfg.Compaction == nil || cfg.Compaction.Enabled == nil || *cfg.Compaction.Enabled || cfg.Compaction.ReserveTokens != 1000 || cfg.Compaction.KeepRecentTokens != 3000 {
 		t.Fatalf("theme/thinking/compaction merge failed: %+v", cfg)
 	}
 	if !reflect.DeepEqual(cfg.ExtensionDirs, []string{"project-ext"}) ||

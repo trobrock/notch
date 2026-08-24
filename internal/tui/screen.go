@@ -13,6 +13,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/mattn/go-runewidth"
 	"golang.org/x/term"
 )
 
@@ -25,14 +26,22 @@ const (
 	disableKittyKeyboard   = "\x1b[<u"  // pop the keyboard mode pushed above
 	enableModifyOtherKeys  = "\x1b[>4;2m"
 	disableModifyOtherKeys = "\x1b[>4;0m"
-	enableMouseTracking    = "\x1b[?1000h\x1b[?1006h"
-	disableMouseTracking   = "\x1b[?1006l\x1b[?1000l"
+	enableMouseTracking    = "\x1b[?1002h\x1b[?1006h"
+	disableMouseTracking   = "\x1b[?1006l\x1b[?1002l"
 	showCursor             = "\x1b[?25h"
 	hideCursor             = "\x1b[?25l"
 	resetSGR               = "\x1b[0m"
 )
 
 var errScreenClosed = errors.New("tui: screen is closed")
+
+type SelectionPoint struct {
+	Row, Col int
+}
+
+type Selection struct {
+	Start, End SelectionPoint
+}
 
 // Frame is a complete desired screen frame. CursorRow and CursorCol are
 // zero-based terminal coordinates.
@@ -41,6 +50,7 @@ type Frame struct {
 	CursorRow     int
 	CursorCol     int
 	CursorVisible bool
+	Selection     *Selection
 }
 
 // screenStats is intentionally kept on Screen so package tests and benchmarks
@@ -58,11 +68,13 @@ type screenStats struct {
 type Screen struct {
 	mu sync.Mutex
 
-	in       *os.File
-	out      io.Writer
-	oldState *term.State
-	sizeFn   func() (width, height int, err error)
-	closed   bool
+	in           *os.File
+	out          io.Writer
+	oldState     *term.State
+	sizeFn       func() (width, height int, err error)
+	closed       bool
+	mouseEnabled bool
+	keyboardMode string
 
 	valid          bool
 	width          int
@@ -77,9 +89,16 @@ type Screen struct {
 }
 
 // OpenScreen puts in into raw mode and enables the output terminal's alternate
-// screen, bracketed-paste mode, and enhanced keyboard reporting. Unsupported
-// terminals safely ignore the keyboard protocol. Neither file is closed by Screen.Close.
+// screen, bracketed-paste mode, enhanced keyboard reporting, and mouse capture.
 func OpenScreen(in *os.File, out *os.File) (*Screen, error) {
+	return openScreen(in, out, true)
+}
+
+func OpenScreenWithoutMouse(in *os.File, out *os.File) (*Screen, error) {
+	return openScreen(in, out, false)
+}
+
+func openScreen(in *os.File, out *os.File, mouse bool) (*Screen, error) {
 	if in == nil || out == nil {
 		return nil, errors.New("tui: input and output terminals are required")
 	}
@@ -104,19 +123,22 @@ func OpenScreen(in *os.File, out *os.File) (*Screen, error) {
 		return nil, fmt.Errorf("tui: enter raw mode: %w", err)
 	}
 
-	setup := terminalSetupSequence(os.Getenv)
+	keyboardMode := enhancedKeyboardSetup(os.Getenv)
+	setup := terminalSetupSequence(keyboardMode, mouse)
 	if err := writeOnce(out, []byte(setup)); err != nil {
 		// Best-effort all terminal cleanup, followed by an unconditional raw-mode
 		// restore. The original setup error remains the primary error.
-		cleanupErr := writeOnce(out, []byte(terminalCleanupSequence()))
+		cleanupErr := writeOnce(out, []byte(terminalCleanupSequence(mouse, keyboardMode)))
 		restoreErr := term.Restore(inFD, oldState)
 		return nil, errors.Join(fmt.Errorf("tui: initialize terminal: %w", err), cleanupErr, restoreErr)
 	}
 
 	return &Screen{
-		in:       in,
-		out:      out,
-		oldState: oldState,
+		in:           in,
+		out:          out,
+		oldState:     oldState,
+		mouseEnabled: mouse,
+		keyboardMode: keyboardMode,
 		sizeFn: func() (int, int, error) {
 			return term.GetSize(outFD)
 		},
@@ -181,6 +203,9 @@ func (s *Screen) Render(frame Frame) error {
 	rows := make([]string, rowCount)
 	for i := range rows {
 		rows[i] = clampRow(frame.Rows[i], width)
+	}
+	if frame.Selection != nil {
+		applySelection(rows, *frame.Selection, width)
 	}
 
 	invalidate := !s.valid || width != s.width || height != s.height || len(frame.Rows) != s.previousHeight
@@ -270,7 +295,7 @@ func (s *Screen) Close() error {
 
 	var outputErr, restoreErr error
 	if s.out != nil {
-		if err := writeOnce(s.out, []byte(terminalCleanupSequence())); err != nil {
+		if err := writeOnce(s.out, []byte(terminalCleanupSequence(s.mouseEnabled, s.keyboardMode))); err != nil {
 			outputErr = fmt.Errorf("tui: restore output terminal: %w", err)
 		}
 	}
@@ -299,14 +324,26 @@ func enhancedKeyboardSetup(getenv func(string) string) string {
 	return enableModifyOtherKeys
 }
 
-func terminalSetupSequence(getenv func(string) string) string {
-	return enterAlternateScreen + enableBracketedPaste + enableMouseTracking + enhancedKeyboardSetup(getenv)
+func terminalSetupSequence(keyboardMode string, mouse bool) string {
+	setup := enterAlternateScreen + enableBracketedPaste
+	if mouse {
+		setup += enableMouseTracking
+	}
+	return setup + keyboardMode
 }
 
-func terminalCleanupSequence() string {
-	// Disabling both is harmless and guarantees restoration if the environment
-	// changed while Notch was running (for example after tmux detach/attach).
-	return resetSGR + showCursor + disableMouseTracking + disableKittyKeyboard + disableModifyOtherKeys + disableBracketedPaste + leaveAlternateScreen
+func terminalCleanupSequence(mouse bool, keyboardMode string) string {
+	cleanup := resetSGR + showCursor
+	if mouse {
+		cleanup += disableMouseTracking
+	}
+	if keyboardMode == enableKittyKeyboard {
+		cleanup += disableKittyKeyboard
+	}
+	if keyboardMode == enableModifyOtherKeys {
+		cleanup += disableModifyOtherKeys
+	}
+	return cleanup + disableBracketedPaste + leaveAlternateScreen
 }
 
 func writeOnce(w io.Writer, p []byte) error {
@@ -329,6 +366,146 @@ func clamp(value, low, high int) int {
 		return high
 	}
 	return value
+}
+
+func normalizeSelection(selection Selection) (SelectionPoint, SelectionPoint) {
+	start, end := selection.Start, selection.End
+	if start.Row > end.Row || (start.Row == end.Row && start.Col > end.Col) {
+		start, end = end, start
+	}
+	return start, end
+}
+
+func applySelection(rows []string, selection Selection, width int) {
+	if len(rows) == 0 || width <= 0 {
+		return
+	}
+	start, end := normalizeSelection(selection)
+	start.Row = clamp(start.Row, 0, max(0, len(rows)-1))
+	end.Row = clamp(end.Row, 0, max(0, len(rows)-1))
+	start.Col = clamp(start.Col, 0, max(0, width-1))
+	end.Col = clamp(end.Col, 0, max(0, width-1))
+	for row := start.Row; row <= end.Row; row++ {
+		from, to := 0, width-1
+		if row == start.Row {
+			from = start.Col
+		}
+		if row == end.Row {
+			to = end.Col
+		}
+		rows[row] = highlightRow(rows[row], from, to)
+	}
+}
+
+func highlightRow(row string, from, to int) string {
+	if from > to {
+		return row
+	}
+	var out strings.Builder
+	cells := 0
+	highlighting := false
+	for i := 0; i < len(row); {
+		if row[i] == '\x1b' {
+			end, sgr := controlSequenceEnd(row, i)
+			out.WriteString(row[i:end])
+			if sgr && highlighting {
+				out.WriteString("\x1b[7m")
+			}
+			i = end
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(row[i:])
+		width := max(0, runewidth.RuneWidth(r))
+		selected := width == 0 && highlighting || width > 0 && cells+width > from && cells <= to
+		if selected && !highlighting {
+			out.WriteString("\x1b[7m")
+			highlighting = true
+		}
+		if !selected && highlighting {
+			out.WriteString("\x1b[27m")
+			highlighting = false
+		}
+		out.WriteString(row[i : i+size])
+		i += size
+		cells += width
+	}
+	if highlighting {
+		out.WriteString("\x1b[27m")
+	}
+	return out.String()
+}
+
+func selectedText(frame Frame) string {
+	if frame.Selection == nil {
+		return ""
+	}
+	start, end := normalizeSelection(*frame.Selection)
+	if len(frame.Rows) == 0 {
+		return ""
+	}
+	start.Row = clamp(start.Row, 0, len(frame.Rows)-1)
+	end.Row = clamp(end.Row, 0, len(frame.Rows)-1)
+	var lines []string
+	for row := start.Row; row <= end.Row; row++ {
+		plain := plainTerminalRow(frame.Rows[row])
+		from, to := 0, max(0, visibleWidth(plain)-1)
+		if row == start.Row {
+			from = start.Col
+		}
+		if row == end.Row {
+			to = end.Col
+		}
+		line := sliceCells(plain, from, to+1)
+		if row != end.Row {
+			line = strings.TrimRight(line, " ")
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func plainTerminalRow(row string) string {
+	var out strings.Builder
+	for i := 0; i < len(row); {
+		if row[i] == '\x1b' {
+			end, _ := controlSequenceEnd(row, i)
+			i = end
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(row[i:])
+		i += size
+		if !unicode.IsControl(r) {
+			out.WriteRune(r)
+		}
+	}
+	return out.String()
+}
+
+func sliceCells(text string, from, to int) string {
+	if from >= to {
+		return ""
+	}
+	var out strings.Builder
+	cells := 0
+	selectedBase := false
+	for _, r := range text {
+		w := max(0, runewidth.RuneWidth(r))
+		if w == 0 {
+			if selectedBase {
+				out.WriteRune(r)
+			}
+			continue
+		}
+		if cells >= to {
+			break
+		}
+		selectedBase = cells+w > from && cells < to
+		if selectedBase {
+			out.WriteRune(r)
+		}
+		cells += w
+	}
+	return out.String()
 }
 
 // clampRow removes terminal controls other than SGR and limits ordinary runes
@@ -359,17 +536,18 @@ func clampRow(row string, width int) string {
 		if unicode.IsControl(r) {
 			continue
 		}
-		if unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Me, r) {
+		runeWidth := max(0, runewidth.RuneWidth(r))
+		if runeWidth == 0 {
 			if cells != 0 {
 				out.WriteRune(r)
 			}
 			continue
 		}
-		if cells == width {
+		if cells+runeWidth > width {
 			continue
 		}
 		out.WriteRune(r)
-		cells++
+		cells += runeWidth
 	}
 	return out.String()
 }

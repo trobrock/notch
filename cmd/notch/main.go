@@ -228,7 +228,8 @@ func run(args []string) error {
 		fullscreen = tui.NewApp(tui.AppConfig{
 			CWD: cwd, Provider: normalizeProvider(cfg.Provider), Model: cfg.Model, SessionDir: sessionDir,
 			Theme: selectedTheme, ThemeName: cfg.Theme, Themes: themeCatalog, ThinkingLevel: cfg.ThinkingLevel,
-			GitBranch: currentGitBranch(cwd), In: os.Stdin, Out: os.Stdout,
+			MouseCapture: cfg.MouseCapture,
+			GitBranch:    currentGitBranch(cwd), In: os.Stdin, Out: os.Stdout,
 		})
 		extensionHost = fullscreen
 		for _, warning := range themeWarnings {

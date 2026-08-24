@@ -43,14 +43,31 @@ const (
 	KeyCtrlK      = "ctrl+k"
 	KeyCtrlU      = "ctrl+u"
 	KeyCtrlW      = "ctrl+w"
+	KeyCtrlY      = "ctrl+y"
 )
 
-// KeyEvent is either a named terminal key or text. Paste is true only for the
+type MouseAction string
+
+const (
+	MousePress   MouseAction = "press"
+	MouseDrag    MouseAction = "drag"
+	MouseRelease MouseAction = "release"
+)
+
+type MouseEvent struct {
+	Action           MouseAction
+	Button           int
+	Row, Col         int
+	Shift, Alt, Ctrl bool
+}
+
+// KeyEvent is either a named terminal key, mouse event, or text. Paste is true only for the
 // single text event produced by a bracketed paste.
 type KeyEvent struct {
 	Key   string
 	Text  string
 	Paste bool
+	Mouse *MouseEvent
 }
 
 // Parser incrementally decodes bytes read from a terminal. Its zero value is
@@ -95,7 +112,7 @@ func (p *Parser) Feed(b []byte) []KeyEvent {
 				p.inPaste = true
 				continue
 			}
-			if event.Key != "" || event.Text != "" {
+			if event.Key != "" || event.Text != "" || event.Mouse != nil {
 				events = append(events, event)
 			}
 			continue
@@ -166,6 +183,8 @@ func controlEvent(b byte) (KeyEvent, bool) {
 		key = KeyCtrlU
 	case 0x17:
 		key = KeyCtrlW
+	case 0x19:
+		key = KeyCtrlY
 	default:
 		return KeyEvent{}, false
 	}
@@ -284,7 +303,8 @@ func parseMouseX10(b []byte) (KeyEvent, int, bool, bool) {
 		return KeyEvent{}, 0, false, false
 	}
 	button := int(b[3]) - 32
-	return mouseWheelEvent(button, true, 6)
+	row, col := int(b[5])-33, int(b[4])-33
+	return mouseEvent(button, button&3 != 3, row, col, 6)
 }
 
 func parseMouseSGR(b []byte) (KeyEvent, int, bool, bool) {
@@ -308,11 +328,31 @@ func parseMouseSGR(b []byte) (KeyEvent, int, bool, bool) {
 	if len(parts) != 3 {
 		return KeyEvent{}, end + 1, true, true
 	}
-	button, err := strconv.Atoi(parts[0])
-	if err != nil {
+	button, buttonErr := strconv.Atoi(parts[0])
+	col, colErr := strconv.Atoi(parts[1])
+	row, rowErr := strconv.Atoi(parts[2])
+	if buttonErr != nil || colErr != nil || rowErr != nil || col < 1 || row < 1 {
 		return KeyEvent{}, end + 1, true, true
 	}
-	return mouseWheelEvent(button, b[end] == 'M', end+1)
+	return mouseEvent(button, b[end] == 'M', row-1, col-1, end+1)
+}
+
+func mouseEvent(button int, pressed bool, row, col, consumed int) (KeyEvent, int, bool, bool) {
+	if button&64 != 0 {
+		return mouseWheelEvent(button, pressed, consumed)
+	}
+	rawButton := button
+	button, motion := button&3, button&32 != 0
+	action := MousePress
+	if !pressed || (motion && button == 3) {
+		action = MouseRelease
+	} else if motion {
+		action = MouseDrag
+	}
+	return KeyEvent{Mouse: &MouseEvent{
+		Action: action, Button: button, Row: row, Col: col,
+		Shift: rawButton&4 != 0, Alt: rawButton&8 != 0, Ctrl: rawButton&16 != 0,
+	}}, consumed, true, true
 }
 
 func mouseWheelEvent(button int, pressed bool, consumed int) (KeyEvent, int, bool, bool) {
@@ -414,6 +454,8 @@ func enhancedCodeEvent(code, modifier int) KeyEvent {
 		return KeyEvent{Key: KeyCtrlU}
 	case 'w', 'W':
 		return KeyEvent{Key: KeyCtrlW}
+	case 'y', 'Y':
+		return KeyEvent{Key: KeyCtrlY}
 	}
 	return KeyEvent{}
 }

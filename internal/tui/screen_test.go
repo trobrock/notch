@@ -143,13 +143,61 @@ func TestOpenScreenRejectsNonTTYWithoutWriting(t *testing.T) {
 	}
 }
 
+func TestFrameSelectionHighlightsAndCopiesPlainText(t *testing.T) {
+	frame := Frame{
+		Rows:      []string{"\x1b[31mhello\x1b[0m world", "second row"},
+		Selection: &Selection{Start: SelectionPoint{Row: 0, Col: 3}, End: SelectionPoint{Row: 1, Col: 5}},
+	}
+	rows := append([]string(nil), frame.Rows...)
+	applySelection(rows, *frame.Selection, 20)
+	if !strings.Contains(rows[0], "\x1b[7m") || !strings.Contains(rows[1], "\x1b[7m") {
+		t.Fatalf("selection was not highlighted: %#v", rows)
+	}
+	if got, want := selectedText(frame), "lo world\nsecond"; got != want {
+		t.Fatalf("selectedText = %q, want %q", got, want)
+	}
+	frame.Selection = &Selection{Start: frame.Selection.End, End: frame.Selection.Start}
+	if got, want := selectedText(frame), "lo world\nsecond"; got != want {
+		t.Fatalf("reverse selectedText = %q, want %q", got, want)
+	}
+}
+
+func TestFrameSelectionHandlesWideAndSpaceCells(t *testing.T) {
+	wide := Frame{Rows: []string{"界x"}, Selection: &Selection{Start: SelectionPoint{Row: 0, Col: 1}, End: SelectionPoint{Row: 0, Col: 1}}}
+	if got := selectedText(wide); got != "界" {
+		t.Fatalf("wide continuation selection = %q", got)
+	}
+	rows := append([]string(nil), wide.Rows...)
+	applySelection(rows, *wide.Selection, 3)
+	if !strings.HasPrefix(rows[0], "\x1b[7m界\x1b[27m") {
+		t.Fatalf("wide highlight = %q", rows[0])
+	}
+	combining := Frame{Rows: []string{"e\u0301x"}, Selection: &Selection{Start: SelectionPoint{}, End: SelectionPoint{}}}
+	if got := selectedText(combining); got != "e\u0301" {
+		t.Fatalf("combining selection = %q", got)
+	}
+	spaces := Frame{Rows: []string{"a  b     ", "   "}, Selection: &Selection{Start: SelectionPoint{Row: 0, Col: 1}, End: SelectionPoint{Row: 1, Col: 2}}}
+	if got, want := selectedText(spaces), "  b\n   "; got != want {
+		t.Fatalf("space selection = %q, want %q", got, want)
+	}
+}
+
+func TestClampRowUsesDisplayCellWidths(t *testing.T) {
+	if got := clampRow("界界x", 3); got != "界x" {
+		t.Fatalf("clampRow = %q", got)
+	}
+}
+
 func TestTerminalModesIncludeMouseTracking(t *testing.T) {
-	setup := terminalSetupSequence(func(string) string { return "" })
-	if !strings.Contains(setup, "\x1b[?1000h") || !strings.Contains(setup, "\x1b[?1006h") {
+	setup := terminalSetupSequence(enableModifyOtherKeys, true)
+	if !strings.Contains(setup, "\x1b[?1002h") || !strings.Contains(setup, "\x1b[?1006h") {
 		t.Fatalf("setup does not enable mouse modes: %q", setup)
 	}
-	cleanup := terminalCleanupSequence()
-	if !strings.Contains(cleanup, "\x1b[?1006l") || !strings.Contains(cleanup, "\x1b[?1000l") {
+	if disabled := terminalSetupSequence(enableModifyOtherKeys, false); strings.Contains(disabled, "?1002h") || strings.Contains(disabled, "?1006h") {
+		t.Fatalf("disabled setup enables mouse modes: %q", disabled)
+	}
+	cleanup := terminalCleanupSequence(true, enableModifyOtherKeys)
+	if !strings.Contains(cleanup, "\x1b[?1006l") || !strings.Contains(cleanup, "\x1b[?1002l") {
 		t.Fatalf("cleanup does not disable mouse modes: %q", cleanup)
 	}
 }
@@ -169,13 +217,20 @@ func TestEnhancedKeyboardSetup(t *testing.T) {
 	}
 }
 
+func TestCleanupOnlyRestoresEnabledModes(t *testing.T) {
+	cleanup := terminalCleanupSequence(false, enableKittyKeyboard)
+	if strings.Contains(cleanup, "?1002l") || strings.Contains(cleanup, disableModifyOtherKeys) || !strings.Contains(cleanup, disableKittyKeyboard) {
+		t.Fatalf("mode-specific cleanup = %q", cleanup)
+	}
+}
+
 func TestCloseEmitsAllRestorationControlsOnce(t *testing.T) {
 	var output bytes.Buffer
 	screen := newScreen(&output, 80, 24)
 	if err := screen.Close(); err != nil {
 		t.Fatal(err)
 	}
-	want := terminalCleanupSequence()
+	want := terminalCleanupSequence(false, "")
 	if got := output.String(); got != want {
 		t.Fatalf("Close output = %q, want %q", got, want)
 	}

@@ -17,9 +17,9 @@ func TestParserKeys(t *testing.T) {
 		{"backspace-del", "\x7f", []KeyEvent{{Key: KeyBackspace}}},
 		{"backspace-bs", "\x08", []KeyEvent{{Key: KeyBackspace}}},
 		{"tab", "\t", []KeyEvent{{Key: KeyTab}}},
-		{"controls", "\x01\x05\x02\x06\x0b\x15\x17\x03\x04", []KeyEvent{
+		{"controls", "\x01\x05\x02\x06\x0b\x15\x17\x19\x03\x04", []KeyEvent{
 			{Key: KeyCtrlA}, {Key: KeyCtrlE}, {Key: KeyCtrlB}, {Key: KeyCtrlF},
-			{Key: KeyCtrlK}, {Key: KeyCtrlU}, {Key: KeyCtrlW}, {Key: KeyCtrlC}, {Key: KeyCtrlD},
+			{Key: KeyCtrlK}, {Key: KeyCtrlU}, {Key: KeyCtrlW}, {Key: KeyCtrlY}, {Key: KeyCtrlC}, {Key: KeyCtrlD},
 		}},
 		{"arrows", "\x1b[A\x1b[B\x1b[C\x1b[D", []KeyEvent{{Key: KeyUp}, {Key: KeyDown}, {Key: KeyRight}, {Key: KeyLeft}}},
 		{"ss3-arrows", "\x1bOA\x1bOB\x1bOC\x1bOD", []KeyEvent{{Key: KeyUp}, {Key: KeyDown}, {Key: KeyRight}, {Key: KeyLeft}}},
@@ -32,14 +32,19 @@ func TestParserKeys(t *testing.T) {
 		{"alt-rxvt", "\x1b[3D\x1b[3C", []KeyEvent{{Key: KeyAltLeft}, {Key: KeyAltRight}}},
 		{"shift-enter", "\x1b[13;2u\x1b[27;2;13~", []KeyEvent{{Key: KeyShiftEnter}, {Key: KeyShiftEnter}}},
 		{"shift-tab", "\x1b[Z\x1b[9;2u\x1b[27;2;9~", []KeyEvent{{Key: KeyShiftTab}, {Key: KeyShiftTab}, {Key: KeyShiftTab}}},
-		{"kitty-controls", "\x1b[100;5u\x1b[99;5u\x1b[106;5u\x1b[97;5:3u", []KeyEvent{{Key: KeyCtrlD}, {Key: KeyCtrlC}, {Key: KeyNewline}}},
+		{"kitty-controls", "\x1b[100;5u\x1b[99;5u\x1b[106;5u\x1b[121;5u\x1b[97;5:3u", []KeyEvent{{Key: KeyCtrlD}, {Key: KeyCtrlC}, {Key: KeyNewline}, {Key: KeyCtrlY}}},
 		{"modify-other-controls", "\x1b[27;5;100~\x1b[27;5;99~", []KeyEvent{{Key: KeyCtrlD}, {Key: KeyCtrlC}}},
 		{"alt-enter", "\x1b[13;3u\x1b[27;3;13~\x1b\r", []KeyEvent{{Key: KeyAltEnter}, {Key: KeyAltEnter}, {Key: KeyAltEnter}}},
 		{"mouse-wheel", "\x1b[<64;10;5M\x1b[<65;10;5M", []KeyEvent{{Key: KeyScrollUp}, {Key: KeyScrollDown}}},
 		{"mouse-wheel-modified", "\x1b[<68;10;5M\x1b[<81;10;5M", []KeyEvent{{Key: KeyScrollUp}, {Key: KeyScrollDown}}},
 		{"mouse-release", "\x1b[<64;10;5m", nil},
 		{"mouse-wheel-x10", "\x1b[M`**\x1b[Ma**", []KeyEvent{{Key: KeyScrollUp}, {Key: KeyScrollDown}}},
-		{"mouse-other", "\x1b[<0;10;5M\x1b[<0;10;5m", nil},
+		{"mouse-release-x10", "\x1b[M#**", []KeyEvent{{Mouse: &MouseEvent{Action: MouseRelease, Button: 3, Row: 9, Col: 9}}}},
+		{"mouse-events", "\x1b[<28;10;5M\x1b[<32;11;6M\x1b[<0;11;6m", []KeyEvent{
+			{Mouse: &MouseEvent{Action: MousePress, Button: 0, Row: 4, Col: 9, Shift: true, Alt: true, Ctrl: true}},
+			{Mouse: &MouseEvent{Action: MouseDrag, Button: 0, Row: 5, Col: 10}},
+			{Mouse: &MouseEvent{Action: MouseRelease, Button: 0, Row: 5, Col: 10}},
+		}},
 		{"kitty-query-response", "\x1b[?7u", nil},
 	}
 	for _, tt := range tests {

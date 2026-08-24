@@ -68,6 +68,7 @@ type Config struct {
 	AuthFile          string            `json:"auth_file,omitempty"`
 	Theme             string            `json:"theme,omitempty"`
 	ThinkingLevel     string            `json:"thinking_level,omitempty"`
+	MouseCapture      *bool             `json:"mouse,omitempty"`
 	ContextWindow     int               `json:"context_window,omitempty"`
 	ModelCache        string            `json:"model_cache,omitempty"`
 	ModelRefreshHours int               `json:"model_refresh_hours,omitempty"`
@@ -81,6 +82,7 @@ func Defaults(home, cwd string) Config {
 	root := notchHome(home)
 	projectRoot := filepath.Join(cwd, ".notch")
 	enabled := true
+	mouseEnabled := true
 	return Config{
 		Provider:          defaultProvider,
 		Model:             defaultModel,
@@ -97,6 +99,7 @@ func Defaults(home, cwd string) Config {
 		AuthFile:          filepath.Join(root, "auth.json"),
 		Theme:             defaultTheme,
 		ThinkingLevel:     defaultThinking,
+		MouseCapture:      &mouseEnabled,
 		ModelCache:        filepath.Join(root, "models.json"),
 		ModelRefreshHours: 24,
 		Compaction:        &CompactionConfig{Enabled: &enabled, ReserveTokens: 16384, KeepRecentTokens: 20000},
@@ -201,6 +204,10 @@ func merge(dst *Config, src Config) {
 	}
 	if src.ThinkingLevel != "" {
 		dst.ThinkingLevel = src.ThinkingLevel
+	}
+	if src.MouseCapture != nil {
+		value := *src.MouseCapture
+		dst.MouseCapture = &value
 	}
 	if src.ContextWindow > 0 {
 		dst.ContextWindow = src.ContextWindow

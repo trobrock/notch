@@ -36,6 +36,7 @@ const (
 
 // AppConfig describes the terminal and the labels shown in the status line.
 type AppConfig struct {
+	MouseCapture  *bool
 	CWD           string
 	Provider      string
 	Model         string
@@ -73,8 +74,9 @@ type App struct {
 
 	// Kept as fields to allow package tests to exercise the loop without opening
 	// a real terminal. Production instances use OpenScreen and time.NewTimer.
-	openScreen func(*os.File, *os.File) (*Screen, error)
-	newTimer   func(time.Duration) *time.Timer
+	openScreen    func(*os.File, *os.File) (*Screen, error)
+	newTimer      func(time.Duration) *time.Timer
+	copyClipboard func(context.Context, *os.File, string) error
 
 	state appState
 }
@@ -95,6 +97,10 @@ type appState struct {
 	commandHelp         bool
 	completionDismissed string
 	exit                bool
+	selection           *Selection
+	selectionText       string
+	selecting           bool
+	lastFrame           Frame
 
 	modal      *hostRequest
 	modalQueue []*hostRequest
@@ -188,12 +194,21 @@ func NewApp(cfg AppConfig) *App {
 	if cfg.ThinkingLevel == "" {
 		cfg.ThinkingLevel = "off"
 	}
+	if cfg.MouseCapture == nil {
+		enabled := true
+		cfg.MouseCapture = &enabled
+	}
 	editor := NewEditor()
+	openScreen := OpenScreen
+	if !*cfg.MouseCapture {
+		openScreen = OpenScreenWithoutMouse
+	}
 	a := &App{
-		cfg:        cfg,
-		events:     make(chan appEvent, appEventBuffer),
-		openScreen: OpenScreen,
-		newTimer:   time.NewTimer,
+		cfg:           cfg,
+		events:        make(chan appEvent, appEventBuffer),
+		openScreen:    openScreen,
+		newTimer:      time.NewTimer,
+		copyClipboard: copyToClipboard,
 	}
 	a.state = appState{
 		editor: editor,
@@ -326,7 +341,10 @@ func (a *App) Run(ctx context.Context) (retErr error) {
 	for _, event := range pending {
 		a.applyEvent(ctx, event)
 	}
-	if err := screen.Render(BuildFrame(&a.state.layout)); err != nil {
+	frame := BuildFrame(&a.state.layout)
+	frame.Selection = a.state.selection
+	a.state.lastFrame = frame
+	if err := screen.Render(frame); err != nil {
 		return err
 	}
 
@@ -428,13 +446,25 @@ func (a *App) Run(ctx context.Context) (retErr error) {
 			if delta.Len() != 0 {
 				dirty = flushDelta(false) || dirty
 			}
-			dirty = a.applyEvent(ctx, appEvent{keys: keys}) || dirty
+			for _, key := range keys {
+				if key.Mouse == nil && key.Key != KeyCtrlY {
+					dirty = a.clearSelection() || dirty
+				}
+				keyChanged, exit := a.handleKey(ctx, key)
+				dirty = keyChanged || dirty
+				if exit {
+					a.state.exit = true
+					break
+				}
+			}
 		case inputErr := <-readErrors:
+			dirty = a.clearSelection() || dirty
 			if delta.Len() != 0 {
 				dirty = flushDelta(false) || dirty
 			}
 			dirty = a.applyEvent(ctx, appEvent{readErr: inputErr}) || dirty
 		case <-resize:
+			dirty = a.clearSelection() || dirty
 			if delta.Len() != 0 {
 				dirty = flushDelta(false) || dirty
 			}
@@ -453,12 +483,15 @@ func (a *App) Run(ctx context.Context) (retErr error) {
 				dirty = true
 			}
 		case <-deltaC:
+			dirty = a.clearSelection() || dirty
 			dirty = flushDelta(true)
 		case <-thinkingC:
+			dirty = a.clearSelection() || dirty
 			thinkingTimer, thinkingC = nil, nil
 			a.state.layout.ThinkingFrame++
 			dirty = true
 		case event := <-a.events:
+			dirty = a.clearSelection() || dirty
 			isStreamDelta := event.agent != nil && (event.agent.Type == "text_delta" || event.agent.Type == "thinking_delta")
 			if isStreamDelta {
 				if delta.Len() != 0 && deltaType != event.agent.Type {
@@ -491,7 +524,10 @@ func (a *App) Run(ctx context.Context) (retErr error) {
 			return nil
 		}
 		if dirty {
-			if err := screen.Render(BuildFrame(&a.state.layout)); err != nil {
+			frame := BuildFrame(&a.state.layout)
+			frame.Selection = a.state.selection
+			a.state.lastFrame = frame
+			if err := screen.Render(frame); err != nil {
 				return err
 			}
 		}
@@ -695,7 +731,32 @@ func (a *App) applyEvent(runCtx context.Context, event appEvent) bool {
 	return changed
 }
 
+func (a *App) handleGlobalInput(runCtx context.Context, key KeyEvent) (changed, exit, handled bool) {
+	if key.Mouse != nil {
+		if a.cfg.MouseCapture == nil || !*a.cfg.MouseCapture {
+			return false, false, true
+		}
+		return a.handleMouse(*key.Mouse), false, true
+	}
+	if key.Key == KeyScrollUp || key.Key == KeyScrollDown {
+		if a.cfg.MouseCapture == nil || !*a.cfg.MouseCapture {
+			return false, false, true
+		}
+		if key.Key == KeyScrollUp {
+			return a.scrollTranscript(3), false, true
+		}
+		return a.scrollTranscript(-3), false, true
+	}
+	if key.Key == KeyCtrlY {
+		return a.copySelection(runCtx), false, true
+	}
+	return false, false, false
+}
+
 func (a *App) handleKey(runCtx context.Context, key KeyEvent) (changed, exit bool) {
+	if changed, exit, handled := a.handleGlobalInput(runCtx, key); handled {
+		return changed, exit
+	}
 	if a.state.modal != nil {
 		return a.handleModalKey(key)
 	}
@@ -797,10 +858,6 @@ func (a *App) handleKey(runCtx context.Context, key KeyEvent) (changed, exit boo
 		return a.pageTranscript(1), false
 	case KeyPageDown:
 		return a.pageTranscript(-1), false
-	case KeyScrollUp:
-		return a.scrollTranscript(3), false
-	case KeyScrollDown:
-		return a.scrollTranscript(-3), false
 	case KeyEscape:
 		if len(a.state.layout.CommandSuggestions) != 0 {
 			a.state.commandHelp = false
@@ -828,6 +885,71 @@ func (a *App) handleKey(runCtx context.Context, key KeyEvent) (changed, exit boo
 		return e.Delete(), false
 	}
 	return false, false
+}
+
+func (a *App) clearSelection() bool {
+	if a.state.selection == nil {
+		return false
+	}
+	a.state.selection, a.state.selectionText, a.state.selecting = nil, "", false
+	return true
+}
+
+func (a *App) handleMouse(event MouseEvent) bool {
+	if a.state.layout.Width <= 0 || a.state.layout.Height <= 0 {
+		return false
+	}
+	if event.Action != MouseRelease && event.Button != 0 {
+		return false
+	}
+	point := SelectionPoint{
+		Row: clamp(event.Row, 0, a.state.layout.Height-1),
+		Col: clamp(event.Col, 0, a.state.layout.Width-1),
+	}
+	switch event.Action {
+	case MousePress:
+		a.state.selection = &Selection{Start: point, End: point}
+		a.state.selectionText = ""
+		a.state.selecting = true
+		return true
+	case MouseDrag:
+		if a.state.selecting && a.state.selection != nil {
+			a.state.selection.End = point
+			return true
+		}
+	case MouseRelease:
+		if a.state.selecting && a.state.selection != nil {
+			a.state.selection.End = point
+			a.state.selection.End = point
+			frame := a.state.lastFrame
+			frame.Selection = a.state.selection
+			a.state.selectionText = selectedText(frame)
+			a.state.selecting = false
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) copySelection(ctx context.Context) bool {
+	if a.state.selection == nil {
+		return false
+	}
+	text := a.state.selectionText
+	if text == "" {
+		frame := a.state.lastFrame
+		frame.Selection = a.state.selection
+		text = selectedText(frame)
+	}
+	if text == "" {
+		return false
+	}
+	if err := a.copyClipboard(ctx, a.cfg.Out, text); err != nil {
+		a.addNotice("copy selection: "+err.Error(), "error")
+	} else {
+		a.state.layout.Status = "copied (sent)"
+	}
+	return true
 }
 
 func (a *App) transcriptRenderedLines() int {
@@ -2418,6 +2540,9 @@ func (request *hostRequest) normalizeSelection() []int {
 }
 
 func (a *App) handleModalKey(key KeyEvent) (changed, exit bool) {
+	if changed, exit, handled := a.handleGlobalInput(context.Background(), key); handled {
+		return changed, exit
+	}
 	request := a.state.modal
 	if request == nil {
 		return false, false
@@ -2437,12 +2562,6 @@ func (a *App) handleModalKey(key KeyEvent) (changed, exit bool) {
 	}
 	if key.Key == KeyPageDown {
 		return a.pageTranscript(-1), false
-	}
-	if key.Key == KeyScrollUp {
-		return a.scrollTranscript(3), false
-	}
-	if key.Key == KeyScrollDown {
-		return a.scrollTranscript(-3), false
 	}
 	if key.Key == KeyCtrlC || key.Key == KeyEscape {
 		if a.state.cancel != nil {

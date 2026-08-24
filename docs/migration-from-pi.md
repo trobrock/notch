@@ -8,7 +8,7 @@ Notch is a good fit when you want a single Go binary, native Anthropic, OpenAI/C
 
 Stay on Pi, or run both during migration, if you depend on features outside Notch's smaller interface and workflow surface. Notch now mirrors Pi's core conversation presentation, themes, thinking controls, `/new`, and context compaction. Remaining gaps include:
 
-- no Markdown tables/images, mouse clicking/selection, configurable keybindings, inline mode, or tool-output expand/collapse;
+- no Markdown tables/images, general mouse interaction beyond text selection, configurable keybindings, inline mode, or tool-output expand/collapse;
 - no branching/session-tree navigation;
 - only the core Pi RPC state/prompt/event subset, not the full command surface;
 - provider OAuth is limited to `openai-codex`, `anthropic`, and `openrouter`;

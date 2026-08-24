@@ -2,7 +2,9 @@
 
 Notch's interactive default is a fullscreen, event-driven terminal UI. It is selected only when there is no one-shot prompt, both stdin and stdout are TTYs, and none of `--no-tui`, `--json`, or `--mode rpc` is set. If either stream is redirected or piped, Notch uses its buffered line-oriented interface instead. `--no-tui` selects that fallback explicitly; one-shot prompts and JSONL output also avoid the fullscreen UI.
 
-The fullscreen UI puts the terminal in raw mode and uses the alternate screen, restoring the previous screen and terminal mode on exit. Bracketed paste and SGR mouse-wheel reporting are enabled for the duration of the session. This lets Notch own transcript scrollback consistently in direct terminals, tmux, and nested tmux sessions (including remote Termius sessions), provided each tmux layer has mouse forwarding enabled (`set -g mouse on`).
+The fullscreen UI puts the terminal in raw mode and uses the alternate screen, restoring the previous screen and terminal mode on exit. Bracketed paste is always enabled; SGR mouse reporting is enabled when mouse capture is active (the default). This lets Notch own transcript scrollback and text selection consistently in direct terminals, tmux, and nested tmux sessions (including remote Termius sessions), provided each tmux layer has mouse forwarding enabled (`set -g mouse on`). Drag to select rendered text, then press `Ctrl-Y` to copy it through OSC 52 and an available platform clipboard helper.
+
+Set `"mouse": false` in user or project `config.json` to restore terminal-native mouse selection instead of Notch's wheel scrolling and drag selection. The alternate-screen TUI still does not provide terminal-native scrollback; use `--no-tui` when that is required. With capture enabled, copying uses `tmux load-buffer -w` inside tmux, emits OSC 52, and also tries `pbcopy`, `wl-copy`, `xclip`, `xsel`, PowerShell, or `clip.exe` when available. Clipboard acceptance cannot be acknowledged by OSC 52, and remote/tmux installations may require clipboard passthrough configuration.
 
 ## Pi-style layout
 
@@ -40,6 +42,8 @@ The UI redraws itself for terminal resizes (`SIGWINCH`), rewrapping content to t
 | `Shift-Tab` | Cycle `off` → `minimal` → `low` → `medium` → `high` → `xhigh` |
 | Escape | Close slash help/completion or cancel an extension/session selector |
 | `PageUp`/`PageDown` | Scroll the transcript by roughly one viewport |
+| Mouse drag | Select rendered text |
+| `Ctrl-Y` | Copy the current TUI selection |
 | Mouse wheel | Scroll the transcript by three rendered lines |
 | `Ctrl-C` | Cancel active model/command work; otherwise clear the composer; if already empty, exit |
 | `Ctrl-D` | Exit when the composer is empty; otherwise delete at the cursor |
@@ -117,7 +121,7 @@ Transcript rendering is cached per entry. Markdown cache keys include the source
 The fullscreen UI currently has no:
 
 - terminal table layout, image display, syntax highlighting, or special rendering for Markdown extensions such as task lists and strikethrough;
-- mouse clicking, selection, and hover interactions;
+- general mouse interaction beyond text selection;
 - configurable keybindings;
 - inline mode that preserves output in the normal screen buffer;
 - expand/collapse control for shortened tool output.

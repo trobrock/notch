@@ -30,6 +30,7 @@ Before editing, read every existing applicable config file. Do not replace unrel
   "max_tokens": 8192,
   "theme": "dark",
   "thinking_level": "medium",
+  "mouse": true,
   "context_window": 0,
   "model_cache": "/home/me/.notch/models.json",
   "model_refresh_hours": 24,
@@ -52,7 +53,7 @@ Empty scalar values in later files do not erase earlier values. A non-empty dire
 
 The model registry ships with an offline fallback and refreshes stale selected-provider data from provider model-list APIs on startup or when `/model` is opened. `model_refresh_hours` controls staleness; no polling timer runs. Use `notch models [provider]` to list cached/discovered models, `notch models --refresh [provider]` to force discovery, and `/model refresh` to force it in the fullscreen selector. `model_cache` relocates the mode-0600 JSON cache.
 
-Valid thinking levels are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh`. Built-in themes are `dark`, `dracula`, and `catppuccin-mocha`. `/thinking LEVEL` and `/theme NAME` change only the running process.
+Valid thinking levels are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh`. Built-in themes are `dark`, `dracula`, and `catppuccin-mocha`. `/thinking LEVEL` and `/theme NAME` change only the running process. `mouse` defaults to `true`; set it to `false` to disable TUI mouse capture and restore terminal-native selection/scrolling.
 
 Tool exposure is controlled per process with `--tools read,grep`, `--exclude-tools bash,write`, `--no-builtin-tools`, or `--no-tools`. The strict allowlist applies across built-in, extension, and MCP tools; unknown names fail startup. These are CLI controls rather than persistent config keys.
 
