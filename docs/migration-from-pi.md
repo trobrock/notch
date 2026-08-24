@@ -170,6 +170,8 @@ The program must implement Notch's line-delimited JSON-RPC protocol. It cannot i
 
 The complete Lua and executable APIs are in [extensions.md](extensions.md).
 
+After porting, add a `notch-package.json` manifest and publish the ready-to-run files in Git. Consumers can then use `notch extensions install github:owner/repository` and `notch extensions update` without npm. Pi `package.json` metadata and npm package dependencies are not imported; see [extension packages](extension-packages.md) for Notch's manifest and source rules.
+
 ### Hook mapping
 
 Port behavior to the nearest current Notch hook:

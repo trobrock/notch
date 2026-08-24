@@ -1,6 +1,6 @@
 # Extensions
 
-Installed Notch binaries include `/skill:notch-extension`, an on-demand guide for choosing, building, validating, and installing the extension formats described here. `/skill:notch-config` covers extension directory and related runtime configuration.
+Installed Notch binaries include `/skill:notch-extension`, an on-demand guide for choosing, building, validating, packaging, and installing the extension formats described here. `/skill:notch-config` covers extension directory and related runtime configuration. To share or install versioned extensions, see [extension packages](extension-packages.md).
 
 Notch has two first-class extension formats:
 
@@ -20,7 +20,7 @@ Default extension directories are:
 <cwd>/.notch/extensions
 ```
 
-`$NOTCH_HOME/extensions` replaces the first path when `NOTCH_HOME` is set. `extension_dirs` can replace the list in config.
+`$NOTCH_HOME/extensions` replaces the first path when `NOTCH_HOME` is set. `extension_dirs` can replace the list in config. Directories exported by packages installed through `notch extensions install` are appended after the configured direct directories.
 
 Notch recursively discovers files named `plugin.json` for executable plugins. It also loads `.lua` files located directly in each configured extension directory; Lua discovery is not recursive. Manifest paths and Lua filenames are sorted. User directories precede project directories by default.
 

@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "name": "notch-hello-lua",
+  "version": "0.1.0",
+  "description": "Minimal shareable Lua extension package for Notch",
+  "license": "MIT",
+  "homepage": "https://github.com/trobrock/notch/tree/main/examples/extensions/hello-lua",
+  "extensions": ["."]
+}

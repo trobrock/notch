@@ -28,6 +28,22 @@ Default extension directories are:
 
 Tool and command names are global. Duplicate names are rejected rather than overriding built-ins or earlier extensions. Use a clear, stable prefix for project-specific tools.
 
+## Package and share extensions
+
+Use `notch extensions init --name NAME DIRECTORY` to scaffold `notch-package.json` and an exported `extensions/` directory. A package manifest has `schema_version: 1`, a stable lowercase `name`, a semantic `version`, and one or more relative `extensions` directories. Keep package content ready to run; installation deliberately runs no build or post-install scripts.
+
+Install and manage trusted packages with:
+
+```text
+notch extensions validate [--json] [DIRECTORY]
+notch extensions install [--ref REF] [--subdir PATH] SOURCE
+notch extensions list [--json]
+notch extensions update [--force] [NAME...]
+notch extensions remove NAME
+```
+
+Sources may be `github:owner/repository`, a raw GitHub URL, a generic HTTPS/SSH Git URL, or a local directory. GitHub and local sources are handled natively; generic Git invokes `git`. Installed packages are copied under `$NOTCH_HOME/packages` or `~/.notch/packages`, locked to an exact commit or tree digest, and loaded after direct extension directories. Never install a third-party package without reviewing it. See `docs/extension-packages.md` in the Notch repository for the full format and security rules.
+
 ## Lua extension API
 
 Create a direct file such as `.notch/extensions/example.lua`:

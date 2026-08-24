@@ -6,9 +6,9 @@ Notch is one Go program with a deliberately small provider-independent agent loo
 
 `cmd/notch/main.go` is the composition root. Startup proceeds in this order:
 
-1. Dispatch standalone authentication, model-list, version, and upgrade commands; otherwise parse agent flags and determine the current directory and home directory.
+1. Dispatch standalone authentication, model-list, extension-package, version, and upgrade commands; otherwise parse agent flags and determine the current directory and home directory.
 2. Load defaults, user config, and project config; apply `NOTCH_PROVIDER`, `NOTCH_MODEL`, and `NOTCH_THINKING_LEVEL`; then apply CLI overrides.
-3. Create configured extension, skill, prompt, theme, and session directories.
+3. Recover any interrupted package transaction, validate installed package manifests, append their exported extension directories, and create configured extension, skill, prompt, theme, and session directories.
 4. Load built-in and custom theme JSON, select the configured theme, then create the terminal and extension registry and register built-in tools.
 5. Discover and start executable plugins, then load top-level Lua files.
 6. If the MCP config file exists, connect configured servers and register their tools.
@@ -95,6 +95,10 @@ Sessions are version-1 JSONL files. Creation is exclusive, names combine UTC tim
 Sessions preserve conversation state, not process state: extension declarations, current config, system prompt, and MCP connections are rebuilt on every launch. Message, compaction, and reset records determine the effective context. Per-turn `usage` records retain provider, model, input/output token counts, and stop reason for external accounting without changing resumed context. When continuing, the provider and model used for new requests come from current config/CLI, even though the original values remain in the session header. Fullscreen `/new` creates and switches to a distinct session when persistence is enabled; `/resume` restores an existing session's effective messages and submitted-input history. In no-session mode `/new` resets only memory and resume is disabled.
 
 Resources are read once at startup. The binary embeds `notch-config` and `notch-extension` skills so an installed Notch can configure itself and author extensions without a source checkout. Bundled skills are the lowest-precedence layer and may be overridden by a disk skill with the same declared name. In addition to configured Notch directories, discovery reads `~/.agents/skills`, `<cwd>/.agents/skills`, `~/.agents/commands`, and `<cwd>/.agents/commands` without creating those shared directories. Skills accept top-level Markdown files and one-level `name/SKILL.md` directories. Commands/templates accept top-level Markdown files and expose descriptions plus optional `argument-hint` metadata to slash completion. Later directories overwrite earlier resources by declared name. Their bodies are expanded into ordinary user input before it enters the agent.
+
+## Extension package boundary
+
+`internal/extpkg` manages decentralized package sources separately from extension execution. GitHub sources resolve through the API to exact commit archives; generic Git sources delegate transport and credentials to `git`; local sources are copied. Every source is staged, validated through `notch-package.json`, hashed, and atomically moved under Notch home before the mode-0600 lock state changes. Startup reads only validated exported directories and then hands them to the existing Lua/plugin loaders. Package installation never executes package code or install scripts.
 
 ## Extension boundaries
 

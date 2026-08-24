@@ -22,6 +22,7 @@ import (
 	"github.com/trobrock/notch/internal/config"
 	"github.com/trobrock/notch/internal/credentials"
 	"github.com/trobrock/notch/internal/extension"
+	"github.com/trobrock/notch/internal/extpkg"
 	"github.com/trobrock/notch/internal/luaext"
 	"github.com/trobrock/notch/internal/mcp"
 	"github.com/trobrock/notch/internal/model"
@@ -72,6 +73,9 @@ func run(args []string) error {
 	}
 	if len(args) > 0 && args[0] == "models" {
 		return runListModels(args[1:])
+	}
+	if len(args) > 0 && (args[0] == "extension" || args[0] == "extensions") {
+		return runExtensions(args[1:])
 	}
 	var opts options
 	flags := flag.NewFlagSet("notch", flag.ContinueOnError)
@@ -165,6 +169,11 @@ func run(args []string) error {
 	if opts.init {
 		return initialize(home, cwd, cfg)
 	}
+	packageDirs, err := extpkg.DiscoveryDirs(config.HomeDir(home))
+	if err != nil {
+		return fmt.Errorf("load installed extension packages: %w", err)
+	}
+	cfg.ExtensionDirs = append(cfg.ExtensionDirs, packageDirs...)
 	if err := cfg.EnsureDirs(); err != nil {
 		return err
 	}

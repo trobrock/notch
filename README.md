@@ -20,9 +20,10 @@ Notch is an MVP, not a drop-in reimplementation of [Pi](https://github.com/badlo
 - Embedded self-configuration and extension-authoring skills, plus Markdown skills and prompt templates
 - In-process Lua extensions
 - Executable, line-delimited JSON-RPC 2.0 plugins in any language
+- Decentralized extension packages installable and upgradeable from GitHub, Git, or local directories
 - Native MCP client support over stdio and Streamable HTTP
 
-See the [fullscreen TUI guide](docs/tui.md), [RPC mode](docs/rpc.md), [themes](docs/themes.md), [compaction](docs/compaction.md), [providers and authentication](docs/providers.md), [releases and upgrades](docs/releases.md), [architecture](docs/architecture.md), [extension API](docs/extensions.md), [migration from Pi](docs/migration-from-pi.md), and the [migration plan for the reviewed Pi extensions](docs/current-pi-extension-plan.md).
+See the [fullscreen TUI guide](docs/tui.md), [RPC mode](docs/rpc.md), [themes](docs/themes.md), [compaction](docs/compaction.md), [providers and authentication](docs/providers.md), [releases and upgrades](docs/releases.md), [architecture](docs/architecture.md), [extension API](docs/extensions.md), [extension packages](docs/extension-packages.md), [migration from Pi](docs/migration-from-pi.md), and the [migration plan for the reviewed Pi extensions](docs/current-pi-extension-plan.md).
 
 ## Status and deliberate gaps
 
@@ -150,6 +151,17 @@ notch login PROVIDER
 notch logout PROVIDER
 notch auth status
 notch auth import-pi [path]
+```
+
+Extension package commands are:
+
+```text
+notch extensions init [--name NAME] [DIRECTORY]
+notch extensions validate [--json] [DIRECTORY]
+notch extensions install [--ref REF] [--subdir PATH] SOURCE
+notch extensions list [--json]
+notch extensions update [--force] [NAME...]
+notch extensions remove NAME
 ```
 
 `login` supports `openai-codex`, `anthropic`, and `openrouter`. Positional words become a one-shot prompt when `--print` is absent:
@@ -302,6 +314,8 @@ Place `.lua` files or executable-plugin directories below either:
 - `<cwd>/.notch/extensions`
 
 Lua files are loaded directly from each extension directory. Executable manifests named `plugin.json` are discovered recursively. Extensions can register model tools, interactive slash commands, and agent hooks. Full examples and the wire protocol are in [docs/extensions.md](docs/extensions.md).
+
+Use `notch extensions install SOURCE` to install a shareable package from GitHub, generic Git, or a local directory. Installed content and its exact commit/digest lock live under `$NOTCH_HOME` or `~/.notch`; updates and removals are atomic. See [extension packages](docs/extension-packages.md) for the manifest, source syntax, integrity checks, security model, and publishing workflow.
 
 ## Community
 

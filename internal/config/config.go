@@ -280,6 +280,9 @@ func layeredDiscoveryDirs(shared, configured []string) []string {
 // EnsureDirs creates the directories named by c.
 func (c Config) EnsureDirs() error { return EnsureDirs(c) }
 
+// HomeDir returns the effective Notch data directory for a user home.
+func HomeDir(home string) string { return notchHome(home) }
+
 func notchHome(home string) string {
 	if value := os.Getenv("NOTCH_HOME"); value != "" {
 		return filepath.Clean(value)
