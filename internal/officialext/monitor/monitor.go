@@ -60,7 +60,7 @@ func Register(registry *extension.Registry, host extension.Host) error {
 		return errors.New("register monitor: registry and host are required")
 	}
 	s := &state{host: host, cwd: host.CWD(), monitors: map[string]*Monitor{}}
-	for _, tool := range []extension.Tool{s.commandTool(), s.listTool(), s.stopTool()} {
+	for _, tool := range []extension.Tool{s.commandTool(), s.githubTool(), s.listTool(), s.stopTool()} {
 		if err := registry.RegisterTool(tool); err != nil {
 			return fmt.Errorf("register monitor: %w", err)
 		}
@@ -91,6 +91,73 @@ func (s *state) commandTool() extension.Tool {
 		id, name, status, command, trigger := monitor.ID, monitor.Name, monitor.Status, monitor.Command, monitor.Trigger
 		s.mu.Unlock()
 		return extension.ToolResult{Content: fmt.Sprintf("Started monitor %s: %s. The agent will be notified when %s triggers.", id, name, trigger), Details: map[string]any{"id": id, "status": status, "command": command, "trigger": trigger}}, nil
+	}}
+}
+
+func (s *state) githubTool() extension.Tool {
+	return extension.Tool{Source: Source, Definition: model.ToolDefinition{
+		Name: "monitor_github_pr_checks", Description: "Watch GitHub PR checks with gh and notify the agent when checks pass or fail.",
+		InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+			"pr":   map[string]any{"type": "string", "description": "PR number, branch, or URL. Defaults to current branch."},
+			"repo": map[string]any{"type": "string", "description": "Repository in OWNER/REPO form."},
+			"name": map[string]any{"type": "string"}, "requiredOnly": map[string]any{"type": "boolean"},
+			"failFast": map[string]any{"type": "boolean"}, "intervalSeconds": map[string]any{"type": "integer", "minimum": 10, "maximum": 3600},
+			"prompt": map[string]any{"type": "string"},
+		}, "additionalProperties": false},
+	}, Execute: func(_ context.Context, raw json.RawMessage, _ func(string)) (extension.ToolResult, error) {
+		var input struct {
+			PR              string `json:"pr"`
+			Repo            string `json:"repo"`
+			Name            string `json:"name"`
+			RequiredOnly    bool   `json:"requiredOnly"`
+			FailFast        bool   `json:"failFast"`
+			IntervalSeconds int    `json:"intervalSeconds"`
+			Prompt          string `json:"prompt"`
+		}
+		d := json.NewDecoder(bytes.NewReader(raw))
+		d.DisallowUnknownFields()
+		if err := d.Decode(&input); err != nil {
+			return extension.ToolResult{}, err
+		}
+		if input.IntervalSeconds == 0 {
+			input.IntervalSeconds = 30
+		}
+		if input.IntervalSeconds < 10 || input.IntervalSeconds > 3600 {
+			return extension.ToolResult{}, errors.New("intervalSeconds must be between 10 and 3600")
+		}
+		args := []string{"pr", "checks"}
+		if input.PR != "" {
+			args = append(args, input.PR)
+		}
+		args = append(args, "--watch", "--interval", fmt.Sprint(input.IntervalSeconds))
+		if input.RequiredOnly {
+			args = append(args, "--required")
+		}
+		if input.FailFast {
+			args = append(args, "--fail-fast")
+		}
+		if input.Repo != "" {
+			args = append(args, "--repo", input.Repo)
+		}
+		name := input.Name
+		if name == "" {
+			name = "PR checks"
+			if input.PR != "" {
+				name += " " + input.PR
+			}
+		}
+		prompt := input.Prompt
+		if prompt == "" {
+			prompt = "If checks failed, inspect the failure and fix it. If checks passed, summarize the status."
+		}
+		monitor, err := s.startArgv(name, "gh", args, prompt)
+		if err != nil {
+			return extension.ToolResult{}, err
+		}
+		s.mu.Lock()
+		id, monitorName, status, command := monitor.ID, monitor.Name, monitor.Status, monitor.Command
+		s.mu.Unlock()
+		return extension.ToolResult{Content: fmt.Sprintf("Started GitHub PR checks monitor %s: %s.", id, monitorName), Details: map[string]any{"id": id, "status": status, "command": command}}, nil
 	}}
 }
 
@@ -159,6 +226,29 @@ func decodeCommand(raw json.RawMessage) (commandInput, error) {
 		return input, errors.New("timeoutSeconds must be between 1 and 86400")
 	}
 	return input, nil
+}
+
+func (s *state) startArgv(name, command string, args []string, prompt string) (*Monitor, error) {
+	s.mu.Lock()
+	s.next++
+	id := fmt.Sprintf("mon-%d", s.next)
+	s.mu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd := exec.CommandContext(ctx, command, args...)
+	cmd.Dir = s.cwd
+	var output lockedBuffer
+	cmd.Stdout, cmd.Stderr = &output, &output
+	if err := cmd.Start(); err != nil {
+		cancel()
+		return nil, fmt.Errorf("start monitor: %w", err)
+	}
+	m := &Monitor{ID: id, Name: name, Command: strings.Join(append([]string{command}, args...), " "), Trigger: "exit", Prompt: prompt, Status: "running", StartedAt: time.Now(), cmd: cmd, cancel: cancel}
+	s.mu.Lock()
+	s.monitors[id] = m
+	s.mu.Unlock()
+	s.render()
+	go s.watch(m, &output, 0)
+	return m, nil
 }
 
 func (s *state) start(input commandInput) (*Monitor, error) {
