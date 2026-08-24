@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/trobrock/notch/internal/extension"
@@ -13,6 +14,9 @@ type host struct {
 	provider, model string
 	window          int
 	err             error
+	models          []extension.ModelInfo
+	listProvider    string
+	refresh         bool
 }
 
 func (*host) CWD() string { return "/work" }
@@ -35,6 +39,10 @@ func (h *host) SwitchModel(_ context.Context, p, m string) (string, int, error) 
 	}
 	return p, h.window, nil
 }
+func (h *host) ListModels(_ context.Context, p string, r bool) ([]extension.ModelInfo, error) {
+	h.listProvider, h.refresh = p, r
+	return h.models, h.err
+}
 func (*host) SetStatus(string, string)          {}
 func (*host) SetPanel(string, string, []string) {}
 func TestSwitchModel(t *testing.T) {
@@ -52,6 +60,21 @@ func TestSwitchModel(t *testing.T) {
 	}
 	if h.provider != "anthropic" || h.model != "claude-test" {
 		t.Fatalf("host=%#v", h)
+	}
+}
+func TestListModels(t *testing.T) {
+	r := extension.NewRegistry()
+	h := &host{models: []extension.ModelInfo{{Provider: "anthropic", ID: "claude-test", Name: "Claude Test", ContextWindow: 200000, Reasoning: true}}}
+	if err := Register(r, h); err != nil {
+		t.Fatal(err)
+	}
+	tool, _ := r.Tool("list_models")
+	result, err := tool.Execute(context.Background(), json.RawMessage(`{"provider":"anthropic","refresh":true}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result.Content, "anthropic/claude-test") || !strings.Contains(result.Content, "200000 context") || h.listProvider != "anthropic" || !h.refresh {
+		t.Fatalf("result=%#v host=%#v", result, h)
 	}
 }
 func TestSwitchModelValidates(t *testing.T) {

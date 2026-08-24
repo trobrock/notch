@@ -23,6 +23,9 @@ func (h *testHost) SetActiveTools([]string) error                          { ret
 func (h *testHost) SwitchModel(context.Context, string, string) (string, int, error) {
 	return "", 0, nil
 }
+func (h *testHost) ListModels(context.Context, string, bool) ([]extension.ModelInfo, error) {
+	return nil, nil
+}
 func (*testHost) SetStatus(string, string)          {}
 func (*testHost) SetPanel(string, string, []string) {}
 
@@ -31,7 +34,7 @@ func TestRegisterKeepsOfficialExtensionsSegmented(t *testing.T) {
 	if err := Register(registry, &testHost{}); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"ask_user_question", "exit_plan_mode", "explore_codebase", "list_monitors", "monitor_command", "monitor_github_pr_checks", "run_subagent", "stop_monitor", "switch_model", "update_task_list"} {
+	for _, name := range []string{"ask_user_question", "exit_plan_mode", "explore_codebase", "list_models", "list_monitors", "monitor_command", "monitor_github_pr_checks", "run_subagent", "stop_monitor", "switch_model", "update_task_list"} {
 		tool, ok := registry.Tool(name)
 		if !ok {
 			t.Fatalf("%s not registered", name)

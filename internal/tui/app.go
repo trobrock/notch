@@ -2028,6 +2028,31 @@ func (a *App) SwitchModel(ctx context.Context, provider, modelName string) (stri
 	return provider, window, nil
 }
 
+func (a *App) ListModels(ctx context.Context, provider string, refresh bool) ([]extension.ModelInfo, error) {
+	a.mu.Lock()
+	list := a.listModels
+	currentProvider := a.state.layout.Provider
+	a.mu.Unlock()
+	if list == nil {
+		return nil, errors.New("model listing is unavailable")
+	}
+	providers := []string{strings.TrimSpace(provider)}
+	if providers[0] == "" {
+		providers = []string{currentProvider}
+	}
+	var out []extension.ModelInfo
+	for _, name := range providers {
+		entries, err := list(ctx, name, refresh)
+		if err != nil && len(entries) == 0 {
+			return nil, err
+		}
+		for _, entry := range entries {
+			out = append(out, extension.ModelInfo{Provider: name, ID: entry.ID, Name: entry.Name, ContextWindow: entry.ContextWindow, Reasoning: entry.Reasoning, Source: entry.Source})
+		}
+	}
+	return out, nil
+}
+
 // SetStatus publishes a keyed extension status in the footer. Reusing a key
 // replaces its value; an empty value removes it.
 func (a *App) SetStatus(key, value string) {

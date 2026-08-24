@@ -74,6 +74,15 @@ type Command struct {
 
 // Host contains privileged operations available to extensions. Implementations may
 // restrict these methods per extension in the future.
+type ModelInfo struct {
+	Provider      string `json:"provider"`
+	ID            string `json:"id"`
+	Name          string `json:"name,omitempty"`
+	ContextWindow int    `json:"context_window,omitempty"`
+	Reasoning     bool   `json:"reasoning,omitempty"`
+	Source        string `json:"source,omitempty"`
+}
+
 type Host interface {
 	CWD() string
 	Exec(ctx context.Context, command string, args []string) (stdout, stderr string, exitCode int, err error)
@@ -92,6 +101,8 @@ type Host interface {
 	// SwitchModel changes the provider/model used for subsequent turns while
 	// preserving the current conversation. Empty provider keeps the current one.
 	SwitchModel(ctx context.Context, provider, model string) (actualProvider string, contextWindow int, err error)
+	// ListModels returns available models for one provider or all providers.
+	ListModels(ctx context.Context, provider string, refresh bool) ([]ModelInfo, error)
 	// SetStatus publishes a short keyed status for persistent UI display. An
 	// empty value removes the status. Headless hosts may expose it as an event.
 	SetStatus(key, value string)

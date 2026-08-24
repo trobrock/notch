@@ -36,6 +36,9 @@ func (h *testHost) SetActiveTools([]string) error { return nil }
 func (h *testHost) SwitchModel(context.Context, string, string) (string, int, error) {
 	return "", 0, nil
 }
+func (h *testHost) ListModels(context.Context, string, bool) ([]extension.ModelInfo, error) {
+	return nil, nil
+}
 func (h *testHost) SetStatus(key, value string) {
 	h.statuses = append(h.statuses, [2]string{key, value})
 }

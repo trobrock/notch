@@ -14,6 +14,7 @@ import (
 	"sync"
 
 	"github.com/trobrock/notch/internal/agent"
+	"github.com/trobrock/notch/internal/extension"
 )
 
 type Terminal struct {
@@ -118,6 +119,9 @@ func (t *Terminal) SetActiveTools([]string) error {
 }
 func (t *Terminal) SwitchModel(context.Context, string, string) (string, int, error) {
 	return "", 0, errors.New("runtime model switching is unavailable in line mode")
+}
+func (t *Terminal) ListModels(context.Context, string, bool) ([]extension.ModelInfo, error) {
+	return nil, errors.New("runtime model listing is unavailable in line mode")
 }
 func (t *Terminal) SetStatus(string, string)          {}
 func (t *Terminal) SetPanel(string, string, []string) {}

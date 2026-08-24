@@ -41,6 +41,9 @@ func (h *testHost) SetActiveTools([]string) error { return nil }
 func (h *testHost) SwitchModel(context.Context, string, string) (string, int, error) {
 	return "", 0, nil
 }
+func (h *testHost) ListModels(context.Context, string, bool) ([]extension.ModelInfo, error) {
+	return nil, nil
+}
 func (*testHost) SetStatus(string, string)          {}
 func (*testHost) SetPanel(string, string, []string) {}
 

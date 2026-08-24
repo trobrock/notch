@@ -139,6 +139,10 @@ func (s *Server) SwitchModel(context.Context, string, string) (string, int, erro
 	return "", 0, errors.New("runtime model switching is unavailable in RPC mode")
 }
 
+func (s *Server) ListModels(context.Context, string, bool) ([]extension.ModelInfo, error) {
+	return nil, errors.New("runtime model listing is unavailable in RPC mode")
+}
+
 func (s *Server) SetStatus(key, value string) {
 	_ = s.write(map[string]any{"type": "status", "key": key, "value": value})
 }
