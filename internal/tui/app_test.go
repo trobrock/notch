@@ -285,6 +285,9 @@ func TestAppModalRoutesKeysAndRestoresDraft(t *testing.T) {
 	if !a.enqueueHostRequest(request) {
 		t.Fatal("host request did not change state")
 	}
+	if entry := a.state.layout.Transcript[len(a.state.layout.Transcript)-1]; entry.Kind != KindPrompt || !strings.Contains(entry.Text, "↑/↓ navigate") || !strings.Contains(entry.Text, "❯ ● a") {
+		t.Fatalf("prompt entry = %#v", entry)
+	}
 	if a.state.layout.Editor == a.state.editor {
 		t.Fatal("modal did not install its own editor")
 	}
@@ -514,4 +517,20 @@ func transcriptText(entries []TranscriptEntry) string {
 		parts = append(parts, entry.Label, entry.Text)
 	}
 	return strings.Join(parts, "\n")
+}
+
+func TestQuestionSelectorSeparatesLabelsDescriptionsAndAvoidsDoubleNumbers(t *testing.T) {
+	request := &hostRequest{kind: "select", prompt: "Choose a database", options: []string{"SQLite — Simple local storage", "PostgreSQL — Better concurrency"}, editor: NewEditor()}
+	rendered := request.render()
+	if !strings.Contains(rendered, "? Choose a database") || !strings.Contains(rendered, "❯ ● SQLite\n    Simple local storage") || strings.Contains(rendered, "1. 1.") || !strings.Contains(rendered, "↑/↓ navigate") {
+		t.Fatalf("rendered selector:\n%s", rendered)
+	}
+}
+
+func TestFreeformPromptExplainsControls(t *testing.T) {
+	request := &hostRequest{kind: "input", prompt: "What should we call it?", placeholder: "Project name", editor: NewEditor()}
+	rendered := request.render()
+	if !strings.Contains(rendered, "? What should we call it?") || !strings.Contains(rendered, "Placeholder: Project name") || !strings.Contains(rendered, "Enter submit") {
+		t.Fatalf("rendered input:\n%s", rendered)
+	}
 }

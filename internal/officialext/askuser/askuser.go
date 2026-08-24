@@ -166,8 +166,8 @@ func chooseAnswer(ctx context.Context, host extension.Host, args askUserQuestion
 	return answer, true, err
 }
 
-func optionDisplay(option questionOption, index int) string {
-	display := fmt.Sprintf("%d. %s", index+1, option.Label)
+func optionDisplay(option questionOption, _ int) string {
+	display := option.Label
 	if option.Description != "" {
 		display += " — " + option.Description
 	}

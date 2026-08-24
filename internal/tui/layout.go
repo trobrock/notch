@@ -20,6 +20,7 @@ const (
 	TranscriptTool      TranscriptKind = "tool"
 	TranscriptNotice    TranscriptKind = "notice"
 	TranscriptError     TranscriptKind = "error"
+	TranscriptPrompt    TranscriptKind = "prompt"
 
 	KindUser       = TranscriptUser
 	KindAssistant  = TranscriptAssistant
@@ -27,12 +28,14 @@ const (
 	KindTool       = TranscriptTool
 	KindNotice     = TranscriptNotice
 	KindError      = TranscriptError
+	KindPrompt     = TranscriptPrompt
 	EntryUser      = TranscriptUser
 	EntryAssistant = TranscriptAssistant
 	EntryThinking  = TranscriptThinking
 	EntryTool      = TranscriptTool
 	EntryNotice    = TranscriptNotice
 	EntryError     = TranscriptError
+	EntryPrompt    = TranscriptPrompt
 )
 
 // TranscriptEntry is one renderable item. Wrapping is cached on the entry so a
@@ -461,6 +464,23 @@ func renderTranscript(state *LayoutState, width int, theme Theme) []string {
 				}
 			}
 			result = append(result, styleFull(bgStyle, blank, width, theme.Reset))
+
+		case TranscriptPrompt:
+			style := theme.Text
+			lines := strings.Split(entry.Text, "\n")
+			for _, line := range lines {
+				line = sanitiseTerminalText(line)
+				switch {
+				case strings.HasPrefix(line, "? "):
+					result = append(result, styleFull(style+"\x1b[1m", " "+line, width, theme.Reset))
+				case strings.HasPrefix(line, "❯ "):
+					result = append(result, styleFull(theme.Accent+"\x1b[1m", " "+line, width, theme.Reset))
+				case strings.HasPrefix(line, "  "):
+					result = append(result, styleFull(theme.Muted, " "+line, width, theme.Reset))
+				default:
+					result = append(result, styleFull(style, " "+line, width, theme.Reset))
+				}
+			}
 
 		case TranscriptNotice, TranscriptError:
 			style, label := theme.Notice, entry.Label

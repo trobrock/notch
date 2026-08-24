@@ -2151,25 +2151,27 @@ func (a *App) beginHostRequest(request *hostRequest) {
 	a.state.modal = request
 	a.state.layout.Editor = request.editor
 	a.state.layout.Transcript = append(a.state.layout.Transcript, TranscriptEntry{
-		Kind: KindNotice, Text: request.render(), Pending: true,
+		Kind: KindPrompt, Text: request.render(), Pending: true,
 	})
 	a.state.layout.ScrollOffset = 0
 }
 
 func (request *hostRequest) render() string {
 	if request.kind == "input" {
+		lines := []string{"? " + request.prompt, "", "  Type your answer below"}
 		if request.placeholder != "" {
-			return fmt.Sprintf("%s (%s)", request.prompt, request.placeholder)
+			lines = append(lines, "  Placeholder: "+request.placeholder)
 		}
-		return request.prompt
+		lines = append(lines, "  Enter submit  •  Ctrl-J newline  •  Esc cancel")
+		return strings.Join(lines, "\n")
 	}
-	lines := []string{request.prompt}
+	lines := []string{"? " + request.prompt, ""}
 	indices := request.filteredOptionIndices()
 	if request.editor != nil && request.editor.Text() != "" {
-		lines = append(lines, "Filter: "+request.editor.Text())
+		lines = append(lines, "  Filter: "+request.editor.Text(), "")
 	}
 	if len(indices) == 0 {
-		return strings.Join(append(lines, "  no matches"), "\n")
+		return strings.Join(append(lines, "  No matching options", "", "  Type to filter  •  Esc cancel"), "\n")
 	}
 	selectedPosition := 0
 	for i, index := range indices {
@@ -2186,16 +2188,29 @@ func (request *hostRequest) render() string {
 	end := min(len(indices), start+visible)
 	for position := start; position < end; position++ {
 		index := indices[position]
-		marker := "  "
+		prefix := "  ○ "
 		if index == request.selected {
-			marker = "› "
+			prefix = "❯ ● "
 		}
-		lines = append(lines, fmt.Sprintf("%s%d. %s", marker, position+1, request.options[index]))
+		label, description := splitSelectOption(request.options[index])
+		lines = append(lines, prefix+label)
+		if description != "" {
+			lines = append(lines, "    "+description)
+		}
 	}
 	if len(indices) > visible {
-		lines = append(lines, fmt.Sprintf("  %d matches", len(indices)))
+		lines = append(lines, "", fmt.Sprintf("  Showing %d of %d matching options", end-start, len(indices)))
 	}
+	lines = append(lines, "", "  ↑/↓ navigate  •  Enter select  •  Type to filter  •  Esc cancel")
 	return strings.Join(lines, "\n")
+}
+
+func splitSelectOption(option string) (string, string) {
+	option = strings.TrimSpace(option)
+	if before, after, ok := strings.Cut(option, " — "); ok {
+		return strings.TrimSpace(before), strings.TrimSpace(after)
+	}
+	return option, ""
 }
 
 func (request *hostRequest) filteredOptionIndices() []int {

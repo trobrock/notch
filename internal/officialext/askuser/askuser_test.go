@@ -61,7 +61,7 @@ func registeredTool(t *testing.T, host extension.Host) extension.Tool {
 }
 
 func TestAskUserQuestionSelectsSuggestedAnswer(t *testing.T) {
-	host := &testHost{selected: "2. PostgreSQL — Better concurrency"}
+	host := &testHost{selected: "PostgreSQL — Better concurrency"}
 	tool := registeredTool(t, host)
 	var updates []string
 	result, err := tool.Execute(context.Background(), json.RawMessage(`{
@@ -74,7 +74,7 @@ func TestAskUserQuestionSelectsSuggestedAnswer(t *testing.T) {
 	if result.Content != "User answered: PostgreSQL" || result.Details["answer"] != "PostgreSQL" || result.Details["wasCustom"] != false {
 		t.Fatalf("result = %#v", result)
 	}
-	wantOptions := []string{"1. SQLite", "2. PostgreSQL — Better concurrency"}
+	wantOptions := []string{"SQLite", "PostgreSQL — Better concurrency"}
 	if !reflect.DeepEqual(host.options, wantOptions) {
 		t.Fatalf("options = %#v, want %#v", host.options, wantOptions)
 	}

@@ -74,8 +74,8 @@ When sessions are enabled, `/new` creates a distinct durable session, switches t
 
 Lua `notch.ui.input` / `notch.ui.select` and executable-plugin `host.ui.input` / `host.ui.select` calls are integrated into the fullscreen event loop rather than reading the terminal independently:
 
-- `Input` displays its prompt in the transcript and temporarily uses the composer. Enter accepts the text, or the placeholder when left empty. The normal movement and editing keys work, including multiline insertion.
-- `Select` displays a bounded option window in the transcript. Typing filters even large lists, Up/Down changes the highlighted match, Backspace/Ctrl-U edits the filter, and Enter accepts it.
+- `Input` displays a dedicated question block with a bold prompt, placeholder, and keyboard hints, then temporarily uses the composer. Enter accepts the text, or the placeholder when left empty. The normal movement and editing keys work, including multiline insertion.
+- `Select` displays a dedicated question block with a highlighted current option and descriptions on separate muted lines. A bounded option window keeps long lists usable. Typing reveals a filter, Up/Down changes the highlighted match, Backspace/Ctrl-U edits the filter, and Enter accepts it.
 - `Ctrl-C` (or Escape) cancels the current extension prompt. Concurrent requests are queued, and context cancellation removes or closes them.
 - Notifications become transcript notices or errors.
 
