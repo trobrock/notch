@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -63,6 +64,181 @@ func TestAppKeyEditingAndBusySubmission(t *testing.T) {
 	changed, exit = a.handleKey(context.Background(), KeyEvent{Key: KeyCtrlC})
 	if !changed || exit || a.state.layout.Status != "canceling" {
 		t.Fatalf("Ctrl-C while active changed=%v exit=%v status=%q", changed, exit, a.state.layout.Status)
+	}
+}
+
+func TestTranscriptScrollingKeysClampToContent(t *testing.T) {
+	a := NewApp(AppConfig{})
+	a.state.layout.Width, a.state.layout.Height = 40, 10
+	for i := 0; i < 30; i++ {
+		a.state.layout.Transcript = append(a.state.layout.Transcript, TranscriptEntry{Kind: TranscriptAssistant, Text: fmt.Sprintf("line %d", i)})
+	}
+	if changed, _ := a.handleKey(context.Background(), KeyEvent{Key: KeyScrollUp}); !changed || a.state.layout.ScrollOffset != 3 {
+		t.Fatalf("wheel up offset = %d, changed=%v", a.state.layout.ScrollOffset, changed)
+	}
+	for i := 0; i < 100; i++ {
+		a.handleKey(context.Background(), KeyEvent{Key: KeyPageUp})
+	}
+	limit := transcriptScrollLimit(&a.state.layout)
+	if a.state.layout.ScrollOffset != limit {
+		t.Fatalf("offset = %d, limit = %d", a.state.layout.ScrollOffset, limit)
+	}
+	if changed, _ := a.handleKey(context.Background(), KeyEvent{Key: KeyPageUp}); changed {
+		t.Fatal("scroll changed past top")
+	}
+	if changed, _ := a.handleKey(context.Background(), KeyEvent{Key: KeyScrollDown}); !changed || a.state.layout.ScrollOffset != limit-3 {
+		t.Fatalf("wheel down offset = %d", a.state.layout.ScrollOffset)
+	}
+}
+
+func TestTranscriptPageUsesActualViewport(t *testing.T) {
+	a := NewApp(AppConfig{})
+	a.state.layout.Width, a.state.layout.Height = 40, 20
+	a.state.layout.Panels["p"] = ExtensionPanel{Key: "p", Lines: []string{"one", "two", "three", "four"}}
+	for i := 0; i < 30; i++ {
+		a.state.layout.Transcript = append(a.state.layout.Transcript, TranscriptEntry{Kind: TranscriptAssistant, Text: fmt.Sprintf("line %d", i)})
+	}
+	want := max(1, transcriptViewportHeight(&a.state.layout)-1)
+	if changed, _ := a.handleKey(context.Background(), KeyEvent{Key: KeyPageUp}); !changed || a.state.layout.ScrollOffset != want {
+		t.Fatalf("page offset = %d, want %d", a.state.layout.ScrollOffset, want)
+	}
+}
+
+func TestScrolledTranscriptStaysAnchoredDuringStreaming(t *testing.T) {
+	a := NewApp(AppConfig{})
+	a.state.layout.Width, a.state.layout.Height = 20, 10
+	for i := 0; i < 30; i++ {
+		a.state.layout.Transcript = append(a.state.layout.Transcript, TranscriptEntry{Kind: TranscriptAssistant, Text: fmt.Sprintf("line %d", i)})
+	}
+	a.state.assistant = len(a.state.layout.Transcript) - 1
+	a.state.layout.ScrollOffset = 6
+	oldLines := a.transcriptRenderedLines()
+	a.applyEvent(context.Background(), appEvent{agent: &agent.Event{Type: "text_delta", Text: "\nextra wrapped content"}})
+	if a.state.layout.ScrollOffset <= 6 || a.state.layout.ScrollOffset != 6+a.transcriptRenderedLines()-oldLines {
+		t.Fatalf("scroll offset did not preserve position: %d", a.state.layout.ScrollOffset)
+	}
+
+	a.state.layout.ScrollOffset = 0
+	a.applyEvent(context.Background(), appEvent{agent: &agent.Event{Type: "text_delta", Text: "\nfollow tail"}})
+	if a.state.layout.ScrollOffset != 0 {
+		t.Fatalf("tail following offset = %d", a.state.layout.ScrollOffset)
+	}
+}
+
+func TestScrolledTranscriptAnchorHandlesLayoutChanges(t *testing.T) {
+	a := NewApp(AppConfig{})
+	a.state.layout.Width, a.state.layout.Height = 30, 15
+	for i := 0; i < 30; i++ {
+		a.state.layout.Transcript = append(a.state.layout.Transcript, TranscriptEntry{Kind: TranscriptAssistant, Text: fmt.Sprintf("line %d", i)})
+	}
+	a.state.layout.ScrollOffset = 8
+	oldLines := a.transcriptRenderedLines()
+	oldViewport := transcriptViewportHeight(&a.state.layout)
+	a.state.layout.Editor.SetText("one\ntwo\nthree")
+	a.preserveTranscriptAnchor(oldLines, oldViewport)
+	if a.state.layout.ScrollOffset != 10 {
+		t.Fatalf("composer growth offset = %d, want 10", a.state.layout.ScrollOffset)
+	}
+
+	oldLines = a.transcriptRenderedLines()
+	oldViewport = transcriptViewportHeight(&a.state.layout)
+	a.state.layout.Transcript = a.state.layout.Transcript[:20]
+	a.preserveTranscriptAnchor(oldLines, oldViewport)
+	if a.state.layout.ScrollOffset >= 10 || a.state.layout.ScrollOffset > transcriptScrollLimit(&a.state.layout) {
+		t.Fatalf("shrink left invalid offset %d", a.state.layout.ScrollOffset)
+	}
+}
+
+func TestInterruptTerminalReadUnblocksReader(t *testing.T) {
+	read, write, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer read.Close()
+	defer write.Close()
+	done := make(chan error, 1)
+	go func() { var b [1]byte; _, err := read.Read(b[:]); done <- err }()
+	nonblocking, err := interruptTerminalRead(read)
+	if err != nil {
+		t.Skipf("input interruption unsupported: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("interrupt did not unblock read")
+	}
+	if err := restoreTerminalRead(read, nonblocking); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReadInputKeepsSplitMouseSequenceTogether(t *testing.T) {
+	read, write, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer read.Close()
+	a := NewApp(AppConfig{In: read})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	input := make(chan []KeyEvent, 1)
+	readErrors := make(chan error, 1)
+	done := make(chan struct{})
+	go func() { a.readInput(ctx, input, readErrors); close(done) }()
+	if _, err := write.Write([]byte("\x1b")); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(5 * time.Millisecond)
+	if _, err := write.Write([]byte("[<64;10;5M")); err != nil {
+		t.Fatal(err)
+	}
+	if err := write.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case keys := <-input:
+		if len(keys) != 1 || keys[0].Key != KeyScrollUp {
+			t.Fatalf("keys = %#v", keys)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for mouse event")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("readInput did not exit")
+	}
+}
+
+func TestReadInputFlushesLiteralEscape(t *testing.T) {
+	read, write, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer read.Close()
+	defer write.Close()
+	a := NewApp(AppConfig{In: read})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	input := make(chan []KeyEvent, 1)
+	readErrors := make(chan error, 1)
+	go a.readInput(ctx, input, readErrors)
+	if _, err := write.Write([]byte("\x1b")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case keys := <-input:
+		if len(keys) != 1 || keys[0].Key != KeyEscape {
+			t.Fatalf("keys = %#v", keys)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for Escape")
+	}
+	select {
+	case err := <-readErrors:
+		t.Fatalf("unexpected input error before close: %v", err)
+	default:
 	}
 }
 

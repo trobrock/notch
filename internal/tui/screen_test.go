@@ -143,6 +143,17 @@ func TestOpenScreenRejectsNonTTYWithoutWriting(t *testing.T) {
 	}
 }
 
+func TestTerminalModesIncludeMouseTracking(t *testing.T) {
+	setup := terminalSetupSequence(func(string) string { return "" })
+	if !strings.Contains(setup, "\x1b[?1000h") || !strings.Contains(setup, "\x1b[?1006h") {
+		t.Fatalf("setup does not enable mouse modes: %q", setup)
+	}
+	cleanup := terminalCleanupSequence()
+	if !strings.Contains(cleanup, "\x1b[?1006l") || !strings.Contains(cleanup, "\x1b[?1000l") {
+		t.Fatalf("cleanup does not disable mouse modes: %q", cleanup)
+	}
+}
+
 func TestEnhancedKeyboardSetup(t *testing.T) {
 	env := func(values map[string]string) func(string) string {
 		return func(key string) string { return values[key] }

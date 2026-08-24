@@ -112,6 +112,33 @@ type LayoutState struct {
 	PendingMessages    []PendingMessage
 }
 
+func transcriptViewportHeight(state *LayoutState) int {
+	if state == nil || state.Width <= 0 || state.Height <= 0 {
+		return 0
+	}
+	width, height := state.Width, state.Height
+	text, cursor := editorState(state.Editor)
+	composerLines, _, _ := wrapEditor(text, cursor, max(1, width-1))
+	if len(composerLines) == 0 {
+		composerLines = []string{""}
+	}
+	composerWanted := min(len(composerLines), 8)
+	footerCount := min(2, height)
+	available := height - footerCount
+	borderRows := 0
+	if available >= 3 {
+		borderRows = 2
+	}
+	composerCount := min(composerWanted, max(0, available-borderRows))
+	menuCapacity := max(0, height-footerCount-borderRows-composerCount)
+	pendingCount := min(min(4, len(state.PendingMessages)), menuCapacity)
+	menuCapacity -= pendingCount
+	menuCount := min(min(8, len(state.CommandSuggestions)), menuCapacity)
+	transcriptHeight := height - footerCount - borderRows - composerCount - pendingCount - menuCount
+	panelCount := min(len(renderPanels(state.Panels, width, completeTheme(state.Theme, state.ThemeName))), max(0, transcriptHeight/2))
+	return max(0, transcriptHeight-panelCount)
+}
+
 // BuildFrame performs no terminal I/O. Every returned row has exactly the
 // requested display width (ANSI escape sequences do not count toward it).
 func BuildFrame(state *LayoutState) Frame {
@@ -183,7 +210,14 @@ func BuildFrame(state *LayoutState) Frame {
 		frame.Rows[i] = padANSI(line, width)
 	}
 	if transcriptHeight > 0 && state.ScrollOffset > 0 && len(transcript) > transcriptHeight {
-		indicator := fmt.Sprintf("↑ %d", state.ScrollOffset)
+		parts := make([]string, 0, 2)
+		if start > 0 {
+			parts = append(parts, "↑")
+		}
+		if end < len(transcript) {
+			parts = append(parts, "↓")
+		}
+		indicator := fmt.Sprintf("%s %d", strings.Join(parts, " "), state.ScrollOffset)
 		frame.Rows[0] = overlayRight(frame.Rows[0], theme.Notice+indicator+theme.Reset, width)
 	}
 	for i := 0; i < panelCount; i++ {

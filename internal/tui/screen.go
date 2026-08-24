@@ -25,6 +25,8 @@ const (
 	disableKittyKeyboard   = "\x1b[<u"  // pop the keyboard mode pushed above
 	enableModifyOtherKeys  = "\x1b[>4;2m"
 	disableModifyOtherKeys = "\x1b[>4;0m"
+	enableMouseTracking    = "\x1b[?1000h\x1b[?1006h"
+	disableMouseTracking   = "\x1b[?1006l\x1b[?1000l"
 	showCursor             = "\x1b[?25h"
 	hideCursor             = "\x1b[?25l"
 	resetSGR               = "\x1b[0m"
@@ -102,7 +104,7 @@ func OpenScreen(in *os.File, out *os.File) (*Screen, error) {
 		return nil, fmt.Errorf("tui: enter raw mode: %w", err)
 	}
 
-	setup := enterAlternateScreen + enableBracketedPaste + enhancedKeyboardSetup(os.Getenv)
+	setup := terminalSetupSequence(os.Getenv)
 	if err := writeOnce(out, []byte(setup)); err != nil {
 		// Best-effort all terminal cleanup, followed by an unconditional raw-mode
 		// restore. The original setup error remains the primary error.
@@ -297,10 +299,14 @@ func enhancedKeyboardSetup(getenv func(string) string) string {
 	return enableModifyOtherKeys
 }
 
+func terminalSetupSequence(getenv func(string) string) string {
+	return enterAlternateScreen + enableBracketedPaste + enableMouseTracking + enhancedKeyboardSetup(getenv)
+}
+
 func terminalCleanupSequence() string {
 	// Disabling both is harmless and guarantees restoration if the environment
 	// changed while Notch was running (for example after tmux detach/attach).
-	return resetSGR + showCursor + disableKittyKeyboard + disableModifyOtherKeys + disableBracketedPaste + leaveAlternateScreen
+	return resetSGR + showCursor + disableMouseTracking + disableKittyKeyboard + disableModifyOtherKeys + disableBracketedPaste + leaveAlternateScreen
 }
 
 func writeOnce(w io.Writer, p []byte) error {

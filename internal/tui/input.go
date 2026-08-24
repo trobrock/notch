@@ -11,24 +11,26 @@ import (
 
 // Key names emitted by Parser. Printable input is represented by Text instead.
 const (
-	KeyEscape    = "escape"
-	KeyEnter     = "enter"
-	KeyNewline   = "newline"
-	KeyBackspace = "backspace"
-	KeyTab       = "tab"
-	KeyShiftTab  = "shift+tab"
-	KeyUp        = "up"
-	KeyDown      = "down"
-	KeyLeft      = "left"
-	KeyRight     = "right"
-	KeyHome      = "home"
-	KeyEnd       = "end"
-	KeyDelete    = "delete"
-	KeyPageUp    = "pageup"
-	KeyPageDown  = "pagedown"
-	KeyAltLeft   = "alt+left"
-	KeyAltRight  = "alt+right"
-	KeyAltEnter  = "alt+enter"
+	KeyEscape     = "escape"
+	KeyEnter      = "enter"
+	KeyNewline    = "newline"
+	KeyBackspace  = "backspace"
+	KeyTab        = "tab"
+	KeyShiftTab   = "shift+tab"
+	KeyUp         = "up"
+	KeyDown       = "down"
+	KeyLeft       = "left"
+	KeyRight      = "right"
+	KeyHome       = "home"
+	KeyEnd        = "end"
+	KeyDelete     = "delete"
+	KeyPageUp     = "pageup"
+	KeyPageDown   = "pagedown"
+	KeyAltLeft    = "alt+left"
+	KeyAltRight   = "alt+right"
+	KeyAltEnter   = "alt+enter"
+	KeyScrollUp   = "scroll+up"
+	KeyScrollDown = "scroll+down"
 	// Ctrl-J and Shift-Enter both request insertion of a newline; terminals
 	// merely use different byte encodings for those equivalent actions.
 	KeyShiftEnter = KeyNewline
@@ -115,6 +117,10 @@ func (p *Parser) Feed(b []byte) []KeyEvent {
 	return events
 }
 
+func (p *Parser) HasPendingEscape() bool {
+	return !p.inPaste && len(p.buf) > 0 && p.buf[0] == 0x1b
+}
+
 // FlushEscape resolves a pending escape prefix as a literal Escape key. It is
 // normally called only after a terminal read deadline. Any bytes following the
 // escape are fed back through the parser as ordinary input.
@@ -189,6 +195,12 @@ func parseEscape(b []byte) (KeyEvent, int, bool, bool) {
 		}
 		return KeyEvent{Key: key}, 3, true, false
 	case '[':
+		if event, consumed, complete, ok := parseMouseX10(b); ok {
+			return event, consumed, complete, false
+		}
+		if event, consumed, complete, ok := parseMouseSGR(b); ok {
+			return event, consumed, complete, false
+		}
 		// A CSI sequence ends at its first final byte (0x40 through 0x7e).
 		end := -1
 		for i := 2; i < len(b); i++ {
@@ -258,6 +270,62 @@ func parseEscape(b []byte) (KeyEvent, int, bool, bool) {
 		// Escape followed by an ordinary byte is not one of the supported
 		// alt encodings. Resolve only Escape and leave the byte for Feed.
 		return KeyEvent{Key: KeyEscape}, 1, true, false
+	}
+}
+
+func parseMouseX10(b []byte) (KeyEvent, int, bool, bool) {
+	if len(b) < 3 || b[2] != 'M' {
+		return KeyEvent{}, 0, false, false
+	}
+	if len(b) < 6 {
+		return KeyEvent{}, 0, false, true
+	}
+	if b[3] < 32 || b[4] < 32 || b[5] < 32 {
+		return KeyEvent{}, 0, false, false
+	}
+	button := int(b[3]) - 32
+	return mouseWheelEvent(button, true, 6)
+}
+
+func parseMouseSGR(b []byte) (KeyEvent, int, bool, bool) {
+	if len(b) < 3 || b[2] != '<' {
+		return KeyEvent{}, 0, false, false
+	}
+	end := -1
+	for i := 3; i < len(b); i++ {
+		if b[i] == 'M' || b[i] == 'm' {
+			end = i
+			break
+		}
+		if (b[i] < '0' || b[i] > '9') && b[i] != ';' {
+			return KeyEvent{}, 0, false, false
+		}
+	}
+	if end < 0 {
+		return KeyEvent{}, 0, false, true
+	}
+	parts := strings.Split(string(b[3:end]), ";")
+	if len(parts) != 3 {
+		return KeyEvent{}, end + 1, true, true
+	}
+	button, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return KeyEvent{}, end + 1, true, true
+	}
+	return mouseWheelEvent(button, b[end] == 'M', end+1)
+}
+
+func mouseWheelEvent(button int, pressed bool, consumed int) (KeyEvent, int, bool, bool) {
+	if !pressed {
+		return KeyEvent{}, consumed, true, true
+	}
+	switch button & 0x43 {
+	case 64:
+		return KeyEvent{Key: KeyScrollUp}, consumed, true, true
+	case 65:
+		return KeyEvent{Key: KeyScrollDown}, consumed, true, true
+	default:
+		return KeyEvent{}, consumed, true, true
 	}
 }
 

@@ -28,6 +28,7 @@ import (
 const (
 	appEventBuffer     = 128
 	deltaDelay         = 33 * time.Millisecond
+	escapeDelay        = 50 * time.Millisecond
 	thinkingFrameDelay = 120 * time.Millisecond
 	maxPanelLines      = 100
 	maxPanelLineBytes  = 4096
@@ -330,8 +331,21 @@ func (a *App) Run(ctx context.Context) (retErr error) {
 	}
 
 	inputCtx, stopInput := context.WithCancel(ctx)
-	defer stopInput()
-	go a.readInput(inputCtx)
+	input := make(chan []KeyEvent, 8)
+	readErrors := make(chan error, 1)
+	inputDone := make(chan struct{})
+	go func() {
+		a.readInput(inputCtx, input, readErrors)
+		close(inputDone)
+	}()
+	defer func() {
+		stopInput()
+		nonblocking, err := interruptTerminalRead(a.cfg.In)
+		if err == nil {
+			<-inputDone
+			_ = restoreTerminalRead(a.cfg.In, nonblocking)
+		}
+	}()
 
 	resize := make(chan os.Signal, 1)
 	signalNotify(resize)
@@ -340,6 +354,8 @@ func (a *App) Run(ctx context.Context) (retErr error) {
 	var delta strings.Builder
 	deltaEntry := -1
 	deltaType := ""
+	deltaOldLines := -1
+	deltaOldViewport := 0
 	var deltaTimer *time.Timer
 	var deltaC <-chan time.Time
 	stopDeltaTimer := func() {
@@ -366,9 +382,14 @@ func (a *App) Run(ctx context.Context) (retErr error) {
 			deltaTimer, deltaC = nil, nil
 		}
 		changed := a.appendDelta(deltaEntry, delta.String())
+		if deltaOldLines >= 0 && changed {
+			a.preserveTranscriptAnchor(deltaOldLines, deltaOldViewport)
+		}
 		delta.Reset()
 		deltaEntry = -1
 		deltaType = ""
+		deltaOldLines = -1
+		deltaOldViewport = 0
 		return changed
 	}
 	defer stopDeltaTimer()
@@ -403,13 +424,32 @@ func (a *App) Run(ctx context.Context) (retErr error) {
 			}
 			a.cancelHostRequests(ctx.Err())
 			return ctx.Err()
+		case keys := <-input:
+			if delta.Len() != 0 {
+				dirty = flushDelta(false) || dirty
+			}
+			dirty = a.applyEvent(ctx, appEvent{keys: keys}) || dirty
+		case inputErr := <-readErrors:
+			if delta.Len() != 0 {
+				dirty = flushDelta(false) || dirty
+			}
+			dirty = a.applyEvent(ctx, appEvent{readErr: inputErr}) || dirty
 		case <-resize:
+			if delta.Len() != 0 {
+				dirty = flushDelta(false) || dirty
+			}
 			w, h, sizeErr := screen.Size()
 			if sizeErr != nil {
 				return sizeErr
 			}
 			if w != a.state.layout.Width || h != a.state.layout.Height {
+				oldLines, oldViewport := a.transcriptRenderedLines(), transcriptViewportHeight(&a.state.layout)
 				a.state.layout.Width, a.state.layout.Height = w, h
+				if a.state.layout.ScrollOffset > 0 {
+					a.preserveTranscriptAnchor(oldLines, oldViewport)
+				} else {
+					a.clampTranscriptScroll()
+				}
 				dirty = true
 			}
 		case <-deltaC:
@@ -425,6 +465,10 @@ func (a *App) Run(ctx context.Context) (retErr error) {
 					dirty = flushDelta(false) || dirty
 				}
 				if delta.Len() == 0 {
+					if a.state.layout.ScrollOffset > 0 {
+						deltaOldLines = a.transcriptRenderedLines()
+						deltaOldViewport = transcriptViewportHeight(&a.state.layout)
+					}
 					deltaEntry = a.streamDeltaEntry(event.agent.Type)
 					deltaType = event.agent.Type
 					deltaTimer = a.newTimer(deltaDelay)
@@ -432,11 +476,9 @@ func (a *App) Run(ctx context.Context) (retErr error) {
 				}
 				delta.WriteString(event.agent.Text)
 			} else {
-				// Preserve model event ordering: a turn/tool/end event observes all
-				// streamed content which preceded it, even if the coalescing delay has not elapsed.
-				if event.agent != nil || event.promptDone != nil {
-					dirty = flushDelta(false) || dirty
-				}
+				// Any event may change transcript or viewport geometry. Flush first so
+				// the buffered delta's scroll anchor cannot count that change twice.
+				dirty = flushDelta(false) || dirty
 				dirty = a.applyEvent(ctx, event) || dirty
 			}
 		}
@@ -459,35 +501,103 @@ func (a *App) Run(ctx context.Context) (retErr error) {
 // This variable keeps signal cleanup replaceable in event-loop tests.
 var signalStop = func(ch chan<- os.Signal) { signal.Stop(ch) }
 
-func (a *App) readInput(ctx context.Context) {
-	parser := NewParser()
-	buffer := make([]byte, 4096)
-	for {
-		n, err := a.cfg.In.Read(buffer)
-		// A blocking read may return after this particular Run has ended. Do not
-		// let that old reader feed a later Run of the same App.
-		if ctx.Err() != nil {
-			return
-		}
-		if n > 0 {
-			keys := parser.Feed(buffer[:n])
-			// A raw terminal commonly returns a literal Escape as one read. Avoid a
-			// polling deadline while still supporting Escape cancellation.
-			if n == 1 && buffer[0] == 0x1b && len(keys) == 0 {
-				keys = parser.FlushEscape()
+func (a *App) readInput(ctx context.Context, output chan<- []KeyEvent, readErrors chan<- error) {
+	reads := make(chan inputRead, 1)
+	workerDone := make(chan struct{})
+	defer func() { <-workerDone }()
+	go func() {
+		defer close(workerDone)
+		buffer := make([]byte, 4096)
+		for {
+			if ctx.Err() != nil {
+				return
 			}
-			if len(keys) != 0 && !a.post(ctx, appEvent{keys: keys}, false) {
+			n, err := a.cfg.In.Read(buffer)
+			result := inputRead{data: append([]byte(nil), buffer[:n]...), err: err}
+			select {
+			case reads <- result:
+			case <-ctx.Done():
+				return
+			}
+			if err != nil {
 				return
 			}
 		}
-		if err != nil {
-			a.post(ctx, appEvent{readErr: err}, false)
+	}()
+
+	parser := NewParser()
+	var escapeTimer *time.Timer
+	var escapeC <-chan time.Time
+	stopEscapeTimer := func() {
+		if escapeTimer != nil && !escapeTimer.Stop() {
+			select {
+			case <-escapeTimer.C:
+			default:
+			}
+		}
+		escapeTimer, escapeC = nil, nil
+	}
+	defer stopEscapeTimer()
+	for {
+		select {
+		case <-ctx.Done():
 			return
+		case <-escapeC:
+			escapeTimer, escapeC = nil, nil
+			if keys := parser.FlushEscape(); len(keys) != 0 && !sendInput(ctx, output, keys) {
+				return
+			}
+		case result := <-reads:
+			if len(result.data) != 0 {
+				if keys := parser.Feed(result.data); len(keys) != 0 && !sendInput(ctx, output, keys) {
+					return
+				}
+			}
+			if parser.HasPendingEscape() {
+				stopEscapeTimer()
+				escapeTimer = time.NewTimer(escapeDelay)
+				escapeC = escapeTimer.C
+			} else {
+				stopEscapeTimer()
+			}
+			if result.err != nil {
+				if parser.HasPendingEscape() {
+					stopEscapeTimer()
+					if keys := parser.FlushEscape(); len(keys) != 0 && !sendInput(ctx, output, keys) {
+						return
+					}
+				}
+				select {
+				case readErrors <- result.err:
+				case <-ctx.Done():
+				}
+				return
+			}
 		}
 	}
 }
 
+type inputRead struct {
+	data []byte
+	err  error
+}
+
+func sendInput(ctx context.Context, output chan<- []KeyEvent, keys []KeyEvent) bool {
+	select {
+	case output <- keys:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
 func (a *App) applyEvent(runCtx context.Context, event appEvent) bool {
+	preserveAnchor := a.state.layout.ScrollOffset > 0 && len(event.keys) == 0
+	oldLines, oldViewport := 0, 0
+	if preserveAnchor {
+		oldLines = a.transcriptRenderedLines()
+		oldViewport = transcriptViewportHeight(&a.state.layout)
+	}
 	changed := false
 	for _, key := range event.keys {
 		keyChanged, exit := a.handleKey(runCtx, key)
@@ -579,6 +689,9 @@ func (a *App) applyEvent(runCtx context.Context, event appEvent) bool {
 			changed = true
 		}
 	}
+	if preserveAnchor && changed && a.state.layout.ScrollOffset > 0 {
+		a.preserveTranscriptAnchor(oldLines, oldViewport)
+	}
 	return changed
 }
 
@@ -586,9 +699,17 @@ func (a *App) handleKey(runCtx context.Context, key KeyEvent) (changed, exit boo
 	if a.state.modal != nil {
 		return a.handleModalKey(key)
 	}
+	preserveAnchor := a.state.layout.ScrollOffset > 0 && key.Key != KeyPageUp && key.Key != KeyPageDown && key.Key != KeyScrollUp && key.Key != KeyScrollDown
+	oldLines, oldViewport := 0, 0
+	if preserveAnchor {
+		oldLines, oldViewport = a.transcriptRenderedLines(), transcriptViewportHeight(&a.state.layout)
+	}
 	defer func() {
 		if changed {
 			a.refreshCommandCompletion()
+			if preserveAnchor && a.state.layout.ScrollOffset > 0 {
+				a.preserveTranscriptAnchor(oldLines, oldViewport)
+			}
 		}
 	}()
 	e := a.state.editor
@@ -596,7 +717,6 @@ func (a *App) handleKey(runCtx context.Context, key KeyEvent) (changed, exit boo
 		a.state.commandHelp = false
 		a.state.completionDismissed = ""
 		e.Insert(key.Text)
-		a.state.layout.ScrollOffset = 0
 		return true, false
 	}
 	switch key.Key {
@@ -674,15 +794,13 @@ func (a *App) handleKey(runCtx context.Context, key KeyEvent) (changed, exit boo
 	case KeyCtrlW:
 		return e.KillWordBackward() != "", false
 	case KeyPageUp:
-		a.state.layout.ScrollOffset += max(1, a.state.layout.Height-4)
-		return true, false
+		return a.pageTranscript(1), false
 	case KeyPageDown:
-		old := a.state.layout.ScrollOffset
-		a.state.layout.ScrollOffset -= max(1, a.state.layout.Height-4)
-		if a.state.layout.ScrollOffset < 0 {
-			a.state.layout.ScrollOffset = 0
-		}
-		return old != a.state.layout.ScrollOffset, false
+		return a.pageTranscript(-1), false
+	case KeyScrollUp:
+		return a.scrollTranscript(3), false
+	case KeyScrollDown:
+		return a.scrollTranscript(-3), false
 	case KeyEscape:
 		if len(a.state.layout.CommandSuggestions) != 0 {
 			a.state.commandHelp = false
@@ -710,6 +828,64 @@ func (a *App) handleKey(runCtx context.Context, key KeyEvent) (changed, exit boo
 		return e.Delete(), false
 	}
 	return false, false
+}
+
+func (a *App) transcriptRenderedLines() int {
+	state := &a.state.layout
+	if state.Width <= 0 {
+		return 0
+	}
+	return len(renderTranscript(state, state.Width, completeTheme(state.Theme, state.ThemeName)))
+}
+
+func (a *App) preserveTranscriptAnchor(oldLines, oldViewport int) {
+	if a.state.layout.ScrollOffset <= 0 {
+		return
+	}
+	newViewport := transcriptViewportHeight(&a.state.layout)
+	delta := a.transcriptRenderedLines() - oldLines - (newViewport - oldViewport)
+	a.state.layout.ScrollOffset = max(0, a.state.layout.ScrollOffset+delta)
+	a.clampTranscriptScroll()
+}
+
+func (a *App) clampTranscriptScroll() {
+	limit := transcriptScrollLimit(&a.state.layout)
+	if a.state.layout.ScrollOffset > limit {
+		a.state.layout.ScrollOffset = limit
+	}
+}
+
+func (a *App) pageTranscript(direction int) bool {
+	return a.scrollTranscript(direction * max(1, transcriptViewportHeight(&a.state.layout)-1))
+}
+
+func (a *App) scrollTranscript(delta int) bool {
+	if delta == 0 {
+		return false
+	}
+	old := a.state.layout.ScrollOffset
+	next := old + delta
+	if next < 0 {
+		next = 0
+	}
+	maxOffset := transcriptScrollLimit(&a.state.layout)
+	if next > maxOffset {
+		next = maxOffset
+	}
+	a.state.layout.ScrollOffset = next
+	return next != old
+}
+
+func transcriptScrollLimit(state *LayoutState) int {
+	if state == nil || state.Width <= 0 || state.Height <= 0 {
+		return 0
+	}
+	viewport := transcriptViewportHeight(state)
+	if viewport <= 0 {
+		return 0
+	}
+	theme := completeTheme(state.Theme, state.ThemeName)
+	return max(0, len(renderTranscript(state, state.Width, theme))-viewport)
 }
 
 func (a *App) queueComposerMessage(mode string) bool {
@@ -752,7 +928,6 @@ func (a *App) queueComposerMessage(mode string) bool {
 	}
 	a.state.queuedText[queued.ID] = text
 	a.state.layout.PendingMessages = append(a.state.layout.PendingMessages, PendingMessage{ID: queued.ID, Mode: queued.Mode, Text: text})
-	a.state.layout.ScrollOffset = 0
 	return true
 }
 
@@ -868,6 +1043,7 @@ func (a *App) finishPrompt(err error) bool {
 }
 
 func (a *App) handleAgentEvent(event agent.Event) bool {
+	followTail := a.state.layout.ScrollOffset == 0
 	switch event.Type {
 	case "turn_start":
 		a.state.assistant, a.state.thinking = -1, -1
@@ -985,7 +1161,9 @@ func (a *App) handleAgentEvent(event agent.Event) bool {
 	default:
 		return false
 	}
-	a.state.layout.ScrollOffset = 0
+	if followTail {
+		a.state.layout.ScrollOffset = 0
+	}
 	return true
 }
 
@@ -1074,7 +1252,6 @@ func (a *App) appendDelta(index int, text string) bool {
 	}
 	a.state.layout.Transcript[index].Text += text
 	a.state.layout.Transcript[index].Pending = true
-	a.state.layout.ScrollOffset = 0
 	return true
 }
 
@@ -1779,7 +1956,6 @@ func (a *App) addNotice(message, level string) {
 		label = ""
 	}
 	a.state.layout.Transcript = append(a.state.layout.Transcript, TranscriptEntry{Kind: kind, Label: label, Text: message, Error: isError})
-	a.state.layout.ScrollOffset = 0
 }
 
 func transcriptFromMessages(messages []model.Message) []TranscriptEntry {
@@ -2153,7 +2329,6 @@ func (a *App) beginHostRequest(request *hostRequest) {
 	a.state.layout.Transcript = append(a.state.layout.Transcript, TranscriptEntry{
 		Kind: KindPrompt, Text: request.render(), Pending: true,
 	})
-	a.state.layout.ScrollOffset = 0
 }
 
 func (request *hostRequest) render() string {
@@ -2242,10 +2417,32 @@ func (request *hostRequest) normalizeSelection() []int {
 	return indices
 }
 
-func (a *App) handleModalKey(key KeyEvent) (bool, bool) {
+func (a *App) handleModalKey(key KeyEvent) (changed, exit bool) {
 	request := a.state.modal
 	if request == nil {
 		return false, false
+	}
+	preserveAnchor := a.state.layout.ScrollOffset > 0 && key.Key != KeyPageUp && key.Key != KeyPageDown && key.Key != KeyScrollUp && key.Key != KeyScrollDown
+	oldLines, oldViewport := 0, 0
+	if preserveAnchor {
+		oldLines, oldViewport = a.transcriptRenderedLines(), transcriptViewportHeight(&a.state.layout)
+	}
+	defer func() {
+		if changed && preserveAnchor && a.state.layout.ScrollOffset > 0 {
+			a.preserveTranscriptAnchor(oldLines, oldViewport)
+		}
+	}()
+	if key.Key == KeyPageUp {
+		return a.pageTranscript(1), false
+	}
+	if key.Key == KeyPageDown {
+		return a.pageTranscript(-1), false
+	}
+	if key.Key == KeyScrollUp {
+		return a.scrollTranscript(3), false
+	}
+	if key.Key == KeyScrollDown {
+		return a.scrollTranscript(-3), false
 	}
 	if key.Key == KeyCtrlC || key.Key == KeyEscape {
 		if a.state.cancel != nil {

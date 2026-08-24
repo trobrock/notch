@@ -276,8 +276,13 @@ func TestScrollOffsetShowsIndicator(t *testing.T) {
 	}
 	state := &LayoutState{Width: 20, Height: 10, Transcript: entries, ScrollOffset: 3}
 	frame := BuildFrame(state)
-	if !strings.Contains(frame.Rows[0], "↑ 3") {
-		t.Fatalf("no scroll indicator in %q", frame.Rows[0])
+	if !strings.Contains(frame.Rows[0], "↑ ↓ 3") {
+		t.Fatalf("no bidirectional scroll indicator in %q", frame.Rows[0])
+	}
+	state.ScrollOffset = transcriptScrollLimit(state)
+	frame = BuildFrame(state)
+	if strings.Contains(frame.Rows[0], "↑") || !strings.Contains(frame.Rows[0], "↓") {
+		t.Fatalf("wrong oldest-position indicator in %q", frame.Rows[0])
 	}
 }
 

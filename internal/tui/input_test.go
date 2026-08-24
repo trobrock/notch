@@ -35,6 +35,11 @@ func TestParserKeys(t *testing.T) {
 		{"kitty-controls", "\x1b[100;5u\x1b[99;5u\x1b[106;5u\x1b[97;5:3u", []KeyEvent{{Key: KeyCtrlD}, {Key: KeyCtrlC}, {Key: KeyNewline}}},
 		{"modify-other-controls", "\x1b[27;5;100~\x1b[27;5;99~", []KeyEvent{{Key: KeyCtrlD}, {Key: KeyCtrlC}}},
 		{"alt-enter", "\x1b[13;3u\x1b[27;3;13~\x1b\r", []KeyEvent{{Key: KeyAltEnter}, {Key: KeyAltEnter}, {Key: KeyAltEnter}}},
+		{"mouse-wheel", "\x1b[<64;10;5M\x1b[<65;10;5M", []KeyEvent{{Key: KeyScrollUp}, {Key: KeyScrollDown}}},
+		{"mouse-wheel-modified", "\x1b[<68;10;5M\x1b[<81;10;5M", []KeyEvent{{Key: KeyScrollUp}, {Key: KeyScrollDown}}},
+		{"mouse-release", "\x1b[<64;10;5m", nil},
+		{"mouse-wheel-x10", "\x1b[M`**\x1b[Ma**", []KeyEvent{{Key: KeyScrollUp}, {Key: KeyScrollDown}}},
+		{"mouse-other", "\x1b[<0;10;5M\x1b[<0;10;5m", nil},
 		{"kitty-query-response", "\x1b[?7u", nil},
 	}
 	for _, tt := range tests {
@@ -55,6 +60,7 @@ func TestParserRetainsEverySplitSequence(t *testing.T) {
 	}{
 		{"utf8", "x界🙂y", []KeyEvent{{Text: "x"}, {Text: "界"}, {Text: "🙂"}, {Text: "y"}}},
 		{"escape", "\x1b[1;3D", []KeyEvent{{Key: KeyAltLeft}}},
+		{"mouse", "\x1b[<64;10;5M", []KeyEvent{{Key: KeyScrollUp}}},
 		{"shift-enter", "\x1b[27;2;13~", []KeyEvent{{Key: KeyShiftEnter}}},
 		{"shift-tab", "\x1b[9;2u", []KeyEvent{{Key: KeyShiftTab}}},
 		{"kitty-ctrl-d", "\x1b[100;5u", []KeyEvent{{Key: KeyCtrlD}}},
@@ -92,11 +98,20 @@ func TestParserPasteWaitsForTerminator(t *testing.T) {
 
 func TestParserFlushEscape(t *testing.T) {
 	var p Parser
+	if p.HasPendingEscape() {
+		t.Fatal("new parser has pending escape")
+	}
 	if got := p.Feed([]byte("\x1b")); got != nil {
 		t.Fatalf("bare escape was not retained: %#v", got)
 	}
+	if !p.HasPendingEscape() {
+		t.Fatal("parser did not report pending escape")
+	}
 	if got := p.FlushEscape(); !reflect.DeepEqual(got, []KeyEvent{{Key: KeyEscape}}) {
 		t.Fatalf("FlushEscape = %#v", got)
+	}
+	if p.HasPendingEscape() {
+		t.Fatal("flushed escape remains pending")
 	}
 
 	if got := p.Feed([]byte("\x1b[")); got != nil {

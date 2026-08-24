@@ -132,4 +132,4 @@ The fullscreen event loop blocks on terminal input, agent/extension events, and 
 
 Extension `Input` and `Select` calls rendezvous with the fullscreen event loop and appear as modal transcript/composer interactions; requests are queued and honor cancellation. The line fallback presents the same host operations as ordinary prompts.
 
-With `--json`, agent events are JSON-encoded to stdout as JSONL. Startup warnings can still appear on stderr. Consumers should treat event additions as possible while the MVP API settles. Current fullscreen gaps include mouse support, configurable keybindings, inline (non-alternate-screen) mode, tool-output expand/collapse, tool approval, and branching/session-tree navigation beyond the flat resume selector.
+With `--json`, agent events are JSON-encoded to stdout as JSONL. Startup warnings can still appear on stderr. Consumers should treat event additions as possible while the MVP API settles. Current fullscreen gaps include mouse clicking/selection, configurable keybindings, inline (non-alternate-screen) mode, tool-output expand/collapse, tool approval, and branching/session-tree navigation beyond the flat resume selector.
