@@ -309,3 +309,27 @@ func BenchmarkBuildFrame(b *testing.B) {
 		BuildFrame(state)
 	}
 }
+
+func TestUserTranscriptPreservesTypedNewlines(t *testing.T) {
+	state := &LayoutState{Width: 40, Height: 12, Editor: NewEditor(), Transcript: []TranscriptEntry{{Kind: KindUser, Text: "first line\nsecond line\n\nfourth line"}}}
+	lines := renderTranscript(state, state.Width, completeTheme(Theme{}, ""))
+	if len(lines) < 6 {
+		t.Fatalf("rendered lines = %#v", lines)
+	}
+	var first, second, fourth int = -1, -1, -1
+	for i, line := range lines {
+		plain := sanitiseTerminalText(line)
+		if strings.Contains(plain, "first line") {
+			first = i
+		}
+		if strings.Contains(plain, "second line") {
+			second = i
+		}
+		if strings.Contains(plain, "fourth line") {
+			fourth = i
+		}
+	}
+	if second != first+1 || fourth != second+2 {
+		t.Fatalf("rendered lines did not preserve newlines: %#v", lines)
+	}
+}

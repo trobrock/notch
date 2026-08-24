@@ -398,7 +398,7 @@ func renderTranscript(state *LayoutState, width int, theme Theme) []string {
 		switch entry.Kind {
 		case TranscriptUser:
 			style := theme.UserBG + theme.UserText
-			lines := entry.markdown(max(1, width-2), entry.Text, theme, style)
+			lines := entry.markdownPreserveLines(max(1, width-2), entry.Text, theme, style)
 			result = append(result, styleFull(style, blank, width, theme.Reset))
 			if entry.Label == "steer" || entry.Label == "follow_up" {
 				label := "Steering"
@@ -534,6 +534,27 @@ func (entry *TranscriptEntry) markdown(width int, text string, theme Theme, base
 	entry.cacheStyle = markdownThemeKey(theme, base)
 	entry.cacheLines = renderMarkdown(text, width, theme, base)
 	return entry.cacheLines
+}
+
+func (entry *TranscriptEntry) markdownPreserveLines(width int, text string, theme Theme, base string) []string {
+	mode := "markdown-preserve-lines"
+	if entry.cacheMode == mode && entry.cacheWidth == width && entry.cacheText == text && entry.cacheBase == base && entry.cacheTheme == theme && entry.cacheLines != nil {
+		return entry.cacheLines
+	}
+	text = strings.ReplaceAll(strings.ReplaceAll(text, "\r\n", "\n"), "\r", "\n")
+	parts := strings.Split(text, "\n")
+	lines := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part == "" {
+			lines = append(lines, "")
+			continue
+		}
+		lines = append(lines, renderMarkdown(part, width, theme, base)...)
+	}
+	entry.cacheMode, entry.cacheWidth, entry.cacheText = mode, width, text
+	entry.cacheBase, entry.cacheTheme, entry.cacheStyle = base, theme, markdownThemeKey(theme, base)
+	entry.cacheLines = lines
+	return lines
 }
 
 func markdownThemeKey(t Theme, base string) string {
