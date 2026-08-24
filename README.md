@@ -18,7 +18,7 @@ Notch is an MVP, not a drop-in reimplementation of [Pi](https://github.com/badlo
 - Executable, line-delimited JSON-RPC 2.0 plugins in any language
 - Native MCP client support over stdio and Streamable HTTP
 
-See the [fullscreen TUI guide](docs/tui.md), [themes](docs/themes.md), [compaction](docs/compaction.md), [providers and authentication](docs/providers.md), [architecture](docs/architecture.md), [extension API](docs/extensions.md), [migration from Pi](docs/migration-from-pi.md), and the [migration plan for the reviewed Pi extensions](docs/current-pi-extension-plan.md).
+See the [fullscreen TUI guide](docs/tui.md), [themes](docs/themes.md), [compaction](docs/compaction.md), [providers and authentication](docs/providers.md), [releases and upgrades](docs/releases.md), [architecture](docs/architecture.md), [extension API](docs/extensions.md), [migration from Pi](docs/migration-from-pi.md), and the [migration plan for the reviewed Pi extensions](docs/current-pi-extension-plan.md).
 
 ## Status and deliberate gaps
 
@@ -28,7 +28,7 @@ Tools and extensions run with the user's privileges. There is no sandbox or tool
 
 ## Build and install
 
-Building Notch requires Go 1.22 or newer.
+Building Notch requires Go 1.23 or newer.
 
 ```sh
 git clone https://github.com/trobrock/notch.git
@@ -38,13 +38,21 @@ make build
 ./bin/notch --version
 ```
 
-Or install directly into `GOBIN`/`$GOPATH/bin`:
+Prebuilt archives for Linux, macOS, and Windows on amd64 and arm64 are attached to each [GitHub release](https://github.com/trobrock/notch/releases). Verify an archive against the release's `checksums.txt`, unpack it, and place `notch` on `PATH`. Or install directly into `GOBIN`/`$GOPATH/bin`:
 
 ```sh
 go install github.com/trobrock/notch/cmd/notch@latest
 ```
 
-The resulting Notch executable needs no Node.js, npm, or runtime package installation. Executable extensions and stdio MCP servers may, of course, require their own runtimes.
+Notch can report detailed build metadata and replace a writable installation with a verified release:
+
+```sh
+notch version
+notch upgrade --check
+notch upgrade
+```
+
+See [releases and upgrades](docs/releases.md) for exact-version installs, downgrade rules, checksums, and package-manager installations. The resulting Notch executable needs no Node.js, npm, or runtime package installation. Executable extensions and stdio MCP servers may, of course, require their own runtimes.
 
 ## Quick start
 
@@ -115,6 +123,13 @@ notch [flags] [prompt words...]
   --mcp-config string     path to MCP JSON config
   --init                  create the Notch directories and starter config
   --version               print the version
+```
+
+Version commands are:
+
+```text
+notch version [--json]
+notch upgrade [--check] [--version VERSION] [--force]
 ```
 
 Authentication commands are:

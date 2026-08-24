@@ -6,7 +6,7 @@ Notch is one Go program with a deliberately small provider-independent agent loo
 
 `cmd/notch/main.go` is the composition root. Startup proceeds in this order:
 
-1. Parse CLI flags and determine the current directory and home directory.
+1. Dispatch standalone authentication, model-list, version, and upgrade commands; otherwise parse agent flags and determine the current directory and home directory.
 2. Load defaults, user config, and project config; apply `NOTCH_PROVIDER`, `NOTCH_MODEL`, and `NOTCH_THINKING_LEVEL`; then apply CLI overrides.
 3. Create configured extension, skill, prompt, and session directories.
 4. Create the terminal and extension registry; register built-in tools.
@@ -38,6 +38,7 @@ Plugin, Lua, and MCP load failures are generally shown as warnings so startup ca
 - `internal/mcp`: MCP initialization, tool discovery/calling, stdio, and Streamable HTTP transports.
 - `internal/ui`: dependency-free line-oriented terminal I/O and fallback extension host operations.
 - `internal/tui`: fullscreen event loop, multiline editor, layout, input parser, and differential terminal renderer.
+- `internal/upgrade`: GitHub release lookup, semantic-version comparison, checksum verification, constrained archive extraction, and atomic executable replacement.
 
 ## Agent loop
 

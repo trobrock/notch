@@ -11,6 +11,8 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"syscall"
@@ -34,10 +36,15 @@ import (
 	"github.com/trobrock/notch/internal/tools"
 	"github.com/trobrock/notch/internal/tui"
 	"github.com/trobrock/notch/internal/ui"
+	"github.com/trobrock/notch/internal/upgrade"
 	"golang.org/x/term"
 )
 
-var version = "dev"
+var (
+	version   = "dev"
+	commit    = "unknown"
+	buildDate = "unknown"
+)
 
 type options struct {
 	provider, modelName, prompt, mcpConfig, resumeSession            string
@@ -52,6 +59,12 @@ func main() {
 }
 
 func run(args []string) error {
+	if len(args) > 0 && args[0] == "version" {
+		return runVersion(args[1:])
+	}
+	if len(args) > 0 && args[0] == "upgrade" {
+		return runUpgrade(args[1:])
+	}
 	if len(args) > 0 && (args[0] == "login" || args[0] == "logout" || args[0] == "auth") {
 		return runAuth(args)
 	}
@@ -79,7 +92,7 @@ func run(args []string) error {
 		return err
 	}
 	if opts.showVersion {
-		fmt.Println("notch", version)
+		fmt.Println("notch", currentBuildInfo().Version)
 		return nil
 	}
 	if opts.continueSession && opts.resumeSession != "" {
@@ -322,7 +335,7 @@ func run(args []string) error {
 	}
 
 	if !opts.jsonOutput {
-		fmt.Fprintf(os.Stderr, "Notch %s · %s/%s · %d tools\n", version, cfg.Provider, cfg.Model, len(registry.Tools()))
+		fmt.Fprintf(os.Stderr, "Notch %s · %s/%s · %d tools\n", currentBuildInfo().Version, cfg.Provider, cfg.Model, len(registry.Tools()))
 		if store != nil {
 			fmt.Fprintf(os.Stderr, "session: %s\n", store.Path())
 		}
@@ -401,6 +414,104 @@ func discoverModels(ctx context.Context, registry *modelregistry.Registry, base 
 	}
 	models, registryErr := registry.List(ctx, normalizeProvider(providerName), modelregistry.Scope(normalizeProvider(providerName), candidate.BaseURL), force, fetch)
 	return models, errors.Join(providerErr, registryErr)
+}
+
+type buildInfo struct {
+	Version   string `json:"version"`
+	Commit    string `json:"commit"`
+	BuildDate string `json:"build_date"`
+	GoVersion string `json:"go_version"`
+	Platform  string `json:"platform"`
+}
+
+func currentBuildInfo() buildInfo {
+	result := buildInfo{
+		Version: version, Commit: commit, BuildDate: buildDate,
+		GoVersion: runtime.Version(), Platform: runtime.GOOS + "/" + runtime.GOARCH,
+	}
+	if info, ok := debug.ReadBuildInfo(); ok {
+		if (result.Version == "" || result.Version == "dev") && info.Main.Version != "" && info.Main.Version != "(devel)" {
+			result.Version = info.Main.Version
+		}
+		modified, usedVCSCommit := false, false
+		for _, setting := range info.Settings {
+			switch setting.Key {
+			case "vcs.revision":
+				if result.Commit == "" || result.Commit == "unknown" {
+					result.Commit, usedVCSCommit = setting.Value, true
+				}
+			case "vcs.time":
+				if result.BuildDate == "" || result.BuildDate == "unknown" {
+					result.BuildDate = setting.Value
+				}
+			case "vcs.modified":
+				modified = setting.Value == "true"
+			}
+		}
+		if modified && usedVCSCommit && result.Commit != "" && result.Commit != "unknown" && !strings.HasSuffix(result.Commit, "-dirty") {
+			result.Commit += "-dirty"
+		}
+	}
+	if result.Version == "" {
+		result.Version = "dev"
+	}
+	if result.Commit == "" {
+		result.Commit = "unknown"
+	}
+	if result.BuildDate == "" {
+		result.BuildDate = "unknown"
+	}
+	return result
+}
+
+func runVersion(args []string) error {
+	flags := flag.NewFlagSet("notch version", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	jsonOutput := flags.Bool("json", false, "emit version details as JSON")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return errors.New("usage: notch version [--json]")
+	}
+	info := currentBuildInfo()
+	if *jsonOutput {
+		return json.NewEncoder(os.Stdout).Encode(info)
+	}
+	fmt.Printf("notch %s\ncommit: %s\nbuilt: %s\ngo: %s\nplatform: %s\n", info.Version, info.Commit, info.BuildDate, info.GoVersion, info.Platform)
+	return nil
+}
+
+func runUpgrade(args []string) error {
+	flags := flag.NewFlagSet("notch upgrade", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	checkOnly := flags.Bool("check", false, "check for an update without installing it")
+	force := flags.Bool("force", false, "reinstall or allow an explicit downgrade")
+	target := flags.String("version", "", "install a specific release version")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return errors.New("usage: notch upgrade [--check] [--force] [--version VERSION]")
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	info := currentBuildInfo()
+	result, err := upgrade.Run(ctx, upgrade.Options{
+		CurrentVersion: info.Version, TargetVersion: *target,
+		CheckOnly: *checkOnly, Force: *force,
+	})
+	if err != nil {
+		return err
+	}
+	if result.Updated {
+		fmt.Printf("Upgraded notch from %s to %s.\n", result.CurrentVersion, result.TargetVersion)
+	} else if result.Available {
+		fmt.Printf("Update available: %s -> %s\n", result.CurrentVersion, result.TargetVersion)
+	} else {
+		fmt.Printf("notch %s is up to date.\n", result.CurrentVersion)
+	}
+	return nil
 }
 
 func runListModels(args []string) error {

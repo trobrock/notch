@@ -13,7 +13,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/trobrock/notch/internal/agent"
@@ -404,9 +403,7 @@ func (a *App) Run(ctx context.Context) (retErr error) {
 	}
 }
 
-// These variables keep platform signal wiring small and make the event loop's
-// resize source explicit. SIGWINCH is available on the supported Unix terminals.
-var signalNotify = func(ch chan<- os.Signal) { signal.Notify(ch, syscall.SIGWINCH) }
+// This variable keeps signal cleanup replaceable in event-loop tests.
 var signalStop = func(ch chan<- os.Signal) { signal.Stop(ch) }
 
 func (a *App) readInput(ctx context.Context) {
