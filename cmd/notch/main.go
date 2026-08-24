@@ -265,13 +265,13 @@ func run(args []string) error {
 		}
 	}()
 	for _, warning := range warnings {
-		terminal.Notify(warning.Error(), "warning")
+		extensionHost.Notify(warning.Error(), "warning")
 	}
 
 	luaManager := luaext.New(registry, extensionHost)
 	if !opts.noExtensions {
 		if err := luaManager.LoadDirs(cfg.ExtensionDirs...); err != nil {
-			terminal.Notify(err.Error(), "warning")
+			extensionHost.Notify(err.Error(), "warning")
 		}
 	}
 	defer luaManager.Close()
@@ -281,9 +281,9 @@ func run(args []string) error {
 		if _, statErr := os.Stat(cfg.MCPConfig); statErr == nil {
 			mcpCfg, loadErr := mcp.LoadConfig(cfg.MCPConfig)
 			if loadErr != nil {
-				terminal.Notify(loadErr.Error(), "warning")
+				extensionHost.Notify(loadErr.Error(), "warning")
 			} else if mcpManager, err = mcp.ConnectConfigured(ctx, mcpCfg, registry); err != nil {
-				terminal.Notify(err.Error(), "warning")
+				extensionHost.Notify(err.Error(), "warning")
 			}
 		}
 	}
@@ -300,7 +300,7 @@ func run(args []string) error {
 	} else {
 		catalog, err = resources.LoadBundled(cfg.SkillDiscoveryDirs(), cfg.PromptDiscoveryDirs())
 		if err != nil {
-			terminal.Notify(err.Error(), "warning")
+			extensionHost.Notify(err.Error(), "warning")
 		}
 	}
 	systemPrompt := cfg.SystemPrompt

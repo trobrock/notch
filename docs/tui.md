@@ -23,6 +23,8 @@ The footer has two lines. The first shows the abbreviated working directory and 
 
 The UI redraws itself for terminal resizes (`SIGWINCH`), rewrapping content to the new width and preserving a valid composer cursor. See [themes](themes.md) and [compaction](compaction.md) for the associated settings.
 
+On startup, the transcript shows compact `[Skills]` and `[Commands]` sections for loaded skills, prompt templates, and extension commands. Resource names are sorted, and the sections appear after restored conversation history when resuming a session. Built-in commands remain available through `/help` without cluttering the startup list.
+
 ## Keys
 
 | Key | Action |

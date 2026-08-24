@@ -269,6 +269,18 @@ func TestThinkingIndicatorAndSummaryRendering(t *testing.T) {
 	}
 }
 
+func TestStartupResourceSectionsRenderCompactly(t *testing.T) {
+	state := &LayoutState{Transcript: []TranscriptEntry{
+		{Kind: KindNotice, Label: "skills", Text: "/skill:config  /skill:review"},
+		{Kind: KindNotice, Label: "commands", Text: "/deploy  /plan"},
+	}}
+	lines := renderTranscript(state, 40, completeTheme(Theme{}, "dark"))
+	plain := plainANSI(strings.Join(lines, "\n"))
+	if !strings.Contains(plain, "[Skills]") || !strings.Contains(plain, "  /skill:config") || !strings.Contains(plain, "[Commands]") || !strings.Contains(plain, "  /deploy") || strings.Contains(plain, "skills:") {
+		t.Fatalf("startup resources = %q", plain)
+	}
+}
+
 func TestScrollOffsetShowsIndicator(t *testing.T) {
 	entries := make([]TranscriptEntry, 20)
 	for i := range entries {

@@ -518,6 +518,17 @@ func renderTranscript(state *LayoutState, width int, theme Theme) []string {
 
 		case TranscriptNotice, TranscriptError:
 			style, label := theme.Notice, entry.Label
+			if (label == "skills" || label == "commands") && !isError {
+				title := "Skills"
+				if label == "commands" {
+					title = "Commands"
+				}
+				result = append(result, padANSI(theme.MarkdownHeading+"["+title+"]"+theme.Reset, width))
+				for _, line := range entry.wrapped(max(1, width-2), entry.Text) {
+					result = append(result, padANSI(theme.Muted+"  "+line+theme.Reset, width))
+				}
+				break
+			}
 			if isError {
 				style = theme.Error
 				if label == "" {

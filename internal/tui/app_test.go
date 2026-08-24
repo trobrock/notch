@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -364,6 +365,15 @@ func (p *appQueueProvider) Stream(ctx context.Context, _ model.Request, _ func(m
 	return model.Response{Content: []model.Block{{Type: "text", Text: "done"}}, StopReason: "end_turn"}, nil
 }
 
+func TestSlashPartsAcceptsAllWhitespace(t *testing.T) {
+	for _, input := range []string{"/fix issue", "/fix\tissue", "/fix\nissue"} {
+		name, args := slashParts(input)
+		if name != "fix" || args != "issue" {
+			t.Fatalf("slashParts(%q) = %q, %q", input, name, args)
+		}
+	}
+}
+
 func TestSlashCommandCompletionAndHelp(t *testing.T) {
 	a := NewApp(AppConfig{})
 	a.catalog = &resources.Catalog{
@@ -508,10 +518,11 @@ func TestFinishResumeRestoresTranscriptAndHistory(t *testing.T) {
 	a := NewApp(AppConfig{SessionDir: dir})
 	runner := newAppTestAgent(t, old)
 	a.runner, a.currentSession = runner, old
+	a.catalog = &resources.Catalog{Skills: map[string]resources.Skill{"review": {}}, Templates: map[string]resources.Template{}}
 	if !a.finishResume(resumeResult{session: loaded}) {
 		t.Fatal("resume reported no change")
 	}
-	if a.currentSession != loaded || len(a.state.layout.Transcript) != 2 {
+	if a.currentSession != loaded || len(a.state.layout.Transcript) != 3 || a.state.layout.Transcript[2].Label != "skills" {
 		t.Fatalf("resumed state = current:%p transcript:%#v", a.currentSession, a.state.layout.Transcript)
 	}
 	a.state.editor.SetText("draft")
@@ -615,6 +626,113 @@ func TestAppBuiltinsAndPreRunNotifyDoNotStartTimers(t *testing.T) {
 	}
 }
 
+func TestConfigureShowsAvailableSkillsAndCommands(t *testing.T) {
+	store, err := session.New(t.TempDir(), "/work", "test", "model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.AppendMessage(model.TextMessage("user", "existing conversation")); err != nil {
+		t.Fatal(err)
+	}
+	runner := newAppTestAgent(t, store)
+	registry := extension.NewRegistry()
+	for _, command := range []string{"plan", "deploy"} {
+		if err := registry.RegisterCommand(extension.Command{Name: command, Description: command, Execute: func(context.Context, string) (string, error) { return "", nil }}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	catalog := &resources.Catalog{
+		Skills:    map[string]resources.Skill{"review": {}, "notch-config": {}},
+		Templates: map[string]resources.Template{"fix": {}, "audit": {}},
+	}
+	a := NewApp(AppConfig{})
+	a.Configure(runner, registry, catalog)
+	if len(a.state.layout.Transcript) != 3 {
+		t.Fatalf("startup transcript = %#v", a.state.layout.Transcript)
+	}
+	if a.state.layout.Transcript[0].Kind != KindUser || a.state.layout.Transcript[0].Text != "existing conversation" {
+		t.Fatalf("history entry = %#v", a.state.layout.Transcript[0])
+	}
+	skills := a.state.layout.Transcript[1]
+	if skills.Label != "skills" || skills.Text != "/skill:notch-config  /skill:review" {
+		t.Fatalf("skills entry = %#v", skills)
+	}
+	commands := a.state.layout.Transcript[2]
+	if commands.Label != "commands" || commands.Text != "/audit  /deploy  /fix  /plan" {
+		t.Fatalf("commands entry = %#v", commands)
+	}
+}
+
+func TestPendingStartupNoticeAndResourceSummaryBothRender(t *testing.T) {
+	a := NewApp(AppConfig{})
+	a.Notify("loaded early", "warning")
+	a.catalog = &resources.Catalog{Skills: map[string]resources.Skill{"review": {}}, Templates: map[string]resources.Template{}}
+	a.state.layout.Transcript = append(a.state.layout.Transcript, a.startupResourceEntries()...)
+	pending := append([]appEvent(nil), a.pending...)
+	for _, event := range pending {
+		a.applyEvent(context.Background(), event)
+	}
+	if len(a.state.layout.Transcript) != 2 || a.state.layout.Transcript[0].Label != "skills" || a.state.layout.Transcript[1].Text != "loaded early" {
+		t.Fatalf("startup ordering = %#v", a.state.layout.Transcript)
+	}
+}
+
+func TestStartupResourceCommandConflictsUseDispatchPrecedence(t *testing.T) {
+	a := NewApp(AppConfig{})
+	registry := extension.NewRegistry()
+	for _, name := range []string{"fix", "new", "skill:review"} {
+		if err := registry.RegisterCommand(extension.Command{Name: name, Description: "extension " + name, Execute: func(context.Context, string) (string, error) { return "", nil }}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a.registry = registry
+	a.catalog = &resources.Catalog{
+		Skills:    map[string]resources.Skill{"review": {}, "other": {}},
+		Templates: map[string]resources.Template{"fix": {Description: "template fix"}, "new": {}, "audit": {}, "skill:other": {Description: "shadow attempt"}},
+	}
+	skills, commands := effectiveResourceCommands(registry, a.catalog)
+	if !reflect.DeepEqual(skills, []string{"/skill:other"}) {
+		t.Fatalf("skills = %#v", skills)
+	}
+	if !reflect.DeepEqual(commands, []string{"/audit", "/fix", "/skill:review"}) {
+		t.Fatalf("commands = %#v", commands)
+	}
+	items := a.commandSuggestions()
+	byName := make(map[string]string)
+	for _, item := range items {
+		byName[item.Name] = item.Description
+	}
+	if byName["fix"] != "extension fix" || byName["new"] != "start a new conversation" || byName["skill:review"] != "extension skill:review" {
+		t.Fatalf("completion precedence = %#v", byName)
+	}
+}
+
+func TestQueuedCommandsRespectIdleDispatchPrecedence(t *testing.T) {
+	a := NewApp(AppConfig{})
+	registry := extension.NewRegistry()
+	if err := registry.RegisterCommand(extension.Command{Name: "fix", Execute: func(context.Context, string) (string, error) { return "", nil }}); err != nil {
+		t.Fatal(err)
+	}
+	a.registry = registry
+	a.catalog = &resources.Catalog{Skills: map[string]resources.Skill{}, Templates: map[string]resources.Template{"fix": {Content: "expanded"}}}
+	a.state.editor.SetText("/fix")
+	if !a.queueComposerMessage("steer") {
+		t.Fatal("extension command conflict was not handled")
+	}
+	if len(a.state.layout.Transcript) == 0 || !strings.Contains(a.state.layout.Transcript[len(a.state.layout.Transcript)-1].Text, "extension command") {
+		t.Fatalf("queue result = %#v", a.state.layout.Transcript)
+	}
+}
+
+func TestConfigureOmitsEmptyStartupResourceSections(t *testing.T) {
+	a := NewApp(AppConfig{})
+	a.Configure(newAppTestAgent(t, nil), extension.NewRegistry(), &resources.Catalog{Skills: map[string]resources.Skill{}, Templates: map[string]resources.Template{}})
+	if len(a.state.layout.Transcript) != 0 {
+		t.Fatalf("empty resources produced %#v", a.state.layout.Transcript)
+	}
+}
+
 func TestAppThinkingCycleForwardsToAgent(t *testing.T) {
 	a := NewApp(AppConfig{})
 	runner := newAppTestAgent(t, nil)
@@ -669,7 +787,7 @@ func TestAppNewCreatesFreshSession(t *testing.T) {
 	}
 	runner := newAppTestAgent(t, old)
 	a := NewApp(AppConfig{})
-	a.Configure(runner, extension.NewRegistry(), nil)
+	a.Configure(runner, extension.NewRegistry(), &resources.Catalog{Skills: map[string]resources.Skill{"review": {}}, Templates: map[string]resources.Template{}})
 	var fresh *session.Session
 	a.SetSessionFactory(old, func() (*session.Session, error) {
 		var createErr error
@@ -682,8 +800,8 @@ func TestAppNewCreatesFreshSession(t *testing.T) {
 	if fresh == nil || len(runner.Messages()) != 0 {
 		t.Fatalf("fresh session not installed: fresh=%v messages=%#v", fresh, runner.Messages())
 	}
-	if len(a.state.layout.Transcript) != 0 || a.state.editor.HistoryPrevious() {
-		t.Fatal("new conversation did not clear transcript and editor history")
+	if len(a.state.layout.Transcript) != 1 || a.state.layout.Transcript[0].Label != "skills" || a.state.editor.HistoryPrevious() {
+		t.Fatal("new conversation did not restore resource summary or clear editor history")
 	}
 	if err := old.AppendEntry(map[string]any{"type": "test"}); err == nil || !strings.Contains(err.Error(), "closed") {
 		t.Fatalf("old session was not closed: %v", err)

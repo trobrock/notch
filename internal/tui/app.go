@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/trobrock/notch/internal/agent"
@@ -271,13 +272,25 @@ func (a *App) SetSessionFactory(current *session.Session, factory func() (*sessi
 	}
 }
 
+// Configure supplies the runner and the final loaded registry/catalog. It must
+// be called before Run; calls made while the event loop is active are ignored.
 func (a *App) Configure(runner *agent.Agent, registry *extension.Registry, catalog *resources.Catalog) {
 	a.mu.Lock()
+	if a.running {
+		a.mu.Unlock()
+		return
+	}
+	a.mu.Unlock()
+	transcript := transcriptFromMessages(runnerMessages(runner))
+	transcript = append(transcript, resourceEntriesFor(registry, catalog)...)
+	a.mu.Lock()
+	if a.running {
+		a.mu.Unlock()
+		return
+	}
 	a.runner, a.registry, a.catalog = runner, registry, catalog
 	a.commandCache = nil
-	a.mu.Unlock()
-
-	a.state.layout.Transcript = transcriptFromMessages(runnerMessages(runner))
+	a.state.layout.Transcript = transcript
 	a.state.assistant = -1
 	a.state.thinking = -1
 	a.state.compaction = -1
@@ -286,6 +299,62 @@ func (a *App) Configure(runner *agent.Agent, registry *extension.Registry, catal
 		a.state.layout.ThinkingLevel = runner.ThinkingLevel()
 		a.applyContextUsage(runner.ContextUsage())
 	}
+	a.mu.Unlock()
+}
+
+func resourceEntriesFor(registry *extension.Registry, catalog *resources.Catalog) []TranscriptEntry {
+	skills, commands := effectiveResourceCommands(registry, catalog)
+	var entries []TranscriptEntry
+	if len(skills) != 0 {
+		entries = append(entries, TranscriptEntry{Kind: KindNotice, Label: "skills", Text: strings.Join(skills, "  ")})
+	}
+	if len(commands) != 0 {
+		entries = append(entries, TranscriptEntry{Kind: KindNotice, Label: "commands", Text: strings.Join(commands, "  ")})
+	}
+	return entries
+}
+
+func effectiveResourceCommands(registry *extension.Registry, catalog *resources.Catalog) (skills, commands []string) {
+	seen := make(map[string]bool)
+	for name := range builtinCommandNames() {
+		seen[name] = true
+	}
+	if registry != nil {
+		for _, command := range registry.Commands() {
+			if seen[command.Name] {
+				continue
+			}
+			commands = append(commands, "/"+command.Name)
+			seen[command.Name] = true
+		}
+	}
+	if catalog != nil {
+		for name := range catalog.Skills {
+			command := "skill:" + name
+			if seen[command] {
+				continue
+			}
+			skills = append(skills, "/"+command)
+			seen[command] = true
+		}
+		for name := range catalog.Templates {
+			if seen[name] {
+				continue
+			}
+			commands = append(commands, "/"+name)
+			seen[name] = true
+		}
+	}
+	sort.Strings(skills)
+	sort.Strings(commands)
+	return skills, commands
+}
+
+func (a *App) startupResourceEntries() []TranscriptEntry {
+	a.mu.Lock()
+	registry, catalog := a.registry, a.catalog
+	a.mu.Unlock()
+	return resourceEntriesFor(registry, catalog)
 }
 
 func runnerMessages(runner *agent.Agent) []model.Message {
@@ -1015,6 +1084,18 @@ func (a *App) queueComposerMessage(mode string) bool {
 	if strings.TrimSpace(text) == "" {
 		return false
 	}
+	trimmed := strings.TrimSpace(text)
+	if strings.HasPrefix(trimmed, "/") {
+		name, _ := slashParts(trimmed)
+		if _, builtin := builtinCommandNames()[name]; builtin {
+			a.addNotice("cannot queue command while streaming: /"+name+" requires the agent to be idle", "error")
+			return true
+		}
+		if _, extensionCommand := a.extensionCommand(name); extensionCommand {
+			a.addNotice("cannot queue extension command while streaming: /"+name, "error")
+			return true
+		}
+	}
 	expanded := text
 	if a.catalog != nil {
 		value, err := a.catalog.ExpandInput(text)
@@ -1390,8 +1471,12 @@ func (a *App) toolEntry(event agent.Event) int {
 }
 
 func slashParts(input string) (name, args string) {
-	command, args, _ := strings.Cut(strings.TrimPrefix(input, "/"), " ")
-	return command, strings.TrimSpace(args)
+	value := strings.TrimSpace(strings.TrimPrefix(input, "/"))
+	index := strings.IndexFunc(value, unicode.IsSpace)
+	if index < 0 {
+		return value, ""
+	}
+	return value[:index], strings.TrimSpace(value[index:])
 }
 
 func (a *App) applyContextUsage(usage agent.ContextUsage) {
@@ -1716,6 +1801,7 @@ func (a *App) finishResume(result resumeResult) bool {
 	a.resetConversationState()
 	messages := runner.Messages()
 	a.state.layout.Transcript = transcriptFromMessages(messages)
+	a.state.layout.Transcript = append(a.state.layout.Transcript, a.startupResourceEntries()...)
 	a.state.editor.SetHistory(promptHistory(messages))
 	a.applyContextUsage(runner.ContextUsage())
 	if old == nil {
@@ -1789,6 +1875,7 @@ func (a *App) newConversation() {
 		}
 	}
 	a.resetConversationState()
+	a.state.layout.Transcript = append(a.state.layout.Transcript, a.startupResourceEntries()...)
 	a.applyContextUsage(runner.ContextUsage())
 	if old != nil && old != fresh {
 		if err := old.Close(); err != nil {
@@ -1897,16 +1984,16 @@ func (a *App) showHelp() {
 	a.state.layout.Status = "command help"
 }
 
-func (a *App) commandSuggestions() []CommandSuggestion {
-	a.mu.Lock()
-	if a.commandCache != nil {
-		cached := a.commandCache
-		a.mu.Unlock()
-		return cached
+func builtinCommandNames() map[string]struct{} {
+	names := make(map[string]struct{})
+	for _, item := range builtinCommandSuggestions() {
+		names[item.Name] = struct{}{}
 	}
-	registry := a.registry
-	a.mu.Unlock()
-	items := []CommandSuggestion{
+	return names
+}
+
+func builtinCommandSuggestions() []CommandSuggestion {
+	return []CommandSuggestion{
 		{Name: "clear", Description: "clear the transcript"},
 		{Name: "compact", ArgumentHint: "[instructions]", Description: "compact conversation context"},
 		{Name: "exit", Description: "exit Notch"},
@@ -1922,30 +2009,43 @@ func (a *App) commandSuggestions() []CommandSuggestion {
 		{Name: "thinking", ArgumentHint: "[level]", Description: "show or set thinking level"},
 		{Name: "tools", Description: "list loaded tools"},
 	}
+}
+
+func (a *App) commandSuggestions() []CommandSuggestion {
+	a.mu.Lock()
+	if a.commandCache != nil {
+		cached := a.commandCache
+		a.mu.Unlock()
+		return cached
+	}
+	registry := a.registry
+	catalog := a.catalog
+	a.mu.Unlock()
+	items := builtinCommandSuggestions()
 	seen := make(map[string]bool, len(items))
 	for _, item := range items {
 		seen[item.Name] = true
-	}
-	if a.catalog != nil {
-		for name, skill := range a.catalog.Skills {
-			command := "skill:" + name
-			if !seen[command] {
-				items = append(items, CommandSuggestion{Name: command, ArgumentHint: "[arguments]", Description: skill.Description})
-				seen[command] = true
-			}
-		}
-		for name, template := range a.catalog.Templates {
-			if !seen[name] {
-				items = append(items, CommandSuggestion{Name: name, ArgumentHint: template.ArgumentHint, Description: template.Description})
-				seen[name] = true
-			}
-		}
 	}
 	if registry != nil {
 		for _, command := range registry.Commands() {
 			if !seen[command.Name] {
 				items = append(items, CommandSuggestion{Name: command.Name, Description: command.Description})
 				seen[command.Name] = true
+			}
+		}
+	}
+	if catalog != nil {
+		for name, skill := range catalog.Skills {
+			command := "skill:" + name
+			if !seen[command] {
+				items = append(items, CommandSuggestion{Name: command, ArgumentHint: "[arguments]", Description: skill.Description})
+				seen[command] = true
+			}
+		}
+		for name, template := range catalog.Templates {
+			if !seen[name] {
+				items = append(items, CommandSuggestion{Name: name, ArgumentHint: template.ArgumentHint, Description: template.Description})
+				seen[name] = true
 			}
 		}
 	}
