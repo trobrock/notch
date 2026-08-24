@@ -59,6 +59,7 @@ type App struct {
 	cfg AppConfig
 
 	mu             sync.Mutex
+	sessionMu      sync.RWMutex
 	runner         *agent.Agent
 	registry       *extension.Registry
 	catalog        *resources.Catalog
@@ -68,6 +69,8 @@ type App struct {
 	running        bool
 	runDone        chan struct{}
 	pending        []appEvent
+	sessionContext context.Context
+	sessionCancel  context.CancelFunc
 	currentSession *session.Session
 	sessionFactory func() (*session.Session, error)
 
@@ -119,6 +122,7 @@ type appEvent struct {
 	notice     *noticeEvent
 	status     *statusEvent
 	panel      *panelEvent
+	editor     *editorEvent
 	followUp   string
 	handoff    *handoffEvent
 	readErr    error
@@ -134,6 +138,11 @@ type statusEvent struct{ key, value string }
 type panelEvent struct {
 	key, title string
 	lines      []string
+}
+type editorEvent struct {
+	ctx   context.Context
+	set   *string
+	reply chan hostResponse
 }
 type promptResult struct{ err error }
 type resumeResult struct {
@@ -262,8 +271,14 @@ func (a *App) SetModelManager(list func(context.Context, string, bool) ([]modelr
 // SetSessionFactory enables /new to create and install a distinct session.
 // current remains owned by App and is closed when replaced or when Run exits.
 func (a *App) SetSessionFactory(current *session.Session, factory func() (*session.Session, error)) {
+	a.sessionMu.Lock()
+	defer a.sessionMu.Unlock()
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.sessionCancel != nil {
+		a.sessionCancel()
+	}
+	a.sessionContext, a.sessionCancel = context.WithCancel(context.Background())
 	a.currentSession = current
 	a.sessionFactory = factory
 	if current != nil {
@@ -392,9 +407,13 @@ func (a *App) Run(ctx context.Context) (retErr error) {
 			a.running = false
 			close(runDone)
 		}
+		if a.sessionCancel != nil {
+			a.sessionCancel()
+			a.sessionCancel = nil
+			a.sessionContext = nil
+		}
 		a.mu.Unlock()
 	}()
-	defer func() { retErr = errors.Join(retErr, a.closeCurrentSession()) }()
 
 	screen, err := a.openScreen(a.cfg.In, a.cfg.Out)
 	if err != nil {
@@ -746,6 +765,28 @@ func (a *App) applyEvent(runCtx context.Context, event appEvent) bool {
 			a.state.layout.Panels[event.panel.key] = ExtensionPanel{Key: event.panel.key, Title: event.panel.title, Lines: append([]string(nil), event.panel.lines...)}
 		}
 		changed = true
+	}
+	if event.editor != nil {
+		if err := event.editor.ctx.Err(); err != nil {
+			select {
+			case event.editor.reply <- hostResponse{err: err}:
+			default:
+			}
+		} else if a.state.modal != nil {
+			select {
+			case event.editor.reply <- hostResponse{err: errors.New("prompt editor is unavailable while an extension prompt is active")}:
+			default:
+			}
+		} else {
+			if event.editor.set != nil {
+				a.state.editor.SetText(*event.editor.set)
+				changed = true
+			}
+			select {
+			case event.editor.reply <- hostResponse{value: a.state.editor.Text()}:
+			default:
+			}
+		}
 	}
 	if event.followUp != "" {
 		if a.state.activeModel {
@@ -1780,6 +1821,8 @@ func (a *App) finishResume(result resumeResult) bool {
 		a.state.layout.Status = "ready"
 		return true
 	}
+	a.sessionMu.Lock()
+	defer a.sessionMu.Unlock()
 	a.mu.Lock()
 	runner, current := a.runner, a.currentSession
 	a.mu.Unlock()
@@ -1795,6 +1838,10 @@ func (a *App) finishResume(result resumeResult) bool {
 		return true
 	}
 	a.mu.Lock()
+	if a.sessionCancel != nil {
+		a.sessionCancel()
+	}
+	a.sessionContext, a.sessionCancel = context.WithCancel(context.Background())
 	a.currentSession = result.session
 	a.cfg.Session = result.session.Path()
 	a.mu.Unlock()
@@ -1812,6 +1859,7 @@ func (a *App) finishResume(result resumeResult) bool {
 			a.addNotice(err.Error(), "error")
 		}
 	}
+	a.sessionChanged()
 	return true
 }
 
@@ -1835,6 +1883,8 @@ func promptHistory(messages []model.Message) []string {
 }
 
 func (a *App) newConversation() {
+	a.sessionMu.Lock()
+	defer a.sessionMu.Unlock()
 	a.mu.Lock()
 	runner, current, factory := a.runner, a.currentSession, a.sessionFactory
 	a.mu.Unlock()
@@ -1866,6 +1916,10 @@ func (a *App) newConversation() {
 	}
 	if fresh != nil {
 		a.mu.Lock()
+		if a.sessionCancel != nil {
+			a.sessionCancel()
+		}
+		a.sessionContext, a.sessionCancel = context.WithCancel(context.Background())
 		a.currentSession = fresh
 		a.cfg.Session = fresh.Path()
 		a.mu.Unlock()
@@ -1873,6 +1927,13 @@ func (a *App) newConversation() {
 		if old == nil {
 			old = current
 		}
+	} else {
+		a.mu.Lock()
+		if a.sessionCancel != nil {
+			a.sessionCancel()
+		}
+		a.sessionContext, a.sessionCancel = context.WithCancel(context.Background())
+		a.mu.Unlock()
 	}
 	a.resetConversationState()
 	a.state.layout.Transcript = append(a.state.layout.Transcript, a.startupResourceEntries()...)
@@ -1882,6 +1943,7 @@ func (a *App) newConversation() {
 			a.addNotice(err.Error(), "error")
 		}
 	}
+	a.sessionChanged()
 }
 
 func (a *App) resetConversationState() {
@@ -1905,7 +1967,12 @@ func (a *App) resetConversationState() {
 	a.state.layout.CommandSelection = 0
 }
 
+// CloseSession syncs and closes the current session after lifecycle shutdown.
+func (a *App) CloseSession() error { return a.closeCurrentSession() }
+
 func (a *App) closeCurrentSession() error {
+	a.sessionMu.Lock()
+	defer a.sessionMu.Unlock()
 	a.mu.Lock()
 	current := a.currentSession
 	a.mu.Unlock()
@@ -2459,6 +2526,96 @@ func (a *App) ListModels(ctx context.Context, provider string, refresh bool) ([]
 		}
 	}
 	return out, nil
+}
+
+func (a *App) AppendSessionEntry(kind string, data any) error {
+	kind = strings.TrimSpace(kind)
+	if kind == "" {
+		return errors.New("session entry kind is required")
+	}
+	a.sessionMu.RLock()
+	defer a.sessionMu.RUnlock()
+	a.mu.Lock()
+	current := a.currentSession
+	a.mu.Unlock()
+	if current == nil {
+		return errors.New("session persistence is unavailable")
+	}
+	return current.AppendCustomEntry(kind, data)
+}
+
+func (a *App) SessionEntries(kind string) ([]json.RawMessage, error) {
+	kind = strings.TrimSpace(kind)
+	if kind == "" {
+		return nil, errors.New("session entry kind is required")
+	}
+	a.sessionMu.RLock()
+	defer a.sessionMu.RUnlock()
+	a.mu.Lock()
+	current := a.currentSession
+	a.mu.Unlock()
+	if current == nil {
+		return nil, errors.New("session persistence is unavailable")
+	}
+	return current.CustomEntries(kind)
+}
+
+func (a *App) EditorText(ctx context.Context) (string, error) {
+	return a.editorRequest(ctx, nil)
+}
+
+func (a *App) SetEditorText(ctx context.Context, text string) error {
+	_, err := a.editorRequest(ctx, &text)
+	return err
+}
+
+func (a *App) sessionChanged() {
+	a.mu.Lock()
+	registry := a.registry
+	current := a.currentSession
+	sessionContext := a.sessionContext
+	a.mu.Unlock()
+	if registry == nil {
+		return
+	}
+	event := map[string]any{}
+	if current != nil {
+		event["session_id"] = current.Header.ID
+		event["session_file"] = current.Path()
+	}
+	go func() {
+		parent := sessionContext
+		if parent == nil {
+			parent = context.Background()
+		}
+		ctx, cancel := context.WithTimeout(parent, 10*time.Second)
+		defer cancel()
+		if _, err := registry.RunHooksBestEffort(ctx, "session_change", event); err != nil && !errors.Is(err, context.Canceled) {
+			a.Notify(err.Error(), "warning")
+		}
+	}()
+}
+
+func (a *App) editorRequest(ctx context.Context, text *string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	reply := make(chan hostResponse, 1)
+	if !a.post(ctx, appEvent{editor: &editorEvent{ctx: ctx, set: text, reply: reply}}, false) {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		return "", errors.New("prompt editor is unavailable")
+	}
+	select {
+	case response := <-reply:
+		return response.value, response.err
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
 }
 
 // SetStatus publishes a keyed extension status in the footer. Reusing a key

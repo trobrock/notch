@@ -341,6 +341,17 @@ func run(args []string) error {
 		}
 		defer store.Close()
 	}
+	// Extensions receive their host before the agent is configured. Publish the
+	// initial session before session_start so durable extension state can be
+	// restored during that lifecycle hook; /new's factory is added later.
+	terminal.SetSession(store)
+	if rpcServer != nil {
+		rpcServer.SetSession(store)
+	}
+	if fullscreen != nil {
+		fullscreen.SetSessionFactory(store, nil)
+		defer fullscreen.CloseSession()
+	}
 	compactionEnabled := true
 	reserveTokens, keepRecentTokens := 16384, 20000
 	if cfg.Compaction != nil {

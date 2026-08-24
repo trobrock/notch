@@ -11,7 +11,7 @@ This maps the Pi installation reviewed before Notch was created. It is a porting
 | `developerly-model-system-prompt.ts` | Lua `before_agent_start` hook | Supported; port needed |
 | `developerly-monitor.ts` | Executable plugin plus supervised background-task service | Plugins exist; durable supervisor/follow-up API not implemented |
 | `developerly-plan-mode.ts` | Native/Lua policy using tool interception | Denial and argument mutation exist; active-tool sets and shortcuts do not |
-| `developerly-session-notes.ts` | Lua command plus custom session entries | Commands exist; session-entry/UI editor host APIs do not |
+| `developerly-session-notes.ts` | External Lua package using durable custom session entries, prompt-editor access, and `session_change` | Host APIs implemented; package lives in [`trobrock/notch-notes`](https://github.com/trobrock/notch-notes) |
 | `developerly-status.ts` | Lua lifecycle hooks | Supported; tmux status publication can use `notch.exec` |
 | `developerly-subagent.ts` | Official executable plugin spawning isolated Notch children | Plugin/process primitives exist; concurrency/depth policy and port needed |
 | `developerly-task-list-tracker.ts` | Official tool plugin plus a generic core task-widget host API | Tool can be ported; the task-widget host primitive does not exist |
@@ -26,7 +26,7 @@ This maps the Pi installation reviewed before Notch was created. It is a porting
 3. Add context replacement and compaction hooks.
 4. Add active-tool sets, keybindings, and a trust hook that runs before project extensions.
 5. Add a narrow declarative task-widget host API first, then broader widgets, editor dialogs, and session-tree events only when another feature needs them.
-6. Add custom session entries to the executable and Lua host APIs.
+6. Add branch-aware custom session entries if Notch later gains session trees; flat current-session custom entries and prompt-editor access are now supported.
 7. Add MCP OAuth, elicitation, sampling, resources/prompts, and app UI support.
 
 The current MVP proves the deployment and extension boundaries without requiring Node or npm. Full behavior parity requires the host services above rather than merely translating TypeScript into Lua.

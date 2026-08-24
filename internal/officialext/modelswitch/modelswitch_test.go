@@ -43,8 +43,12 @@ func (h *host) ListModels(_ context.Context, p string, r bool) ([]extension.Mode
 	h.listProvider, h.refresh = p, r
 	return h.models, h.err
 }
-func (*host) SetStatus(string, string)          {}
-func (*host) SetPanel(string, string, []string) {}
+func (*host) AppendSessionEntry(string, any) error             { return nil }
+func (*host) SessionEntries(string) ([]json.RawMessage, error) { return nil, nil }
+func (*host) EditorText(context.Context) (string, error)       { return "", nil }
+func (*host) SetEditorText(context.Context, string) error      { return nil }
+func (*host) SetStatus(string, string)                         {}
+func (*host) SetPanel(string, string, []string)                {}
 func TestSwitchModel(t *testing.T) {
 	r, h := extension.NewRegistry(), &host{window: 200000}
 	if err := Register(r, h); err != nil {

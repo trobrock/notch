@@ -535,6 +535,127 @@ func TestFinishResumeRestoresTranscriptAndHistory(t *testing.T) {
 	_ = loaded.Close()
 }
 
+func TestAppSessionEntriesRoundTripAndFollowCurrentSession(t *testing.T) {
+	dir := t.TempDir()
+	first, err := session.New(dir, "/first", "p", "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	second, err := session.New(dir, "/second", "p", "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	if err := second.AppendEntry("notes", map[string]any{"action": "existing"}); err != nil {
+		t.Fatal(err)
+	}
+
+	a := NewApp(AppConfig{})
+	a.currentSession = first
+	if err := a.AppendSessionEntry("notes", map[string]any{"action": "add"}); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := a.SessionEntries("notes")
+	if err != nil || len(entries) != 1 || !strings.Contains(string(entries[0]), `"add"`) {
+		t.Fatalf("first entries = %q, %v", entries, err)
+	}
+	a.currentSession = second
+	entries, err = a.SessionEntries("notes")
+	if err != nil || len(entries) != 1 || !strings.Contains(string(entries[0]), `"existing"`) {
+		t.Fatalf("second entries = %q, %v", entries, err)
+	}
+}
+
+func TestAppEditorHostRequestsUseEventLoop(t *testing.T) {
+	a := NewApp(AppConfig{})
+	a.mu.Lock()
+	a.running = true
+	a.runDone = make(chan struct{})
+	a.mu.Unlock()
+	defer close(a.runDone)
+
+	setDone := make(chan error, 1)
+	go func() { setDone <- a.SetEditorText(context.Background(), "restored note") }()
+	event := <-a.events
+	if event.editor == nil || event.editor.set == nil {
+		t.Fatalf("set event = %#v", event)
+	}
+	if !a.applyEvent(context.Background(), event) {
+		t.Fatal("set editor event did not render")
+	}
+	if err := <-setDone; err != nil || a.state.editor.Text() != "restored note" {
+		t.Fatalf("set editor = %q, %v", a.state.editor.Text(), err)
+	}
+
+	getDone := make(chan hostResponse, 1)
+	go func() {
+		value, err := a.EditorText(context.Background())
+		getDone <- hostResponse{value: value, err: err}
+	}()
+	event = <-a.events
+	if a.applyEvent(context.Background(), event) {
+		t.Fatal("read-only editor event requested render")
+	}
+	response := <-getDone
+	if response.err != nil || response.value != "restored note" {
+		t.Fatalf("editor text = %#v", response)
+	}
+}
+
+func TestSessionChangeHookCanSetEditorText(t *testing.T) {
+	a := NewApp(AppConfig{})
+	a.mu.Lock()
+	a.running = true
+	a.runDone = make(chan struct{})
+	a.mu.Unlock()
+	defer close(a.runDone)
+	sessionContext, sessionCancel := context.WithCancel(context.Background())
+	defer sessionCancel()
+	a.sessionContext = sessionContext
+	registry := extension.NewRegistry()
+	registry.On("session_change", "test", func(ctx context.Context, _ map[string]any) (map[string]any, error) {
+		return nil, a.SetEditorText(ctx, "from hook")
+	})
+	a.registry = registry
+
+	a.sessionChanged()
+	select {
+	case event := <-a.events:
+		if event.editor == nil || !a.applyEvent(context.Background(), event) {
+			t.Fatalf("editor event = %#v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("session_change hook deadlocked before posting editor event")
+	}
+	deadline := time.Now().Add(time.Second)
+	for a.state.editor.Text() != "from hook" && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if a.state.editor.Text() != "from hook" {
+		t.Fatalf("editor = %q", a.state.editor.Text())
+	}
+}
+
+func TestCanceledEditorRequestDoesNotMutateComposer(t *testing.T) {
+	a := NewApp(AppConfig{})
+	a.state.editor.SetText("original")
+	ctx, cancel := context.WithCancel(context.Background())
+	reply := make(chan hostResponse, 1)
+	value := "stale"
+	event := appEvent{editor: &editorEvent{ctx: ctx, set: &value, reply: reply}}
+	cancel()
+	if a.applyEvent(context.Background(), event) {
+		t.Fatal("canceled editor event requested render")
+	}
+	if a.state.editor.Text() != "original" {
+		t.Fatalf("editor = %q", a.state.editor.Text())
+	}
+	if response := <-reply; !errors.Is(response.err, context.Canceled) {
+		t.Fatalf("response = %#v", response)
+	}
+}
+
 func TestAppModalRoutesKeysAndRestoresDraft(t *testing.T) {
 	a := NewApp(AppConfig{})
 	a.state.editor.SetText("draft while streaming")

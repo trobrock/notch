@@ -16,6 +16,7 @@ import (
 	"github.com/trobrock/notch/internal/agent"
 	"github.com/trobrock/notch/internal/extension"
 	"github.com/trobrock/notch/internal/resources"
+	"github.com/trobrock/notch/internal/session"
 )
 
 const maxCommandSize = 16 << 20
@@ -50,6 +51,7 @@ type Server struct {
 	runner     *agent.Agent
 	registry   *extension.Registry
 	catalog    *resources.Catalog
+	session    *session.Session
 	state      StateConfig
 	active     bool
 	compacting bool
@@ -64,6 +66,13 @@ func New(in io.Reader, out io.Writer, cwd string) *Server {
 func (s *Server) Configure(runner *agent.Agent, registry *extension.Registry, catalog *resources.Catalog, state StateConfig) {
 	s.mu.Lock()
 	s.runner, s.registry, s.catalog, s.state = runner, registry, catalog, state
+	s.mu.Unlock()
+}
+
+// SetSession supplies the current session used by extension persistence APIs.
+func (s *Server) SetSession(current *session.Session) {
+	s.mu.Lock()
+	s.session = current
 	s.mu.Unlock()
 }
 
@@ -141,6 +150,34 @@ func (s *Server) SwitchModel(context.Context, string, string) (string, int, erro
 
 func (s *Server) ListModels(context.Context, string, bool) ([]extension.ModelInfo, error) {
 	return nil, errors.New("runtime model listing is unavailable in RPC mode")
+}
+
+func (s *Server) AppendSessionEntry(kind string, data any) error {
+	s.mu.Lock()
+	current := s.session
+	s.mu.Unlock()
+	if current == nil {
+		return errors.New("session persistence is unavailable")
+	}
+	return current.AppendCustomEntry(kind, data)
+}
+
+func (s *Server) SessionEntries(kind string) ([]json.RawMessage, error) {
+	s.mu.Lock()
+	current := s.session
+	s.mu.Unlock()
+	if current == nil {
+		return nil, errors.New("session persistence is unavailable")
+	}
+	return current.CustomEntries(kind)
+}
+
+func (s *Server) EditorText(context.Context) (string, error) {
+	return "", errors.New("prompt editor is unavailable in RPC mode")
+}
+
+func (s *Server) SetEditorText(context.Context, string) error {
+	return errors.New("prompt editor is unavailable in RPC mode")
 }
 
 func (s *Server) SetStatus(key, value string) {

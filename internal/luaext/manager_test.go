@@ -19,6 +19,8 @@ type testHost struct {
 	mu            sync.Mutex
 	notifications []string
 	statuses      [][2]string
+	editorText    string
+	entries       []json.RawMessage
 	panels        []struct {
 		key, title string
 		lines      []string
@@ -47,6 +49,19 @@ func (h *testHost) SwitchModel(context.Context, string, string) (string, int, er
 }
 func (h *testHost) ListModels(context.Context, string, bool) ([]extension.ModelInfo, error) {
 	return nil, nil
+}
+func (h *testHost) AppendSessionEntry(_ string, data any) error {
+	raw, _ := json.Marshal(data)
+	h.entries = append(h.entries, raw)
+	return nil
+}
+func (h *testHost) SessionEntries(string) ([]json.RawMessage, error) {
+	return append([]json.RawMessage(nil), h.entries...), nil
+}
+func (h *testHost) EditorText(context.Context) (string, error) { return h.editorText, nil }
+func (h *testHost) SetEditorText(_ context.Context, value string) error {
+	h.editorText = value
+	return nil
 }
 func (h *testHost) SetStatus(key, value string) {
 	h.mu.Lock()
@@ -81,7 +96,11 @@ notch.register_tool({
     notch.ui.notify("done", "success")
     notch.ui.set_status("sample", "active")
     notch.ui.set_panel("sample", "Sample", {"one", "two"})
-    return {content = notch.cwd() .. ":" .. args.name .. ":" .. run.stdout .. selected,
+    notch.session.append("sample", {action = "add", value = args.name})
+    local saved = notch.session.entries("sample")
+    local draft = notch.ui.editor_text()
+    notch.ui.set_editor_text(draft .. args.name)
+    return {content = notch.cwd() .. ":" .. args.name .. ":" .. run.stdout .. selected .. ":" .. saved[1].value,
             details = {input = notch.ui.input("prompt", "placeholder")}}
   end,
 })
@@ -121,8 +140,11 @@ end)
 	if err != nil {
 		t.Fatalf("execute tool: %v", err)
 	}
-	if result.Content != "/work:Lua:hello\nb" || result.Details["input"] != "typed" {
+	if result.Content != "/work:Lua:hello\nb:Lua" || result.Details["input"] != "typed" {
 		t.Fatalf("tool result = %#v", result)
+	}
+	if host.editorText != "Lua" || len(host.entries) != 1 {
+		t.Fatalf("host editor = %q entries = %q", host.editorText, host.entries)
 	}
 	if !reflect.DeepEqual(updates, []string{"working"}) {
 		t.Fatalf("updates = %#v", updates)

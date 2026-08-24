@@ -14,6 +14,7 @@ import (
 	"github.com/trobrock/notch/internal/agent"
 	"github.com/trobrock/notch/internal/extension"
 	"github.com/trobrock/notch/internal/model"
+	"github.com/trobrock/notch/internal/session"
 )
 
 type rpcTestProvider struct {
@@ -168,6 +169,23 @@ func TestServerStatePromptStreamingAndSteering(t *testing.T) {
 	}
 	if responseIndex < 0 || startIndex <= responseIndex || updates == 0 {
 		t.Fatalf("event ordering response=%d start=%d updates=%d records=%#v", responseIndex, startIndex, updates, seen)
+	}
+}
+
+func TestServerSessionEntriesUseConfiguredSession(t *testing.T) {
+	current, err := session.New(t.TempDir(), "/work", "test", "model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer current.Close()
+	server := New(strings.NewReader(""), io.Discard, "/work")
+	server.SetSession(current)
+	if err := server.AppendSessionEntry("example", map[string]any{"value": "saved"}); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := server.SessionEntries("example")
+	if err != nil || len(entries) != 1 || !strings.Contains(string(entries[0]), `"saved"`) {
+		t.Fatalf("entries = %q, %v", entries, err)
 	}
 }
 

@@ -98,10 +98,17 @@ local run = notch.exec("git", {"status", "--short"})
 
 local value = notch.ui.input("Name", "default")
 local choice = notch.ui.select("Choose", {"one", "two"})
+local draft = notch.ui.editor_text()
+notch.ui.set_editor_text(draft .. "\nnext prompt")
 notch.ui.notify("Finished", "success")
 notch.ui.set_status("tasks", "tasks 1/3")
 notch.ui.set_panel("tasks", "Tasks", {"● Implement", "○ Test"})
+
+notch.session.append("example-state", {action = "add"})
+local entries = notch.session.entries("example-state")
 ```
+
+Session entries store extension-owned JSON data in the active durable session. Use a stable package-specific kind; calls fail when sessions are disabled. Editor access is fullscreen-only and should be used by interactive commands, not model tools or hooks.
 
 Statuses are keyed footer values. Panels are keyed, non-interactive content above the composer. Replace either by reusing its key; clear a status with an empty value and a panel with an empty title and lines.
 
@@ -111,7 +118,8 @@ Statuses are keyed footer values. Panels are keyed, non-interactive content abov
 
 Supported emitted hooks are:
 
-- `session_start`, `session_shutdown`, `agent_start`, `agent_error`, `before_agent_start`, `context`, `tool_call`, `tool_execution_start`, `tool_execution_end`, `agent_end`, and `session_before_compact`: lifecycle and request hooks.
+- `session_start`, `session_change`, `session_shutdown`, `agent_start`, `agent_error`, `before_agent_start`, `context`, `tool_call`, `tool_execution_start`, `tool_execution_end`, `agent_end`, and `session_before_compact`: lifecycle and request hooks.
+- `session_change`: runs asynchronously in fullscreen mode after `/new` or `/resume` installs another session.
 - `session_shutdown`: runs once before extensions close with the session-start fields plus `reason` (`exit` or `canceled`); all handlers are attempted with a fresh bounded context.
 - `before_agent_start`: receives `system_prompt`, `model`, and `turn`; returning `system_prompt` replaces it for that turn.
 - `tool_call`: receives `name`, `id`, and decoded `arguments`; return `denied=true` plus `reason`, or replacement `arguments`.
@@ -141,7 +149,7 @@ Manifest:
 }
 ```
 
-The process uses newline-delimited JSON-RPC 2.0 over stdin/stdout. Stdout is protocol-only; send diagnostics to stderr. It must answer `initialize` with tool/command/hook declarations, then handle `tool.execute`, `command.execute`, and `hook.handle`. It may send `tool.update` notifications while a tool request is active. Host calls include `host.cwd`, `host.exec`, `host.ui.input`, `host.ui.select`, and `host.ui.notify`. Honor `$/cancelRequest` and terminate child work when its request context is canceled.
+The process uses newline-delimited JSON-RPC 2.0 over stdin/stdout. Stdout is protocol-only; send diagnostics to stderr. It must answer `initialize` with tool/command/hook declarations, then handle `tool.execute`, `command.execute`, and `hook.handle`. It may send `tool.update` notifications while a tool request is active. Host calls include `host.cwd`, `host.exec`, `host.ui.input`, `host.ui.select`, `host.ui.notify`, `host.ui.editor_text`, `host.ui.set_editor_text`, `host.session.append`, `host.session.entries`, `host.ui.set_status`, and `host.ui.set_panel`. Honor `$/cancelRequest` and terminate child work when its request context is canceled.
 
 ### Go SDK
 

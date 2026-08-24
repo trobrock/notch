@@ -14,6 +14,62 @@ import (
 	"github.com/trobrock/notch/internal/model"
 )
 
+func TestSessionEntriesSnapshotIsIndependent(t *testing.T) {
+	s, err := New(t.TempDir(), "/work", "test", "model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.AppendEntry("example", map[string]any{"value": "original"}); err != nil {
+		t.Fatal(err)
+	}
+	first := s.EntriesSnapshot()
+	if len(first) != 1 {
+		t.Fatalf("snapshot = %#v", first)
+	}
+	first[0][0] = 'x'
+	second := s.EntriesSnapshot()
+	if len(second) != 1 || !json.Valid(second[0]) {
+		t.Fatalf("snapshot shared backing storage: %q", second)
+	}
+}
+
+func TestCustomEntriesExcludeRecordsBeforeResetAndReserveCoreTypes(t *testing.T) {
+	s, err := New(t.TempDir(), "/work", "test", "model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.AppendCustomEntry("example", map[string]any{"value": "old"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AppendReset(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AppendCustomEntry("example", map[string]any{"value": "new"}); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := s.CustomEntries("example")
+	if err != nil || len(entries) != 1 || !strings.Contains(string(entries[0]), `"new"`) {
+		t.Fatalf("entries = %q, %v", entries, err)
+	}
+	for _, kind := range []string{"metadata", "session", "message", "compaction", "reset", "usage"} {
+		if err := s.AppendCustomEntry(kind, map[string]any{}); err == nil || !strings.Contains(err.Error(), "reserved") {
+			t.Fatalf("AppendCustomEntry(%q) = %v", kind, err)
+		}
+	}
+	if err := s.AppendCustomEntry("example", nil); err == nil || !strings.Contains(err.Error(), "must not be nil") {
+		t.Fatalf("AppendCustomEntry(nil) = %v", err)
+	}
+	var typedNil map[string]any
+	if err := s.AppendCustomEntry("example", typedNil); err == nil || !strings.Contains(err.Error(), "must not be nil") {
+		t.Fatalf("AppendCustomEntry(typed nil) = %v", err)
+	}
+	if err := s.AppendEntry("message", map[string]any{}); err == nil || !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("AppendEntry(reserved) = %v", err)
+	}
+}
+
 func TestNewAppendLoad(t *testing.T) {
 	dir := t.TempDir()
 	s, err := New(dir, "/work", "anthropic", "test-model")

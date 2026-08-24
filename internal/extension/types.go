@@ -103,6 +103,17 @@ type Host interface {
 	SwitchModel(ctx context.Context, provider, model string) (actualProvider string, contextWindow int, err error)
 	// ListModels returns available models for one provider or all providers.
 	ListModels(ctx context.Context, provider string, refresh bool) ([]ModelInfo, error)
+	// AppendSessionEntry durably appends extension-owned JSON data to the
+	// current session. kind is scoped to the calling extension by convention.
+	AppendSessionEntry(kind string, data any) error
+	// SessionEntries returns data from current-session entries with the exact
+	// kind. Returned JSON values are independent snapshots.
+	SessionEntries(kind string) ([]json.RawMessage, error)
+	// EditorText returns the current prompt composer text. It may be unavailable
+	// in hosts without an interactive composer.
+	EditorText(ctx context.Context) (string, error)
+	// SetEditorText replaces the current prompt composer text.
+	SetEditorText(ctx context.Context, text string) error
 	// SetStatus publishes a short keyed status for persistent UI display. An
 	// empty value removes the status. Headless hosts may expose it as an event.
 	SetStatus(key, value string)

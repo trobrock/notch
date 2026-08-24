@@ -111,11 +111,22 @@ local run = notch.exec("git", {"status", "--short"})
 
 local value = notch.ui.input("Name", "default")
 local choice = notch.ui.select("Choose", {"one", "two"})
+local draft = notch.ui.editor_text()
+notch.ui.set_editor_text(draft .. "\nnext prompt")
 notch.ui.notify("Finished", "success")
 notch.follow_up("Continue with the result")
 notch.ui.set_status("tasks", "tasks 1/3") -- empty value clears it
 notch.ui.set_panel("tasks", "Tasks", {"● Implement", "○ Test"}) -- empty title/lines clears it
+
+notch.session.append("example-state", {action = "add", value = "durable"})
+local entries = notch.session.entries("example-state")
 ```
+
+`notch.session.append` stores extension-owned JSON data in the current append-only session; `notch.session.entries` returns matching records from the current logical conversation (records before the latest `/new` reset are omitted). Use a stable, package-specific kind to avoid accidental sharing; core record kinds are reserved. These calls fail when session persistence is disabled. Fullscreen `/resume` switches subsequent calls to the resumed session and emits `session_change`; fullscreen `/new` switches to a fresh session and emits the same hook.
+
+`notch.ui.editor_text` and `notch.ui.set_editor_text` access the fullscreen prompt composer. They fail in line/RPC modes and while another extension prompt is active. Use them from interactive commands rather than agent hooks or model tools.
+
+`notch.session.append` / `entries` are available to Lua and executable plugins in every run mode when session persistence is enabled. Editor access is fullscreen-only.
 
 `notch.exec` executes an argv array in Notch's working directory; it does not invoke a shell. A failed start or non-zero exit raises a Lua error with the current host implementation. UI levels are display labels rather than a fixed enum. `notch.follow_up` asks the host to deliver a synthetic user follow-up. Keyed statuses persist in the fullscreen footer until replaced or cleared. Keyed panels provide bounded, non-interactive content above the composer; publishing an empty title and lines clears one. Line mode ignores statuses and panels, while RPC mode emits corresponding events. Lua execution observes agent cancellation, including tight-running Lua code.
 
@@ -139,6 +150,10 @@ Runs once after the initial session and agent are ready, before any interactive 
 ```
 
 `mode` is `tui`, `line`, `print`, `json`, or `rpc`. The session fields are omitted with `--no-session`. Return fields are ignored; an error aborts startup.
+
+### `session_change`
+
+Runs asynchronously in fullscreen mode after `/new` installs a fresh session or `/resume` installs another saved session. It receives the new `session_id` and `session_file` when persistence is enabled. This hook is intended for extension UI/state resynchronization; startup still uses `session_start`. Because it is asynchronous, commands may run before a slow hook finishes.
 
 ### `session_shutdown`
 
@@ -344,11 +359,15 @@ Terminal interactions:
 {"jsonrpc":"2.0","id":"host-3","method":"host.ui.input","params":{"prompt":"Name","placeholder":"Ada"}}
 {"jsonrpc":"2.0","id":"host-4","method":"host.ui.select","params":{"prompt":"Pick","options":["a","b"]}}
 {"jsonrpc":"2.0","id":"host-5","method":"host.ui.notify","params":{"message":"Done","level":"info"}}
-{"jsonrpc":"2.0","id":"host-6","method":"host.ui.set_status","params":{"key":"tasks","value":"tasks 1/3"}}
-{"jsonrpc":"2.0","id":"host-7","method":"host.ui.set_panel","params":{"key":"tasks","title":"Tasks","lines":["● Implement","○ Test"]}}
+{"jsonrpc":"2.0","id":"host-6","method":"host.ui.editor_text","params":{}}
+{"jsonrpc":"2.0","id":"host-7","method":"host.ui.set_editor_text","params":{"text":"next prompt"}}
+{"jsonrpc":"2.0","id":"host-8","method":"host.session.append","params":{"kind":"example-state","data":{"action":"add"}}}
+{"jsonrpc":"2.0","id":"host-9","method":"host.session.entries","params":{"kind":"example-state"}}
+{"jsonrpc":"2.0","id":"host-10","method":"host.ui.set_status","params":{"key":"tasks","value":"tasks 1/3"}}
+{"jsonrpc":"2.0","id":"host-11","method":"host.ui.set_panel","params":{"key":"tasks","title":"Tasks","lines":["● Implement","○ Test"]}}
 ```
 
-Input and selection return strings; notify, set-status, and set-panel return `null`. Set-status replaces a persistent keyed footer value and an empty value clears it. Set-panel replaces bounded non-interactive content above the composer; empty title and lines clear it. In the fullscreen TUI input/select requests rendezvous with the event loop and are queued if another extension prompt is active; the line fallback uses ordinary prompts and ignores status/panel publication. See [tui.md](tui.md#extension-ui-integration). Host method failures use `-32602` for invalid parameters, `-32601` for unknown methods, and `-32000` for operation errors.
+Input, selection, editor-text, and session-entries return values; mutation and publication calls return `null`. Set-status replaces a persistent keyed footer value and an empty value clears it. Set-panel replaces bounded non-interactive content above the composer; empty title and lines clear it. In the fullscreen TUI input/select requests rendezvous with the event loop and are queued if another extension prompt is active; the line fallback uses ordinary prompts and ignores status/panel publication. See [tui.md](tui.md#extension-ui-integration). Host method failures use `-32602` for invalid parameters, `-32601` for unknown methods, and `-32000` for operation errors.
 
 ### Minimal Python plugin
 

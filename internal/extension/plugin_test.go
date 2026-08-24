@@ -15,9 +15,11 @@ import (
 )
 
 type testHost struct {
-	mu            sync.Mutex
-	notifications []string
-	statuses      [][2]string
+	mu             sync.Mutex
+	notifications  []string
+	statuses       [][2]string
+	sessionEntries []json.RawMessage
+	editorText     string
 }
 
 func (h *testHost) CWD() string { return "/host/work" }
@@ -44,6 +46,19 @@ func (h *testHost) SwitchModel(context.Context, string, string) (string, int, er
 }
 func (h *testHost) ListModels(context.Context, string, bool) ([]ModelInfo, error) {
 	return nil, nil
+}
+func (h *testHost) AppendSessionEntry(_ string, data any) error {
+	raw, _ := json.Marshal(data)
+	h.sessionEntries = append(h.sessionEntries, raw)
+	return nil
+}
+func (h *testHost) SessionEntries(string) ([]json.RawMessage, error) {
+	return append([]json.RawMessage(nil), h.sessionEntries...), nil
+}
+func (h *testHost) EditorText(context.Context) (string, error) { return h.editorText, nil }
+func (h *testHost) SetEditorText(_ context.Context, value string) error {
+	h.editorText = value
+	return nil
 }
 func (h *testHost) SetStatus(key, value string) {
 	h.mu.Lock()
@@ -164,6 +179,10 @@ func TestDispatchHostMethods(t *testing.T) {
 		{"host.ui.input", `{"prompt":"name","placeholder":"here"}`},
 		{"host.ui.select", `{"prompt":"pick","options":["a","b"]}`},
 		{"host.ui.notify", `{"message":"done","level":"info"}`},
+		{"host.session.append", `{"kind":"notes","data":{"action":"add"}}`},
+		{"host.session.entries", `{"kind":"notes"}`},
+		{"host.ui.editor_text", `{}`},
+		{"host.ui.set_editor_text", `{"text":"draft"}`},
 		{"host.ui.set_status", `{"key":"tasks","value":"tasks 1/3"}`},
 		{"host.ui.set_panel", `{"key":"tasks","title":"Tasks","lines":["one"]}`},
 	}
@@ -182,6 +201,9 @@ func TestDispatchHostMethods(t *testing.T) {
 	}
 	if !reflect.DeepEqual(host.statuses, [][2]string{{"tasks", "tasks 1/3"}}) {
 		t.Fatalf("statuses = %v", host.statuses)
+	}
+	if len(host.sessionEntries) != 1 || !strings.Contains(string(host.sessionEntries[0]), `"add"`) || host.editorText != "draft" {
+		t.Fatalf("session entries = %q, editor = %q", host.sessionEntries, host.editorText)
 	}
 }
 

@@ -36,8 +36,12 @@ func (*testHost) SwitchModel(context.Context, string, string) (string, int, erro
 func (*testHost) ListModels(context.Context, string, bool) ([]extension.ModelInfo, error) {
 	return nil, nil
 }
-func (*testHost) SetStatus(string, string)          {}
-func (*testHost) SetPanel(string, string, []string) {}
+func (*testHost) AppendSessionEntry(string, any) error             { return nil }
+func (*testHost) SessionEntries(string) ([]json.RawMessage, error) { return nil, nil }
+func (*testHost) EditorText(context.Context) (string, error)       { return "", nil }
+func (*testHost) SetEditorText(context.Context, string) error      { return nil }
+func (*testHost) SetStatus(string, string)                         {}
+func (*testHost) SetPanel(string, string, []string)                {}
 
 func setup(t *testing.T) (*extension.Registry, *testHost) {
 	t.Helper()

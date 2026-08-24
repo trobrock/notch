@@ -2,6 +2,7 @@ package extension
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -643,6 +644,59 @@ func (p *Plugin) dispatchHost(method string, params json.RawMessage) (any, *rpcE
 			return badParams(err)
 		}
 		p.host.Notify(value.Message, value.Level)
+		return nil, nil
+	case "host.session.append":
+		var value struct {
+			Kind string          `json:"kind"`
+			Data json.RawMessage `json:"data"`
+		}
+		if err := json.Unmarshal(params, &value); err != nil {
+			return badParams(err)
+		}
+		if len(value.Data) == 0 {
+			return badParams(errors.New("data is required"))
+		}
+		var data any
+		decoder := json.NewDecoder(bytes.NewReader(value.Data))
+		decoder.UseNumber()
+		if err := decoder.Decode(&data); err != nil {
+			return badParams(err)
+		}
+		if data == nil {
+			return badParams(errors.New("data must not be null"))
+		}
+		if err := p.host.AppendSessionEntry(value.Kind, data); err != nil {
+			return hostError(err)
+		}
+		return nil, nil
+	case "host.session.entries":
+		var value struct {
+			Kind string `json:"kind"`
+		}
+		if err := json.Unmarshal(params, &value); err != nil {
+			return badParams(err)
+		}
+		entries, err := p.host.SessionEntries(value.Kind)
+		if err != nil {
+			return hostError(err)
+		}
+		return entries, nil
+	case "host.ui.editor_text":
+		value, err := p.host.EditorText(p.ctx)
+		if err != nil {
+			return hostError(err)
+		}
+		return value, nil
+	case "host.ui.set_editor_text":
+		var value struct {
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(params, &value); err != nil {
+			return badParams(err)
+		}
+		if err := p.host.SetEditorText(p.ctx, value.Text); err != nil {
+			return hostError(err)
+		}
 		return nil, nil
 	case "host.follow_up":
 		var value struct {

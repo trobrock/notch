@@ -633,6 +633,40 @@ func (c *Client) Notify(ctx context.Context, message, level string) error {
 	}{message, level}, &result)
 }
 
+// AppendSessionEntry durably appends extension-owned JSON data to the current
+// Notch session.
+func (c *Client) AppendSessionEntry(ctx context.Context, kind string, data any) error {
+	var result any
+	return c.call(ctx, "host.session.append", struct {
+		Kind string `json:"kind"`
+		Data any    `json:"data"`
+	}{kind, data}, &result)
+}
+
+// SessionEntries returns current-session data stored with kind.
+func (c *Client) SessionEntries(ctx context.Context, kind string) ([]json.RawMessage, error) {
+	var result []json.RawMessage
+	err := c.call(ctx, "host.session.entries", struct {
+		Kind string `json:"kind"`
+	}{kind}, &result)
+	return result, err
+}
+
+// EditorText returns the current prompt composer text.
+func (c *Client) EditorText(ctx context.Context) (string, error) {
+	var result string
+	err := c.call(ctx, "host.ui.editor_text", struct{}{}, &result)
+	return result, err
+}
+
+// SetEditorText replaces the current prompt composer text.
+func (c *Client) SetEditorText(ctx context.Context, text string) error {
+	var result any
+	return c.call(ctx, "host.ui.set_editor_text", struct {
+		Text string `json:"text"`
+	}{text}, &result)
+}
+
 func (c *Client) FollowUp(ctx context.Context, message string) error {
 	var result any
 	return c.call(ctx, "host.follow_up", struct {
@@ -702,6 +736,42 @@ func Notify(ctx context.Context, message, level string) error {
 		return err
 	}
 	return client.Notify(ctx, message, level)
+}
+
+// AppendSessionEntry durably appends extension-owned JSON data.
+func AppendSessionEntry(ctx context.Context, kind string, data any) error {
+	client, err := clientFor(ctx)
+	if err != nil {
+		return err
+	}
+	return client.AppendSessionEntry(ctx, kind, data)
+}
+
+// SessionEntries returns current-session data stored with kind.
+func SessionEntries(ctx context.Context, kind string) ([]json.RawMessage, error) {
+	client, err := clientFor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return client.SessionEntries(ctx, kind)
+}
+
+// EditorText returns the current prompt composer text.
+func EditorText(ctx context.Context) (string, error) {
+	client, err := clientFor(ctx)
+	if err != nil {
+		return "", err
+	}
+	return client.EditorText(ctx)
+}
+
+// SetEditorText replaces the current prompt composer text.
+func SetEditorText(ctx context.Context, text string) error {
+	client, err := clientFor(ctx)
+	if err != nil {
+		return err
+	}
+	return client.SetEditorText(ctx, text)
 }
 
 func FollowUp(ctx context.Context, message string) error {

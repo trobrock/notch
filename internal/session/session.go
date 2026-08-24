@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -379,15 +380,22 @@ func (s *Session) AppendUsage(provider, modelName string, usage TokenUsage, stop
 // AppendEntry appends an arbitrary JSON value and makes it durable. It may
 // also be called as AppendEntry(kind, value), which writes a CustomEntry
 // envelope. A nil value is rejected, as are metadata records (the header must
-// remain unique).
+// remain unique). The kind/value form rejects core record kinds.
 func (s *Session) AppendEntry(entry any, value ...any) error {
 	if len(value) > 1 {
 		return errors.New("append session entry: expected at most one value")
 	}
 	if len(value) == 1 {
 		kind, ok := entry.(string)
-		if !ok || kind == "" {
+		if !ok || strings.TrimSpace(kind) == "" {
 			return errors.New("append session entry: custom entry type must be a non-empty string")
+		}
+		kind = strings.TrimSpace(kind)
+		if reservedCustomEntryTypes[kind] {
+			return fmt.Errorf("append session entry: type %q is reserved", kind)
+		}
+		if isNilJSONValue(value[0]) {
+			return errors.New("append session entry: custom data must not be nil")
 		}
 		entry = CustomEntry{Type: kind, Timestamp: time.Now().UTC(), Data: value[0]}
 	}
@@ -407,6 +415,91 @@ func (s *Session) AppendEntry(entry any, value ...any) error {
 	return s.appendLine(line, func() {
 		s.Entries = append(s.Entries, cloneRaw(line[:len(line)-1]))
 	})
+}
+
+func isNilJSONValue(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflectValue := reflect.ValueOf(value)
+	switch reflectValue.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflectValue.IsNil()
+	default:
+		return false
+	}
+}
+
+var reservedCustomEntryTypes = map[string]bool{
+	"metadata":   true,
+	"session":    true,
+	"message":    true,
+	"compaction": true,
+	"reset":      true,
+	"usage":      true,
+}
+
+// AppendCustomEntry appends extension-owned data in a CustomEntry envelope.
+// Core session record types are reserved so custom data cannot make a session
+// unreadable on its next load.
+func (s *Session) AppendCustomEntry(kind string, data any) error {
+	kind = strings.TrimSpace(kind)
+	if kind == "" {
+		return errors.New("append custom session entry: type is required")
+	}
+	if isNilJSONValue(data) {
+		return errors.New("append custom session entry: data must not be nil")
+	}
+	if reservedCustomEntryTypes[kind] {
+		return fmt.Errorf("append custom session entry: type %q is reserved", kind)
+	}
+	return s.AppendEntry(kind, data)
+}
+
+// CustomEntries returns independent copies of custom-entry data with kind in
+// the current logical conversation. Records before the latest reset are omitted.
+func (s *Session) CustomEntries(kind string) ([]json.RawMessage, error) {
+	kind = strings.TrimSpace(kind)
+	if kind == "" {
+		return nil, errors.New("read custom session entries: type is required")
+	}
+	snapshot := s.EntriesSnapshot()
+	start := 0
+	for i, raw := range snapshot {
+		var header struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(raw, &header); err != nil {
+			continue
+		}
+		if header.Type == "reset" {
+			start = i + 1
+		}
+	}
+	var data []json.RawMessage
+	for _, raw := range snapshot[start:] {
+		var entry struct {
+			Type string          `json:"type"`
+			Data json.RawMessage `json:"data"`
+		}
+		if err := json.Unmarshal(raw, &entry); err != nil || entry.Type != kind || len(entry.Data) == 0 {
+			continue
+		}
+		data = append(data, cloneRaw(entry.Data))
+	}
+	return data, nil
+}
+
+// EntriesSnapshot returns independent copies of every record after the session
+// header. It is safe to call while other goroutines append entries.
+func (s *Session) EntriesSnapshot() []json.RawMessage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entries := make([]json.RawMessage, len(s.Entries))
+	for i, entry := range s.Entries {
+		entries[i] = cloneRaw(entry)
+	}
+	return entries
 }
 
 // Path returns the session file path.

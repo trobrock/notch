@@ -42,8 +42,12 @@ func (*testHost) SwitchModel(context.Context, string, string) (string, int, erro
 func (*testHost) ListModels(context.Context, string, bool) ([]extension.ModelInfo, error) {
 	return nil, nil
 }
-func (h *testHost) SetStatus(k, v string)           { h.statuses = append(h.statuses, [2]string{k, v}) }
-func (*testHost) SetPanel(string, string, []string) {}
+func (*testHost) AppendSessionEntry(string, any) error             { return nil }
+func (*testHost) SessionEntries(string) ([]json.RawMessage, error) { return nil, nil }
+func (*testHost) EditorText(context.Context) (string, error)       { return "", nil }
+func (*testHost) SetEditorText(context.Context, string) error      { return nil }
+func (h *testHost) SetStatus(k, v string)                          { h.statuses = append(h.statuses, [2]string{k, v}) }
+func (*testHost) SetPanel(string, string, []string)                {}
 
 func setup(t *testing.T) (*extension.Registry, *testHost, *state) {
 	t.Helper()

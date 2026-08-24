@@ -87,13 +87,27 @@ func TestProtocolInitializeToolProgressAndHostCalls(t *testing.T) {
 				if err := Notify(ctx, "done", "info"); err != nil {
 					return ToolResult{}, err
 				}
+				if err := AppendSessionEntry(ctx, "notes", map[string]any{"action": "add"}); err != nil {
+					return ToolResult{}, err
+				}
+				entries, err := SessionEntries(ctx, "notes")
+				if err != nil {
+					return ToolResult{}, err
+				}
+				draft, err := EditorText(ctx)
+				if err != nil {
+					return ToolResult{}, err
+				}
+				if err := SetEditorText(ctx, draft+input.Text); err != nil {
+					return ToolResult{}, err
+				}
 				if err := SetStatus(ctx, "tasks", "tasks 1/3"); err != nil {
 					return ToolResult{}, err
 				}
 				if err := SetPanel(ctx, "tasks", "Tasks", []string{"one"}); err != nil {
 					return ToolResult{}, err
 				}
-				return ToolResult{Content: strings.Join([]string{cwd, input.Text, stdout, answer, choice}, ":"), Details: map[string]any{"code": code}}, nil
+				return ToolResult{Content: strings.Join([]string{cwd, input.Text, stdout, answer, choice, string(entries[0])}, ":"), Details: map[string]any{"code": code}}, nil
 			},
 		}},
 		Hooks: []Hook{{Name: "before", Handle: func(_ context.Context, event map[string]any) (map[string]any, error) {
@@ -164,6 +178,26 @@ func TestProtocolInitializeToolProgressAndHostCalls(t *testing.T) {
 		t.Fatalf("bad notify call: %+v", notifyCall)
 	}
 	host.send(t, map[string]any{"jsonrpc": "2.0", "id": notifyCall.ID, "result": nil})
+	sessionAppendCall := host.receive(t)
+	if sessionAppendCall.Method != "host.session.append" {
+		t.Fatalf("bad session append call: %+v", sessionAppendCall)
+	}
+	host.send(t, map[string]any{"jsonrpc": "2.0", "id": sessionAppendCall.ID, "result": nil})
+	sessionEntriesCall := host.receive(t)
+	if sessionEntriesCall.Method != "host.session.entries" {
+		t.Fatalf("bad session entries call: %+v", sessionEntriesCall)
+	}
+	host.send(t, map[string]any{"jsonrpc": "2.0", "id": sessionEntriesCall.ID, "result": []any{map[string]any{"action": "add"}}})
+	editorCall := host.receive(t)
+	if editorCall.Method != "host.ui.editor_text" {
+		t.Fatalf("bad editor text call: %+v", editorCall)
+	}
+	host.send(t, map[string]any{"jsonrpc": "2.0", "id": editorCall.ID, "result": "draft:"})
+	setEditorCall := host.receive(t)
+	if setEditorCall.Method != "host.ui.set_editor_text" {
+		t.Fatalf("bad set editor call: %+v", setEditorCall)
+	}
+	host.send(t, map[string]any{"jsonrpc": "2.0", "id": setEditorCall.ID, "result": nil})
 	statusCall := host.receive(t)
 	if statusCall.Method != "host.ui.set_status" {
 		t.Fatalf("bad status call: %+v", statusCall)
@@ -180,7 +214,7 @@ func TestProtocolInitializeToolProgressAndHostCalls(t *testing.T) {
 	if err := json.Unmarshal(toolResponse.Result, &result); err != nil {
 		t.Fatal(err)
 	}
-	if result.Content != "/work:hello:ok:Ada:b" || result.Details["code"] != float64(3) {
+	if result.Content != `/work:hello:ok:Ada:b:{"action":"add"}` || result.Details["code"] != float64(3) {
 		t.Fatalf("tool result = %+v", result)
 	}
 

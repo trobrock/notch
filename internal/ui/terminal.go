@@ -4,6 +4,7 @@ package ui
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,18 +16,28 @@ import (
 
 	"github.com/trobrock/notch/internal/agent"
 	"github.com/trobrock/notch/internal/extension"
+	"github.com/trobrock/notch/internal/session"
 )
 
 type Terminal struct {
-	reader *bufio.Reader
-	out    io.Writer
-	errOut io.Writer
-	cwd    string
-	mu     sync.Mutex
+	reader    *bufio.Reader
+	out       io.Writer
+	errOut    io.Writer
+	cwd       string
+	mu        sync.Mutex
+	sessionMu sync.RWMutex
+	session   *session.Session
 }
 
 func NewTerminal(in io.Reader, out, errOut io.Writer, cwd string) *Terminal {
 	return &Terminal{reader: bufio.NewReader(in), out: out, errOut: errOut, cwd: cwd}
+}
+
+// SetSession supplies the current session used by extension persistence APIs.
+func (t *Terminal) SetSession(current *session.Session) {
+	t.sessionMu.Lock()
+	t.session = current
+	t.sessionMu.Unlock()
 }
 
 func (t *Terminal) CWD() string { return t.cwd }
@@ -122,6 +133,30 @@ func (t *Terminal) SwitchModel(context.Context, string, string) (string, int, er
 }
 func (t *Terminal) ListModels(context.Context, string, bool) ([]extension.ModelInfo, error) {
 	return nil, errors.New("runtime model listing is unavailable in line mode")
+}
+func (t *Terminal) AppendSessionEntry(kind string, data any) error {
+	t.sessionMu.RLock()
+	current := t.session
+	t.sessionMu.RUnlock()
+	if current == nil {
+		return errors.New("session persistence is unavailable")
+	}
+	return current.AppendCustomEntry(kind, data)
+}
+func (t *Terminal) SessionEntries(kind string) ([]json.RawMessage, error) {
+	t.sessionMu.RLock()
+	current := t.session
+	t.sessionMu.RUnlock()
+	if current == nil {
+		return nil, errors.New("session persistence is unavailable")
+	}
+	return current.CustomEntries(kind)
+}
+func (t *Terminal) EditorText(context.Context) (string, error) {
+	return "", errors.New("prompt editor is unavailable in line mode")
+}
+func (t *Terminal) SetEditorText(context.Context, string) error {
+	return errors.New("prompt editor is unavailable in line mode")
 }
 func (t *Terminal) SetStatus(string, string)          {}
 func (t *Terminal) SetPanel(string, string, []string) {}

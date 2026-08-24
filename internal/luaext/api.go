@@ -130,6 +130,51 @@ func installAPI(L *lua.LState, decls *declarations, host extension.Host) {
 		return 1
 	}))
 
+	sessionAPI := L.NewTable()
+	L.SetField(sessionAPI, "append", L.NewFunction(func(L *lua.LState) int {
+		if host == nil {
+			L.RaiseError("notch.session.append is unavailable: extension host is nil")
+		}
+		kind := L.CheckString(1)
+		if L.CheckAny(2) == lua.LNil {
+			L.ArgError(2, "data must not be nil")
+		}
+		data, err := luaToGo(L.CheckAny(2))
+		if err != nil {
+			L.RaiseError("session append data: %v", err)
+		}
+		if err := host.AppendSessionEntry(kind, data); err != nil {
+			L.RaiseError("session append: %v", err)
+		}
+		return 0
+	}))
+	L.SetField(sessionAPI, "entries", L.NewFunction(func(L *lua.LState) int {
+		if host == nil {
+			L.RaiseError("notch.session.entries is unavailable: extension host is nil")
+		}
+		entries, err := host.SessionEntries(L.CheckString(1))
+		if err != nil {
+			L.RaiseError("session entries: %v", err)
+		}
+		result := L.NewTable()
+		for i, raw := range entries {
+			var value any
+			decoder := json.NewDecoder(bytes.NewReader(raw))
+			decoder.UseNumber()
+			if err := decoder.Decode(&value); err != nil {
+				L.RaiseError("session entry %d: %v", i+1, err)
+			}
+			converted, err := goToLua(L, value)
+			if err != nil {
+				L.RaiseError("session entry %d: %v", i+1, err)
+			}
+			result.Append(converted)
+		}
+		L.Push(result)
+		return 1
+	}))
+	L.SetField(notch, "session", sessionAPI)
+
 	ui := L.NewTable()
 	L.SetField(ui, "input", L.NewFunction(func(L *lua.LState) int {
 		if host == nil {
@@ -170,6 +215,26 @@ func installAPI(L *lua.LState, decls *declarations, host extension.Host) {
 			L.RaiseError("notch.ui.notify is unavailable: extension host is nil")
 		}
 		host.Notify(L.CheckString(1), L.OptString(2, "info"))
+		return 0
+	}))
+	L.SetField(ui, "editor_text", L.NewFunction(func(L *lua.LState) int {
+		if host == nil {
+			L.RaiseError("notch.ui.editor_text is unavailable: extension host is nil")
+		}
+		value, err := host.EditorText(luaContext(L))
+		if err != nil {
+			L.RaiseError("editor text: %v", err)
+		}
+		L.Push(lua.LString(value))
+		return 1
+	}))
+	L.SetField(ui, "set_editor_text", L.NewFunction(func(L *lua.LState) int {
+		if host == nil {
+			L.RaiseError("notch.ui.set_editor_text is unavailable: extension host is nil")
+		}
+		if err := host.SetEditorText(luaContext(L), L.CheckString(1)); err != nil {
+			L.RaiseError("set editor text: %v", err)
+		}
 		return 0
 	}))
 	L.SetField(ui, "set_status", L.NewFunction(func(L *lua.LState) int {
