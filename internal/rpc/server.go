@@ -105,6 +105,14 @@ func (s *Server) Notify(message, level string) {
 	_ = s.write(map[string]any{"type": "notification", "message": message, "level": level})
 }
 
+func (s *Server) SetStatus(key, value string) {
+	_ = s.write(map[string]any{"type": "status", "key": key, "value": value})
+}
+
+func (s *Server) SetPanel(key, title string, lines []string) {
+	_ = s.write(map[string]any{"type": "panel", "key": key, "title": title, "lines": lines})
+}
+
 type command struct {
 	ID                json.RawMessage   `json:"id,omitempty"`
 	Type              string            `json:"type"`

@@ -99,7 +99,11 @@ local run = notch.exec("git", {"status", "--short"})
 local value = notch.ui.input("Name", "default")
 local choice = notch.ui.select("Choose", {"one", "two"})
 notch.ui.notify("Finished", "success")
+notch.ui.set_status("tasks", "tasks 1/3")
+notch.ui.set_panel("tasks", "Tasks", {"● Implement", "○ Test"})
 ```
+
+Statuses are keyed footer values. Panels are keyed, non-interactive content above the composer. Replace either by reusing its key; clear a status with an empty value and a panel with an empty title and lines.
 
 `notch.exec` executes an argv array in Notch's startup working directory; it does not invoke a shell. Non-zero exit currently raises a Lua error. UI input/select integrates with both the fullscreen modal UI and line fallback.
 

@@ -44,6 +44,12 @@ type Host interface {
 	Input(ctx context.Context, prompt, placeholder string) (string, error)
 	Select(ctx context.Context, prompt string, options []string) (string, error)
 	Notify(message, level string)
+	// SetStatus publishes a short keyed status for persistent UI display. An
+	// empty value removes the status. Headless hosts may expose it as an event.
+	SetStatus(key, value string)
+	// SetPanel publishes a keyed, non-interactive panel. Empty title and lines
+	// remove it. Hosts without a panel UI may ignore or expose it as an event.
+	SetPanel(key, title string, lines []string)
 }
 
 type namedHook struct {

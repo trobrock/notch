@@ -162,6 +162,32 @@ func installAPI(L *lua.LState, decls *declarations, host extension.Host) {
 		host.Notify(L.CheckString(1), L.OptString(2, "info"))
 		return 0
 	}))
+	L.SetField(ui, "set_status", L.NewFunction(func(L *lua.LState) int {
+		if host == nil {
+			L.RaiseError("notch.ui.set_status is unavailable: extension host is nil")
+		}
+		host.SetStatus(L.CheckString(1), L.OptString(2, ""))
+		return 0
+	}))
+	L.SetField(ui, "set_panel", L.NewFunction(func(L *lua.LState) int {
+		if host == nil {
+			L.RaiseError("notch.ui.set_panel is unavailable: extension host is nil")
+		}
+		key, title := L.CheckString(1), L.OptString(2, "")
+		lines := []string{}
+		if L.GetTop() >= 3 && L.Get(3) != lua.LNil {
+			t := L.CheckTable(3)
+			for i := 1; i <= t.Len(); i++ {
+				line, ok := t.RawGetInt(i).(lua.LString)
+				if !ok {
+					L.ArgError(3, fmt.Sprintf("line %d must be a string", i))
+				}
+				lines = append(lines, string(line))
+			}
+		}
+		host.SetPanel(key, title, lines)
+		return 0
+	}))
 	L.SetField(notch, "ui", ui)
 	L.SetGlobal("notch", notch)
 }

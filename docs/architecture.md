@@ -9,7 +9,7 @@ Notch is one Go program with a deliberately small provider-independent agent loo
 1. Dispatch standalone authentication, model-list, extension-package, version, and upgrade commands; otherwise parse agent flags and determine the current directory and home directory.
 2. Load defaults, user config, and project config; apply `NOTCH_PROVIDER`, `NOTCH_MODEL`, and `NOTCH_THINKING_LEVEL`; then apply CLI overrides.
 3. Recover any interrupted package transaction, validate installed package manifests, append their exported extension directories, and create configured extension, skill, prompt, theme, and session directories.
-4. Load built-in and custom theme JSON, select the configured theme, then create the terminal and extension registry and register built-in tools.
+4. Load built-in and custom theme JSON, select the configured theme, then create the terminal and extension registry and register built-in tools and official extensions.
 5. Discover and start executable plugins, then load top-level Lua files.
 6. If the MCP config file exists, connect configured servers and register their tools.
 7. Load skills and prompt templates and add their catalog summary to the system prompt.
@@ -31,6 +31,7 @@ Malformed custom themes and plugin, Lua, and MCP load failures are generally sho
 - `internal/oauth`: browser/loopback login and token refresh for supported providers.
 - `internal/agent`: serialized model/tool loop and event emission.
 - `internal/tools`: built-in filesystem, search, edit, and shell tools.
+- `internal/officialext`: official extensions linked into the binary and registered automatically.
 - `internal/session`: durable append-only JSONL conversation storage.
 - `internal/resources`: discovery and expansion of Markdown skills/templates.
 - `internal/extension`: common registry plus executable JSON-RPC plugin host.
@@ -77,14 +78,15 @@ Ollama uses the OpenAI adapter with `base_url` such as `http://localhost:11434`.
 
 Every tool has a name, description, JSON input schema, source, and execution handler. The registry combines:
 
-1. seven built-in tools,
-2. executable plugin tools,
-3. Lua tools,
-4. MCP tools.
+1. seven built-in filesystem/shell tools,
+2. official extensions linked into the Notch binary,
+3. executable plugin tools,
+4. Lua tools,
+5. MCP tools.
 
 Registration order matters only for collision detection; definitions sent to providers are sorted by name. Commands and hooks share the same registry abstraction. Hooks of a given name execute in registration order, and each hook receives values merged from earlier hooks.
 
-Tool policy is applied after all configured sources register. `--tools` retains only an exact allowlist, `--exclude-tools` removes exact names, `--no-builtin-tools` skips built-in registration while preserving extension/MCP tools, and `--no-tools` clears the registry. Unknown requested names are startup errors.
+Tool policy is applied after all configured sources register. `--tools` retains only an exact allowlist, `--exclude-tools` removes exact names, `--no-builtin-tools` skips the core filesystem/shell tools while preserving official extension, user extension, and MCP tools, and `--no-tools` clears the registry. Unknown requested names are startup errors.
 
 The built-ins resolve relative paths against Notch's startup working directory. Absolute paths are accepted; there is no repository-boundary jail. `bash` invokes `/bin/sh -c` (or `cmd.exe /C` on Windows). Potentially unbounded built-in output is capped at 50 KiB. `read` defaults to 2,000 lines. `edit` requires one exact unique occurrence.
 
@@ -102,9 +104,11 @@ Resources are read once at startup. The binary embeds `notch-config` and `notch-
 
 ## Extension boundaries
 
+The official extensions currently provide `ask_user_question`, an automatically registered blocking clarification tool, and `update_task_list`, a complete-list task tracker for complex work. The task tracker publishes its progress through generic keyed status and non-interactive panel APIs, which third-party Lua and executable extensions can also use. Suggested question choices may include descriptions and optionally permit a custom response; with no choices the question tool requests free-form input. Canceling the prompt returns a structured canceled result. Interactive host input is unavailable in RPC mode, so question calls there return an ordinary tool error.
+
 Lua extensions run in-process in isolated Lua states (one state per file). Calls into a state are serialized and inherit the request context for cancellation. They are trusted code and can call exposed host operations.
 
-Executable plugins run as child processes with their working directory set to the manifest directory. Newline-delimited JSON-RPC 2.0 travels over stdin/stdout; stderr is inherited for diagnostics. This boundary is language-neutral but is not a security sandbox. The host can execute programs, read input, present a selection, notify the user, and report the working directory.
+Executable plugins run as child processes with their working directory set to the manifest directory. Newline-delimited JSON-RPC 2.0 travels over stdin/stdout; stderr is inherited for diagnostics. This boundary is language-neutral but is not a security sandbox. The host can execute programs, read input, present a selection, notify the user, publish keyed footer statuses and non-interactive panels, and report the working directory.
 
 MCP is a separate client boundary. Stdio servers are child processes; HTTP servers support JSON and SSE responses plus MCP session IDs. Tools are namespaced to avoid cross-server collisions. Notch currently consumes MCP tools only. MCP resources, prompts, sampling, elicitation, and OAuth are outside the MVP.
 

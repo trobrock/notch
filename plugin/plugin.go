@@ -93,6 +93,8 @@ type Host interface {
 	Input(context.Context, string, string) (string, error)
 	Select(context.Context, string, []string) (string, error)
 	Notify(context.Context, string, string) error
+	SetStatus(context.Context, string, string) error
+	SetPanel(context.Context, string, string, []string) error
 }
 
 type clientContextKey struct{}
@@ -630,6 +632,25 @@ func (c *Client) Notify(ctx context.Context, message, level string) error {
 	}{message, level}, &result)
 }
 
+// SetStatus asks the host to publish or clear a keyed persistent status.
+func (c *Client) SetStatus(ctx context.Context, key, value string) error {
+	var result any
+	return c.call(ctx, "host.ui.set_status", struct {
+		Key   string `json:"key"`
+		Value string `json:"value"`
+	}{key, value}, &result)
+}
+
+// SetPanel asks the host to publish or clear a keyed non-interactive panel.
+func (c *Client) SetPanel(ctx context.Context, key, title string, lines []string) error {
+	var result any
+	return c.call(ctx, "host.ui.set_panel", struct {
+		Key   string   `json:"key"`
+		Title string   `json:"title"`
+		Lines []string `json:"lines"`
+	}{key, title, lines}, &result)
+}
+
 // CWD calls CWD on the host in ctx.
 func CWD(ctx context.Context) (string, error) {
 	client, err := clientFor(ctx)
@@ -673,4 +694,22 @@ func Notify(ctx context.Context, message, level string) error {
 		return err
 	}
 	return client.Notify(ctx, message, level)
+}
+
+// SetStatus publishes or clears a keyed persistent status through the host.
+func SetStatus(ctx context.Context, key, value string) error {
+	client, err := clientFor(ctx)
+	if err != nil {
+		return err
+	}
+	return client.SetStatus(ctx, key, value)
+}
+
+// SetPanel publishes or clears a keyed non-interactive panel through the host.
+func SetPanel(ctx context.Context, key, title string, lines []string) error {
+	client, err := clientFor(ctx)
+	if err != nil {
+		return err
+	}
+	return client.SetPanel(ctx, key, title, lines)
 }

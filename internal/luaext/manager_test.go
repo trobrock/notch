@@ -18,6 +18,11 @@ import (
 type testHost struct {
 	mu            sync.Mutex
 	notifications []string
+	statuses      [][2]string
+	panels        []struct {
+		key, title string
+		lines      []string
+	}
 }
 
 func (h *testHost) CWD() string { return "/work" }
@@ -33,6 +38,20 @@ func (h *testHost) Notify(message, level string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.notifications = append(h.notifications, level+":"+message)
+}
+func (h *testHost) SetStatus(key, value string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.statuses = append(h.statuses, [2]string{key, value})
+}
+
+func (h *testHost) SetPanel(key, title string, lines []string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.panels = append(h.panels, struct {
+		key, title string
+		lines      []string
+	}{key, title, append([]string(nil), lines...)})
 }
 
 func TestManagerLoadsAndBridgesExtension(t *testing.T) {
@@ -51,6 +70,8 @@ notch.register_tool({
     local run = notch.exec("echo", {"hello"})
     local selected = notch.ui.select("choose", {"a", "b"})
     notch.ui.notify("done", "success")
+    notch.ui.set_status("sample", "active")
+    notch.ui.set_panel("sample", "Sample", {"one", "two"})
     return {content = notch.cwd() .. ":" .. args.name .. ":" .. run.stdout .. selected,
             details = {input = notch.ui.input("prompt", "placeholder")}}
   end,
@@ -113,6 +134,12 @@ end)
 	defer host.mu.Unlock()
 	if !reflect.DeepEqual(host.notifications, []string{"success:done"}) {
 		t.Fatalf("notifications = %#v", host.notifications)
+	}
+	if !reflect.DeepEqual(host.statuses, [][2]string{{"sample", "active"}}) {
+		t.Fatalf("statuses = %#v", host.statuses)
+	}
+	if len(host.panels) != 1 || host.panels[0].key != "sample" || host.panels[0].title != "Sample" || !reflect.DeepEqual(host.panels[0].lines, []string{"one", "two"}) {
+		t.Fatalf("panels = %#v", host.panels)
 	}
 }
 

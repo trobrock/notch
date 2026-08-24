@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/trobrock/notch/internal/agent"
 	"github.com/trobrock/notch/internal/extension"
@@ -27,6 +28,8 @@ const (
 	appEventBuffer     = 128
 	deltaDelay         = 33 * time.Millisecond
 	thinkingFrameDelay = 120 * time.Millisecond
+	maxPanelLines      = 100
+	maxPanelLineBytes  = 4096
 )
 
 // AppConfig describes the terminal and the labels shown in the status line.
@@ -105,10 +108,17 @@ type appEvent struct {
 	request    *hostRequest
 	cancelReq  *hostRequest
 	notice     *noticeEvent
+	status     *statusEvent
+	panel      *panelEvent
 	readErr    error
 }
 
 type noticeEvent struct{ message, level string }
+type statusEvent struct{ key, value string }
+type panelEvent struct {
+	key, title string
+	lines      []string
+}
 type promptResult struct{ err error }
 type resumeResult struct {
 	session *session.Session
@@ -180,7 +190,7 @@ func NewApp(cfg AppConfig) *App {
 		editor: editor,
 		layout: LayoutState{
 			Editor: editor, Provider: cfg.Provider, Model: cfg.Model,
-			Session: cfg.Session, Status: "ready", CWD: abbreviateHome(cfg.CWD),
+			Session: cfg.Session, Status: "ready", Statuses: make(map[string]string), Panels: make(map[string]ExtensionPanel), CWD: abbreviateHome(cfg.CWD),
 			GitBranch: cfg.GitBranch, Theme: cfg.Theme, ThemeName: cfg.ThemeName,
 			ThinkingLevel: cfg.ThinkingLevel,
 		},
@@ -496,6 +506,22 @@ func (a *App) applyEvent(runCtx context.Context, event appEvent) bool {
 	}
 	if event.notice != nil {
 		a.addNotice(event.notice.message, event.notice.level)
+		changed = true
+	}
+	if event.status != nil {
+		if event.status.value == "" {
+			delete(a.state.layout.Statuses, event.status.key)
+		} else {
+			a.state.layout.Statuses[event.status.key] = event.status.value
+		}
+		changed = true
+	}
+	if event.panel != nil {
+		if event.panel.title == "" && len(event.panel.lines) == 0 {
+			delete(a.state.layout.Panels, event.panel.key)
+		} else {
+			a.state.layout.Panels[event.panel.key] = ExtensionPanel{Key: event.panel.key, Title: event.panel.title, Lines: append([]string(nil), event.panel.lines...)}
+		}
 		changed = true
 	}
 	if event.request != nil {
@@ -1904,6 +1930,40 @@ func (a *App) hostPrompt(ctx context.Context, request *hostRequest) (string, err
 func (a *App) Notify(message, level string) {
 	notice := &noticeEvent{message: message, level: level}
 	a.post(context.Background(), appEvent{notice: notice}, true)
+}
+
+// SetStatus publishes a keyed extension status in the footer. Reusing a key
+// replaces its value; an empty value removes it.
+func (a *App) SetStatus(key, value string) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return
+	}
+	a.post(context.Background(), appEvent{status: &statusEvent{key: key, value: strings.TrimSpace(value)}}, true)
+}
+
+// SetPanel publishes a keyed, non-interactive panel above the composer.
+func (a *App) SetPanel(key, title string, lines []string) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return
+	}
+	if len(lines) > maxPanelLines {
+		lines = lines[:maxPanelLines]
+	}
+	bounded := make([]string, len(lines))
+	for i, line := range lines {
+		if len(line) > maxPanelLineBytes {
+			line = line[:maxPanelLineBytes]
+			for !utf8.ValidString(line) {
+				line = line[:len(line)-1]
+			}
+		}
+		bounded[i] = line
+	}
+	a.post(context.Background(), appEvent{panel: &panelEvent{
+		key: key, title: strings.TrimSpace(title), lines: bounded,
+	}}, true)
 }
 
 func (a *App) post(ctx context.Context, event appEvent, retainBeforeRun bool) bool {

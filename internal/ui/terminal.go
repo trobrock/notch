@@ -107,6 +107,9 @@ func (t *Terminal) Notify(message, level string) {
 	fmt.Fprintf(t.errOut, "[%s] %s\n", level, message)
 }
 
+func (t *Terminal) SetStatus(string, string)          {}
+func (t *Terminal) SetPanel(string, string, []string) {}
+
 func (t *Terminal) ReadPrompt(label string) (string, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()

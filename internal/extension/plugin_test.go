@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -16,6 +17,7 @@ import (
 type testHost struct {
 	mu            sync.Mutex
 	notifications []string
+	statuses      [][2]string
 }
 
 func (h *testHost) CWD() string { return "/host/work" }
@@ -33,6 +35,14 @@ func (h *testHost) Notify(message, level string) {
 	defer h.mu.Unlock()
 	h.notifications = append(h.notifications, level+":"+message)
 }
+
+func (h *testHost) SetStatus(key, value string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.statuses = append(h.statuses, [2]string{key, value})
+}
+
+func (h *testHost) SetPanel(string, string, []string) {}
 
 func writeTestManifest(t *testing.T, root, name string, enabled bool) string {
 	t.Helper()
@@ -145,6 +155,8 @@ func TestDispatchHostMethods(t *testing.T) {
 		{"host.ui.input", `{"prompt":"name","placeholder":"here"}`},
 		{"host.ui.select", `{"prompt":"pick","options":["a","b"]}`},
 		{"host.ui.notify", `{"message":"done","level":"info"}`},
+		{"host.ui.set_status", `{"key":"tasks","value":"tasks 1/3"}`},
+		{"host.ui.set_panel", `{"key":"tasks","title":"Tasks","lines":["one"]}`},
 	}
 	for _, test := range cases {
 		if _, rpcErr := plugin.dispatchHost(test.method, json.RawMessage(test.params)); rpcErr != nil {
@@ -158,6 +170,9 @@ func TestDispatchHostMethods(t *testing.T) {
 	defer host.mu.Unlock()
 	if len(host.notifications) != 1 || host.notifications[0] != "info:done" {
 		t.Fatalf("notifications = %v", host.notifications)
+	}
+	if !reflect.DeepEqual(host.statuses, [][2]string{{"tasks", "tasks 1/3"}}) {
+		t.Fatalf("statuses = %v", host.statuses)
 	}
 }
 

@@ -87,6 +87,12 @@ func TestProtocolInitializeToolProgressAndHostCalls(t *testing.T) {
 				if err := Notify(ctx, "done", "info"); err != nil {
 					return ToolResult{}, err
 				}
+				if err := SetStatus(ctx, "tasks", "tasks 1/3"); err != nil {
+					return ToolResult{}, err
+				}
+				if err := SetPanel(ctx, "tasks", "Tasks", []string{"one"}); err != nil {
+					return ToolResult{}, err
+				}
 				return ToolResult{Content: strings.Join([]string{cwd, input.Text, stdout, answer, choice}, ":"), Details: map[string]any{"code": code}}, nil
 			},
 		}},
@@ -158,6 +164,16 @@ func TestProtocolInitializeToolProgressAndHostCalls(t *testing.T) {
 		t.Fatalf("bad notify call: %+v", notifyCall)
 	}
 	host.send(t, map[string]any{"jsonrpc": "2.0", "id": notifyCall.ID, "result": nil})
+	statusCall := host.receive(t)
+	if statusCall.Method != "host.ui.set_status" {
+		t.Fatalf("bad status call: %+v", statusCall)
+	}
+	host.send(t, map[string]any{"jsonrpc": "2.0", "id": statusCall.ID, "result": nil})
+	panelCall := host.receive(t)
+	if panelCall.Method != "host.ui.set_panel" {
+		t.Fatalf("bad panel call: %+v", panelCall)
+	}
+	host.send(t, map[string]any{"jsonrpc": "2.0", "id": panelCall.ID, "result": nil})
 
 	toolResponse := host.receive(t)
 	var result ToolResult

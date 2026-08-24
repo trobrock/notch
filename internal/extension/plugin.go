@@ -644,6 +644,27 @@ func (p *Plugin) dispatchHost(method string, params json.RawMessage) (any, *rpcE
 		}
 		p.host.Notify(value.Message, value.Level)
 		return nil, nil
+	case "host.ui.set_status":
+		var value struct {
+			Key   string `json:"key"`
+			Value string `json:"value"`
+		}
+		if err := json.Unmarshal(params, &value); err != nil {
+			return badParams(err)
+		}
+		p.host.SetStatus(value.Key, value.Value)
+		return nil, nil
+	case "host.ui.set_panel":
+		var value struct {
+			Key   string   `json:"key"`
+			Title string   `json:"title"`
+			Lines []string `json:"lines"`
+		}
+		if err := json.Unmarshal(params, &value); err != nil {
+			return badParams(err)
+		}
+		p.host.SetPanel(value.Key, value.Title, value.Lines)
+		return nil, nil
 	default:
 		return nil, &rpcError{Code: -32601, Message: "method not found: " + method}
 	}

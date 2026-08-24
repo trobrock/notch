@@ -28,6 +28,7 @@ import (
 	"github.com/trobrock/notch/internal/model"
 	"github.com/trobrock/notch/internal/modelregistry"
 	"github.com/trobrock/notch/internal/oauth"
+	"github.com/trobrock/notch/internal/officialext"
 	"github.com/trobrock/notch/internal/provider/anthropic"
 	"github.com/trobrock/notch/internal/provider/codex"
 	"github.com/trobrock/notch/internal/provider/openai"
@@ -217,8 +218,13 @@ func run(args []string) error {
 		}
 	}
 	registry := extension.NewRegistry()
-	if !opts.noTools && !opts.noBuiltinTools {
-		if err := tools.RegisterBuiltins(registry, cwd); err != nil {
+	if !opts.noTools {
+		if !opts.noBuiltinTools {
+			if err := tools.RegisterBuiltins(registry, cwd); err != nil {
+				return err
+			}
+		}
+		if err := officialext.Register(registry, extensionHost); err != nil {
 			return err
 		}
 	}

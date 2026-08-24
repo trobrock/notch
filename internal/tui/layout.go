@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -71,6 +72,13 @@ type CommandSuggestion struct {
 	Description  string
 }
 
+// ExtensionPanel is keyed, non-interactive content published by an extension.
+type ExtensionPanel struct {
+	Key   string
+	Title string
+	Lines []string
+}
+
 // LayoutState is all of the data needed to build one terminal frame. Existing
 // fields are retained; the semantic footer/theme fields can be populated by
 // integrations as that information becomes available.
@@ -82,6 +90,8 @@ type LayoutState struct {
 	Provider      string
 	Model         string
 	Status        string
+	Statuses      map[string]string
+	Panels        map[string]ExtensionPanel
 	Session       string
 	Usage         string
 	Theme         Theme
@@ -149,6 +159,9 @@ func BuildFrame(state *LayoutState) Frame {
 		menuStart = clamp(menuStart, 0, len(state.CommandSuggestions)-menuCount)
 	}
 	transcriptHeight := height - footerCount - borderRows - composerCount - pendingCount - menuCount
+	panelLines := renderPanels(state.Panels, width, theme)
+	panelCount := min(len(panelLines), max(0, transcriptHeight/2))
+	transcriptHeight -= panelCount
 
 	frame := Frame{Rows: make([]string, height)}
 	for i := range frame.Rows {
@@ -170,8 +183,11 @@ func BuildFrame(state *LayoutState) Frame {
 		indicator := fmt.Sprintf("↑ %d", state.ScrollOffset)
 		frame.Rows[0] = overlayRight(frame.Rows[0], theme.Notice+indicator+theme.Reset, width)
 	}
+	for i := 0; i < panelCount; i++ {
+		frame.Rows[transcriptHeight+i] = padANSI(panelLines[i], width)
+	}
 
-	row := transcriptHeight
+	row := transcriptHeight + panelCount
 	pendingStart := max(0, len(state.PendingMessages)-pendingCount)
 	for i := pendingStart; i < len(state.PendingMessages); i++ {
 		message := state.PendingMessages[i]
@@ -663,6 +679,33 @@ func editorState(editor *Editor) (string, int) {
 	return editor.Text(), editor.Cursor()
 }
 
+func renderPanels(panels map[string]ExtensionPanel, width int, theme Theme) []string {
+	if len(panels) == 0 || width < 4 {
+		return nil
+	}
+	keys := make([]string, 0, len(panels))
+	for key := range panels {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	var out []string
+	for _, key := range keys {
+		panel := panels[key]
+		if strings.TrimSpace(panel.Title) == "" && len(panel.Lines) == 0 {
+			continue
+		}
+		title := strings.TrimSpace(panel.Title)
+		if title == "" {
+			title = key
+		}
+		out = append(out, theme.Notice+"── "+title+" "+strings.Repeat("─", max(0, width-visibleWidth(title)-4))+theme.Reset)
+		for _, line := range panel.Lines {
+			out = append(out, "  "+line)
+		}
+	}
+	return out
+}
+
 func footerText(state *LayoutState, width int) [2]string {
 	pwd := strings.TrimSpace(state.CWD)
 	if state.GitBranch != "" {
@@ -676,6 +719,16 @@ func footerText(state *LayoutState, width int) [2]string {
 	leftParts := make([]string, 0, 4)
 	for _, value := range []string{state.Status, state.Session, state.Usage} {
 		if value = strings.TrimSpace(value); value != "" && value != "ready" {
+			leftParts = append(leftParts, value)
+		}
+	}
+	statusKeys := make([]string, 0, len(state.Statuses))
+	for key := range state.Statuses {
+		statusKeys = append(statusKeys, key)
+	}
+	sort.Strings(statusKeys)
+	for _, key := range statusKeys {
+		if value := strings.TrimSpace(state.Statuses[key]); value != "" {
 			leftParts = append(leftParts, value)
 		}
 	}

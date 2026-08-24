@@ -112,9 +112,11 @@ local run = notch.exec("git", {"status", "--short"})
 local value = notch.ui.input("Name", "default")
 local choice = notch.ui.select("Choose", {"one", "two"})
 notch.ui.notify("Finished", "success")
+notch.ui.set_status("tasks", "tasks 1/3") -- empty value clears it
+notch.ui.set_panel("tasks", "Tasks", {"● Implement", "○ Test"}) -- empty title/lines clears it
 ```
 
-`notch.exec` executes an argv array in Notch's working directory; it does not invoke a shell. A failed start or non-zero exit raises a Lua error with the current host implementation. UI levels are display labels rather than a fixed enum. Lua execution observes agent cancellation, including tight-running Lua code.
+`notch.exec` executes an argv array in Notch's working directory; it does not invoke a shell. A failed start or non-zero exit raises a Lua error with the current host implementation. UI levels are display labels rather than a fixed enum. Keyed statuses persist in the fullscreen footer until replaced or cleared. Keyed panels provide bounded, non-interactive content above the composer; publishing an empty title and lines clears one. Line mode ignores statuses and panels, while RPC mode emits corresponding events. Lua execution observes agent cancellation, including tight-running Lua code.
 
 In the fullscreen TUI, input and selection requests are queued and presented through the transcript and composer; selection supports typed filtering, Up/Down, and Enter, and `Ctrl-C`/Escape cancels. In line fallback mode they are ordinary text/numbered prompts. See [tui.md](tui.md#extension-ui-integration).
 
@@ -336,9 +338,11 @@ Terminal interactions:
 {"jsonrpc":"2.0","id":"host-3","method":"host.ui.input","params":{"prompt":"Name","placeholder":"Ada"}}
 {"jsonrpc":"2.0","id":"host-4","method":"host.ui.select","params":{"prompt":"Pick","options":["a","b"]}}
 {"jsonrpc":"2.0","id":"host-5","method":"host.ui.notify","params":{"message":"Done","level":"info"}}
+{"jsonrpc":"2.0","id":"host-6","method":"host.ui.set_status","params":{"key":"tasks","value":"tasks 1/3"}}
+{"jsonrpc":"2.0","id":"host-7","method":"host.ui.set_panel","params":{"key":"tasks","title":"Tasks","lines":["● Implement","○ Test"]}}
 ```
 
-Input and selection return strings; notify returns `null`. In the fullscreen TUI these requests rendezvous with the event loop and are queued if another extension prompt is active; the line fallback uses ordinary prompts. See [tui.md](tui.md#extension-ui-integration). Host method failures use `-32602` for invalid parameters, `-32601` for unknown methods, and `-32000` for operation errors.
+Input and selection return strings; notify, set-status, and set-panel return `null`. Set-status replaces a persistent keyed footer value and an empty value clears it. Set-panel replaces bounded non-interactive content above the composer; empty title and lines clear it. In the fullscreen TUI input/select requests rendezvous with the event loop and are queued if another extension prompt is active; the line fallback uses ordinary prompts and ignores status/panel publication. See [tui.md](tui.md#extension-ui-integration). Host method failures use `-32602` for invalid parameters, `-32601` for unknown methods, and `-32000` for operation errors.
 
 ### Minimal Python plugin
 
