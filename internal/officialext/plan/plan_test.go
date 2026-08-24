@@ -75,7 +75,7 @@ func TestPlanCommandEnablesReadOnlyTools(t *testing.T) {
 func TestPlanHooksInjectPromptAndDenyWrites(t *testing.T) {
 	r, _, _ := setup(t)
 	event, err := r.RunHooks(context.Background(), "before_agent_start", map[string]any{"system_prompt": "base"})
-	if err != nil || !strings.Contains(event["system_prompt"].(string), "PLAN MODE IS ACTIVE") {
+	if err != nil || !strings.Contains(event["system_prompt"].(string), "PLAN MODE IS ACTIVE") || !strings.Contains(event["system_prompt"].(string), "use explore_codebase proactively") {
 		t.Fatalf("event=%#v err=%v", event, err)
 	}
 	denied, err := r.RunHooks(context.Background(), "tool_call", map[string]any{"name": "write"})

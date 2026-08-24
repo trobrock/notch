@@ -8,6 +8,15 @@ import (
 	"testing"
 )
 
+func TestDefaultSystemPromptGuidesCodebaseExploration(t *testing.T) {
+	cfg := Defaults(t.TempDir(), t.TempDir())
+	for _, text := range []string{"use explore_codebase proactively", "direct grep", "exactly one of task", "never provide both"} {
+		if !strings.Contains(cfg.SystemPrompt, text) {
+			t.Fatalf("default system prompt missing %q: %q", text, cfg.SystemPrompt)
+		}
+	}
+}
+
 func TestDefaultsAndNotchHome(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "home")
 	cwd := filepath.Join(t.TempDir(), "project")

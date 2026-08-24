@@ -135,7 +135,7 @@ func (s *state) before(_ context.Context, event map[string]any) (map[string]any,
 	return map[string]any{"system_prompt": prompt + `\n\nPLAN MODE IS ACTIVE.
 Investigate and produce a researched implementation plan before changes.
 Do not modify files, run mutating commands, start servers, install packages, commit, or push.
-Use read-only tools. Ask concise questions when requirements are ambiguous.
+Use read-only tools. For broad discovery or flows spanning several files, use explore_codebase proactively; use direct grep/read for narrow lookups. Ask concise questions when requirements are ambiguous.
 Your final plan must name key files, implementation steps, tests, risks, and open questions.
 When complete, call exit_plan_mode with the full plan. Do not begin implementation.`}, nil
 }

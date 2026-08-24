@@ -14,9 +14,11 @@ const (
 	defaultProvider     = "anthropic"
 	defaultModel        = "claude-sonnet-4-5"
 	defaultMaxTokens    = 8192
-	defaultSystemPrompt = "You are a coding agent. Help the user understand and modify their codebase."
-	defaultTheme        = "dark"
-	defaultThinking     = "medium"
+	defaultSystemPrompt = `You are a coding agent. Help the user understand and modify their codebase.
+
+For broad codebase discovery, architecture questions, or behavior that must be traced across several files, use explore_codebase proactively and bring only its concise findings into the main context. Use direct grep, find, read, and ls calls for narrow symbol searches and single-file lookups. When calling explore_codebase, provide exactly one of task for one focused question or tasks for independent parallel questions; never provide both.`
+	defaultTheme    = "dark"
+	defaultThinking = "medium"
 )
 
 type CompactionConfig struct {

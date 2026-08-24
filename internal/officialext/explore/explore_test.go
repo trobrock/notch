@@ -34,6 +34,29 @@ func (r *fakeRunner) Run(_ context.Context, input subagent.Input, _ func(string)
 	return subagent.Result{Output: "found " + input.Prompt, Usage: subagent.Usage{Input: 10, Output: 2, Model: input.Model}}, nil
 }
 
+func TestExploreSchemaAndDescriptionGuideCorrectUse(t *testing.T) {
+	registry, runner := extension.NewRegistry(), &fakeRunner{}
+	if err := RegisterWithRunner(registry, runner); err != nil {
+		t.Fatal(err)
+	}
+	tool, _ := registry.Tool(ToolName)
+	if !strings.Contains(tool.Definition.Description, "Proactively") || !strings.Contains(tool.Definition.Description, "exactly one") || !strings.Contains(tool.Definition.Description, "direct tools") {
+		t.Fatalf("description = %q", tool.Definition.Description)
+	}
+	schema := tool.Definition.InputSchema
+	oneOf, ok := schema["oneOf"].([]any)
+	if !ok || len(oneOf) != 2 {
+		t.Fatalf("oneOf = %#v", schema["oneOf"])
+	}
+	encoded, err := json.Marshal(schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"not":{"required":["tasks"]}`) || !strings.Contains(string(encoded), `"not":{"required":["task"]}`) {
+		t.Fatalf("schema does not make task/tasks exclusive: %s", encoded)
+	}
+}
+
 func TestExploreSingleTaskUsesReadOnlyRunner(t *testing.T) {
 	registry, runner := extension.NewRegistry(), &fakeRunner{}
 	if err := RegisterWithRunner(registry, runner); err != nil {

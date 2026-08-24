@@ -60,7 +60,7 @@ func RegisterWithRunner(registry *extension.Registry, runner subagent.Runner) er
 		Source: Source,
 		Definition: model.ToolDefinition{
 			Name:        ToolName,
-			Description: "Delegate focused codebase exploration to isolated read-only Notch subagents. Use task for one question or tasks for independent parallel questions.",
+			Description: "Proactively delegate broad codebase discovery, architecture tracing, and multi-file flow analysis to isolated read-only Notch subagents. Prefer this over many direct grep/read calls when the answer requires understanding several files; use direct tools for a narrow symbol or single-file lookup. Provide exactly one of task (one focused question) or tasks (independent questions run in parallel).",
 			InputSchema: schema(),
 		},
 		Execute: func(ctx context.Context, raw json.RawMessage, update func(string)) (extension.ToolResult, error) {
@@ -98,10 +98,14 @@ func schema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"task":  map[string]any{"type": "string", "minLength": 1, "description": "Focused question for single-task mode."},
-			"tasks": map[string]any{"type": "array", "minItems": 1, "maxItems": maxTasks, "items": task, "description": "Independent questions to run in parallel."},
+			"task":  map[string]any{"type": "string", "minLength": 1, "description": "One focused exploration question. Do not provide tasks with this field."},
+			"tasks": map[string]any{"type": "array", "minItems": 1, "maxItems": maxTasks, "items": task, "description": "Independent exploration questions to run in parallel. Do not provide task with this field."},
 			"model": map[string]any{"type": "string", "description": "Default model override."},
 			"cwd":   map[string]any{"type": "string", "description": "Default working directory override."},
+		},
+		"oneOf": []any{
+			map[string]any{"required": []string{"task"}, "not": map[string]any{"required": []string{"tasks"}}},
+			map[string]any{"required": []string{"tasks"}, "not": map[string]any{"required": []string{"task"}}},
 		},
 		"additionalProperties": false,
 	}
