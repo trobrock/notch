@@ -190,6 +190,44 @@ func TestSteeringAndFollowUpQueues(t *testing.T) {
 	}
 }
 
+type longToolLoopProvider struct{ calls int }
+
+func (p *longToolLoopProvider) Stream(context.Context, model.Request, func(model.StreamEvent)) (model.Response, error) {
+	p.calls++
+	if p.calls <= 50 {
+		return model.Response{
+			Content: []model.Block{{
+				Type: "tool_use", ID: fmt.Sprintf("call-%d", p.calls), Name: "continue_test", Arguments: json.RawMessage(`{}`),
+			}},
+			StopReason: "tool_use",
+		}, nil
+	}
+	return model.Response{Content: []model.Block{{Type: "text", Text: "done"}}, StopReason: "end_turn"}, nil
+}
+
+func TestPromptHasNoFixedTurnLimit(t *testing.T) {
+	registry := extension.NewRegistry()
+	if err := registry.RegisterTool(extension.Tool{
+		Definition: model.ToolDefinition{Name: "continue_test", InputSchema: map[string]any{"type": "object"}},
+		Execute: func(context.Context, json.RawMessage, func(string)) (extension.ToolResult, error) {
+			return extension.ToolResult{Content: "continue"}, nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	provider := &longToolLoopProvider{}
+	a, err := New(Config{Provider: provider, Registry: registry, Model: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Prompt(context.Background(), "run", nil); err != nil {
+		t.Fatal(err)
+	}
+	if provider.calls != 51 {
+		t.Fatalf("provider calls = %d, want 51", provider.calls)
+	}
+}
+
 type queueTestProvider struct {
 	mu       sync.Mutex
 	requests []model.Request

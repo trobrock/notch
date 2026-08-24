@@ -57,7 +57,6 @@ type Config struct {
 	Model         string
 	SystemPrompt  string
 	MaxTokens     int
-	MaxTurns      int
 	ThinkingLevel string
 	Compaction    CompactionConfig
 }
@@ -70,7 +69,6 @@ type Agent struct {
 	model        string
 	system       string
 	maxTokens    int
-	maxTurns     int
 	compaction   CompactionConfig
 
 	// mu serializes operations which mutate conversation or session state.
@@ -106,9 +104,6 @@ func New(cfg Config) (*Agent, error) {
 	if cfg.MaxTokens <= 0 {
 		cfg.MaxTokens = 8192
 	}
-	if cfg.MaxTurns <= 0 {
-		cfg.MaxTurns = 50
-	}
 	if cfg.ThinkingLevel == "" {
 		cfg.ThinkingLevel = "off"
 	}
@@ -123,8 +118,7 @@ func New(cfg Config) (*Agent, error) {
 	a := &Agent{
 		provider: cfg.Provider, providerName: providerName, registry: cfg.Registry, session: cfg.Session,
 		model: cfg.Model, system: cfg.SystemPrompt, maxTokens: cfg.MaxTokens,
-		maxTurns: cfg.MaxTurns, thinkingLevel: cfg.ThinkingLevel,
-		compaction: cfg.Compaction,
+		thinkingLevel: cfg.ThinkingLevel, compaction: cfg.Compaction,
 	}
 	if cfg.Session != nil {
 		a.messages = cloneMessages(cfg.Session.Messages)
@@ -300,7 +294,7 @@ func (a *Agent) PromptWithStart(ctx context.Context, text string, emit func(Even
 		}
 	}
 
-	for turn := 0; turn < a.maxTurns; turn++ {
+	for turn := 0; ; turn++ {
 		system := a.system
 		before, err := a.registry.RunHooks(ctx, "before_agent_start", map[string]any{
 			"system_prompt": system, "model": a.model, "turn": turn,
@@ -398,7 +392,6 @@ func (a *Agent) PromptWithStart(ctx context.Context, text string, emit func(Even
 		}
 		return nil
 	}
-	return fmt.Errorf("agent stopped after %d turns", a.maxTurns)
 }
 
 func toolCalls(blocks []model.Block) []model.Block {
