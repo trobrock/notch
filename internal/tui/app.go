@@ -111,7 +111,13 @@ type appEvent struct {
 	status     *statusEvent
 	panel      *panelEvent
 	followUp   string
+	handoff    *handoffEvent
 	readErr    error
+}
+
+type handoffEvent struct {
+	message string
+	fresh   bool
 }
 
 type noticeEvent struct{ message, level string }
@@ -538,6 +544,21 @@ func (a *App) applyEvent(runCtx context.Context, event appEvent) bool {
 			}
 		} else {
 			changed = a.submit(runCtx, event.followUp) || changed
+		}
+		changed = true
+	}
+	if event.handoff != nil {
+		if event.handoff.fresh {
+			if a.state.activeModel {
+				a.addNotice("fresh handoff requires the agent to be idle", "error")
+			} else if _, err := a.runner.ResetConversation(a.currentSession); err != nil {
+				a.addNotice(err.Error(), "error")
+			} else {
+				a.resetConversationState()
+				changed = a.submit(runCtx, event.handoff.message) || changed
+			}
+		} else {
+			changed = a.submit(runCtx, event.handoff.message) || changed
 		}
 		changed = true
 	}
@@ -1955,6 +1976,28 @@ func (a *App) FollowUp(message string) error {
 		return errors.New("follow-up message is empty")
 	}
 	a.post(context.Background(), appEvent{followUp: message}, true)
+	return nil
+}
+
+func (a *App) Handoff(message string, fresh bool) error {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return errors.New("handoff message is empty")
+	}
+	a.post(context.Background(), appEvent{handoff: &handoffEvent{message: message, fresh: fresh}}, true)
+	return nil
+}
+
+func (a *App) SetActiveTools(names []string) error {
+	a.mu.Lock()
+	registry := a.registry
+	a.mu.Unlock()
+	if registry == nil {
+		return errors.New("tool registry is unavailable")
+	}
+	if missing := registry.SetActiveTools(names); len(missing) != 0 {
+		return fmt.Errorf("unknown tools: %s", strings.Join(missing, ", "))
+	}
 	return nil
 }
 

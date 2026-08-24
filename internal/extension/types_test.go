@@ -60,3 +60,26 @@ func TestRegistryToolRestrictions(t *testing.T) {
 		t.Fatalf("clear = %#v / %#v", missing, registry.Tools())
 	}
 }
+
+func TestRegistryActiveToolsCanBeRestored(t *testing.T) {
+	registry := NewRegistry()
+	for _, name := range []string{"read", "write"} {
+		name := name
+		if err := registry.RegisterTool(Tool{Definition: model.ToolDefinition{Name: name}, Execute: func(context.Context, json.RawMessage, func(string)) (ToolResult, error) { return ToolResult{}, nil }}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if missing := registry.SetActiveTools([]string{"read", "missing"}); !reflect.DeepEqual(missing, []string{"missing"}) {
+		t.Fatalf("missing=%#v", missing)
+	}
+	if _, ok := registry.Tool("write"); ok {
+		t.Fatal("inactive write tool remained visible")
+	}
+	if got := registry.ActiveToolNames(); !reflect.DeepEqual(got, []string{"read"}) {
+		t.Fatalf("active=%#v", got)
+	}
+	registry.SetActiveTools(nil)
+	if _, ok := registry.Tool("write"); !ok {
+		t.Fatal("restore did not expose write")
+	}
+}

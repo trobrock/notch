@@ -9,6 +9,7 @@ import (
 	"github.com/trobrock/notch/internal/officialext/askuser"
 	"github.com/trobrock/notch/internal/officialext/explore"
 	"github.com/trobrock/notch/internal/officialext/monitor"
+	"github.com/trobrock/notch/internal/officialext/plan"
 	"github.com/trobrock/notch/internal/officialext/subagent"
 	"github.com/trobrock/notch/internal/officialext/tasklist"
 )
@@ -23,6 +24,7 @@ func Register(registry *extension.Registry, host extension.Host) error {
 		askuser.Register,
 		explore.Register,
 		monitor.Register,
+		plan.Register,
 		subagent.Register,
 		tasklist.Register,
 	} {

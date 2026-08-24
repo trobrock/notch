@@ -47,6 +47,12 @@ type Host interface {
 	// FollowUp delivers a synthetic user message when the active agent becomes
 	// idle, or starts a new prompt when it is already idle.
 	FollowUp(message string) error
+	// Handoff delivers a synthetic user message after the active run. When
+	// fresh is true, conversation context is durably reset first.
+	Handoff(message string, fresh bool) error
+	// SetActiveTools replaces the model-visible tool set. Nil restores all
+	// registered tools; an empty non-nil slice disables every tool.
+	SetActiveTools(names []string) error
 	// SetStatus publishes a short keyed status for persistent UI display. An
 	// empty value removes the status. Headless hosts may expose it as an event.
 	SetStatus(key, value string)
@@ -61,10 +67,11 @@ type namedHook struct {
 }
 
 type Registry struct {
-	mu       sync.RWMutex
-	tools    map[string]Tool
-	commands map[string]Command
-	hooks    map[string][]namedHook
+	mu          sync.RWMutex
+	tools       map[string]Tool
+	activeTools map[string]bool
+	commands    map[string]Command
+	hooks       map[string][]namedHook
 }
 
 func NewRegistry() *Registry {
@@ -143,10 +150,48 @@ func (r *Registry) On(event, source string, handler HookHandler) {
 	r.hooks[event] = append(r.hooks[event], namedHook{source: source, handler: handler})
 }
 
+func (r *Registry) SetActiveTools(names []string) []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if names == nil {
+		r.activeTools = nil
+		return nil
+	}
+	active := make(map[string]bool, len(names))
+	var missing []string
+	for _, name := range names {
+		if _, ok := r.tools[name]; !ok {
+			missing = append(missing, name)
+			continue
+		}
+		active[name] = true
+	}
+	r.activeTools = active
+	sort.Strings(missing)
+	return missing
+}
+
+func (r *Registry) ActiveToolNames() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.activeTools == nil {
+		return nil
+	}
+	names := make([]string, 0, len(r.activeTools))
+	for name := range r.activeTools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 func (r *Registry) Tool(name string) (Tool, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	t, ok := r.tools[name]
+	if ok && r.activeTools != nil && !r.activeTools[name] {
+		return Tool{}, false
+	}
 	return t, ok
 }
 
@@ -154,7 +199,10 @@ func (r *Registry) Tools() []Tool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	out := make([]Tool, 0, len(r.tools))
-	for _, tool := range r.tools {
+	for name, tool := range r.tools {
+		if r.activeTools != nil && !r.activeTools[name] {
+			continue
+		}
 		out = append(out, tool)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Definition.Name < out[j].Definition.Name })

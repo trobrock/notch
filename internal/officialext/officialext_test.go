@@ -18,6 +18,8 @@ func (*testHost) Input(context.Context, string, string) (string, error)    { ret
 func (*testHost) Select(context.Context, string, []string) (string, error) { return "", nil }
 func (*testHost) Notify(string, string)                                    {}
 func (*testHost) FollowUp(string) error                                    { return nil }
+func (h *testHost) Handoff(string, bool) error                             { return nil }
+func (h *testHost) SetActiveTools([]string) error                          { return nil }
 func (*testHost) SetStatus(string, string)                                 {}
 func (*testHost) SetPanel(string, string, []string)                        {}
 
@@ -26,7 +28,7 @@ func TestRegisterKeepsOfficialExtensionsSegmented(t *testing.T) {
 	if err := Register(registry, &testHost{}); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"ask_user_question", "explore_codebase", "list_monitors", "monitor_command", "monitor_github_pr_checks", "run_subagent", "stop_monitor", "update_task_list"} {
+	for _, name := range []string{"ask_user_question", "exit_plan_mode", "explore_codebase", "list_monitors", "monitor_command", "monitor_github_pr_checks", "run_subagent", "stop_monitor", "update_task_list"} {
 		tool, ok := registry.Tool(name)
 		if !ok {
 			t.Fatalf("%s not registered", name)

@@ -183,7 +183,7 @@ notch --no-session
 notch --mcp-config ./mcp.json
 ```
 
-Fullscreen interactive commands include `/help`, `/model [refresh]`, `/tools`, `/skills`, `/thinking [LEVEL]`, `/theme [NAME]`, `/compact [instructions]`, `/new`, `/resume`, `/clear`, `/exit`, and `/quit`, plus commands registered by extensions. Typing `/` opens a filtered command menu with descriptions; Up/Down selects an entry and Tab or Enter completes it. Skills are invoked as `/skill:name arguments`; prompt templates use `/name arguments`. See the [TUI guide](docs/tui.md) for runtime command behavior.
+Fullscreen interactive commands include `/help`, `/model [refresh]`, `/tools`, `/skills`, `/thinking [LEVEL]`, `/theme [NAME]`, `/compact [instructions]`, `/plan [on|off|status]`, `/new`, `/resume`, `/clear`, `/exit`, and `/quit`, plus commands registered by extensions. Typing `/` opens a filtered command menu with descriptions; Up/Down selects an entry and Tab or Enter completes it. Skills are invoked as `/skill:name arguments`; prompt templates use `/name arguments`. See the [TUI guide](docs/tui.md) for runtime command behavior.
 
 `--mode rpc` exposes asynchronous Pi-style command responses and streaming events over strict JSONL; see [RPC mode](docs/rpc.md). Tool flags apply to every run mode after built-in, extension, and MCP registration.
 

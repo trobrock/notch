@@ -112,11 +112,12 @@ local run = notch.exec("git", {"status", "--short"})
 local value = notch.ui.input("Name", "default")
 local choice = notch.ui.select("Choose", {"one", "two"})
 notch.ui.notify("Finished", "success")
+notch.follow_up("Continue with the result")
 notch.ui.set_status("tasks", "tasks 1/3") -- empty value clears it
 notch.ui.set_panel("tasks", "Tasks", {"● Implement", "○ Test"}) -- empty title/lines clears it
 ```
 
-`notch.exec` executes an argv array in Notch's working directory; it does not invoke a shell. A failed start or non-zero exit raises a Lua error with the current host implementation. UI levels are display labels rather than a fixed enum. Keyed statuses persist in the fullscreen footer until replaced or cleared. Keyed panels provide bounded, non-interactive content above the composer; publishing an empty title and lines clears one. Line mode ignores statuses and panels, while RPC mode emits corresponding events. Lua execution observes agent cancellation, including tight-running Lua code.
+`notch.exec` executes an argv array in Notch's working directory; it does not invoke a shell. A failed start or non-zero exit raises a Lua error with the current host implementation. UI levels are display labels rather than a fixed enum. `notch.follow_up` asks the host to deliver a synthetic user follow-up. Keyed statuses persist in the fullscreen footer until replaced or cleared. Keyed panels provide bounded, non-interactive content above the composer; publishing an empty title and lines clears one. Line mode ignores statuses and panels, while RPC mode emits corresponding events. Lua execution observes agent cancellation, including tight-running Lua code.
 
 In the fullscreen TUI, input and selection requests are queued and presented through the transcript and composer; selection supports typed filtering, Up/Down, and Enter, and `Ctrl-C`/Escape cancels. In line fallback mode they are ordinary text/numbered prompts. See [tui.md](tui.md#extension-ui-integration).
 

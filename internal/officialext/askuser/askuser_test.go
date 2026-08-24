@@ -36,6 +36,8 @@ func (h *testHost) Select(_ context.Context, prompt string, options []string) (s
 }
 func (*testHost) Notify(string, string)             {}
 func (*testHost) FollowUp(string) error             { return nil }
+func (h *testHost) Handoff(string, bool) error      { return nil }
+func (h *testHost) SetActiveTools([]string) error   { return nil }
 func (*testHost) SetStatus(string, string)          {}
 func (*testHost) SetPanel(string, string, []string) {}
 

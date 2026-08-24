@@ -119,6 +119,22 @@ func (s *Server) FollowUp(message string) error {
 	return err
 }
 
+func (s *Server) Handoff(string, bool) error {
+	return errors.New("extension handoff is unavailable in RPC mode")
+}
+func (s *Server) SetActiveTools(names []string) error {
+	s.mu.Lock()
+	registry := s.registry
+	s.mu.Unlock()
+	if registry == nil {
+		return errors.New("RPC server is not configured")
+	}
+	if missing := registry.SetActiveTools(names); len(missing) > 0 {
+		return fmt.Errorf("unknown tools: %s", strings.Join(missing, ", "))
+	}
+	return nil
+}
+
 func (s *Server) SetStatus(key, value string) {
 	_ = s.write(map[string]any{"type": "status", "key": key, "value": value})
 }

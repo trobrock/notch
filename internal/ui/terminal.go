@@ -110,6 +110,12 @@ func (t *Terminal) Notify(message, level string) {
 func (t *Terminal) FollowUp(string) error {
 	return errors.New("extension follow-up is unavailable in line mode")
 }
+func (t *Terminal) Handoff(string, bool) error {
+	return errors.New("extension handoff is unavailable in line mode")
+}
+func (t *Terminal) SetActiveTools([]string) error {
+	return errors.New("runtime tool policy is unavailable in line mode")
+}
 func (t *Terminal) SetStatus(string, string)          {}
 func (t *Terminal) SetPanel(string, string, []string) {}
 
