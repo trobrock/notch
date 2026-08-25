@@ -97,6 +97,14 @@ type UsageEntry struct {
 	StopReason string     `json:"stop_reason,omitempty"`
 }
 
+type sessionFile interface {
+	io.Writer
+	Stat() (os.FileInfo, error)
+	Sync() error
+	Truncate(size int64) error
+	Close() error
+}
+
 // Session is a loaded or newly-created session. Entries contains the exact
 // JSON for every record after the header, and Messages contains the effective
 // conversation context after applying message, compaction, and reset records.
@@ -109,7 +117,7 @@ type Session struct {
 
 	mu     sync.Mutex
 	path   string
-	file   *os.File
+	file   sessionFile
 	closed bool
 }
 
@@ -156,19 +164,123 @@ func New(dir, cwd, provider, modelName string) (*Session, error) {
 	return nil, errors.New("create session: too many filename collisions")
 }
 
-// Load validates and opens an existing session for further appends.
+// Load validates and opens an existing session for further appends. A malformed
+// final record is treated as a torn write only when it is not newline
+// terminated and every preceding record is valid.
 func Load(path string) (*Session, error) {
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_APPEND, 0)
 	if err != nil {
 		return nil, fmt.Errorf("open session %q: %w", path, err)
 	}
 
-	s := &Session{path: path, file: f}
-	if err := s.decode(f); err != nil {
+	stat, err := f.Stat()
+	if err != nil {
 		_ = f.Close()
-		return nil, fmt.Errorf("load session %q: %w", path, err)
+		return nil, fmt.Errorf("stat session %q: %w", path, err)
 	}
-	return s, nil
+	loaded, recovery, err := readRecoverableSession(f, path, stat.Size())
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	switch recovery.kind {
+	case tailRecoveryTruncate:
+		if err := f.Truncate(recovery.size); err != nil {
+			_ = f.Close()
+			return nil, fmt.Errorf("truncate torn session tail %q: %w", path, err)
+		}
+		if err := f.Sync(); err != nil {
+			_ = f.Close()
+			return nil, fmt.Errorf("sync recovered session %q: %w", path, err)
+		}
+	case tailRecoveryNewline:
+		if err := writeAll(f, []byte{'\n'}); err != nil {
+			_ = f.Close()
+			return nil, fmt.Errorf("normalize session tail %q: %w", path, err)
+		}
+		if err := f.Sync(); err != nil {
+			_ = f.Close()
+			return nil, fmt.Errorf("sync normalized session %q: %w", path, err)
+		}
+	}
+	loaded.file = f
+	return loaded, nil
+}
+
+type tailRecoveryKind uint8
+
+const (
+	tailRecoveryNone tailRecoveryKind = iota
+	tailRecoveryTruncate
+	tailRecoveryNewline
+)
+
+type tailRecovery struct {
+	kind tailRecoveryKind
+	size int64
+}
+
+// readRecoverableSession applies Load's validation rules without modifying the
+// file. Callers may then perform the returned recovery action when appropriate.
+func readRecoverableSession(f *os.File, path string, size int64) (*Session, tailRecovery, error) {
+	unterminated := false
+	if size > 0 {
+		var last [1]byte
+		if _, err := f.ReadAt(last[:], size-1); err != nil {
+			return nil, tailRecovery{}, fmt.Errorf("inspect session tail %q: %w", path, err)
+		}
+		unterminated = last[0] != '\n'
+	}
+
+	if unterminated {
+		tailStart, err := finalRecordStart(f, size)
+		if err != nil {
+			return nil, tailRecovery{}, fmt.Errorf("inspect session tail %q: %w", path, err)
+		}
+		tail := make([]byte, size-tailStart)
+		if _, err := f.ReadAt(tail, tailStart); err != nil {
+			return nil, tailRecovery{}, fmt.Errorf("read session tail %q: %w", path, err)
+		}
+		if !json.Valid(bytes.TrimSpace(tail)) {
+			// Validate the prefix before discarding anything. This ensures an
+			// interior corrupt record can never be mistaken for a torn tail.
+			loaded := &Session{path: path}
+			if err := loaded.decode(io.NewSectionReader(f, 0, tailStart)); err != nil {
+				return nil, tailRecovery{}, fmt.Errorf("load session %q: %w", path, err)
+			}
+			return loaded, tailRecovery{kind: tailRecoveryTruncate, size: tailStart}, nil
+		}
+	}
+
+	loaded := &Session{path: path}
+	if err := loaded.decode(io.NewSectionReader(f, 0, size)); err != nil {
+		return nil, tailRecovery{}, fmt.Errorf("load session %q: %w", path, err)
+	}
+	if unterminated {
+		return loaded, tailRecovery{kind: tailRecoveryNewline}, nil
+	}
+	return loaded, tailRecovery{kind: tailRecoveryNone}, nil
+}
+
+// finalRecordStart returns the byte immediately after the last newline before
+// size, or zero when the file consists of one unterminated record.
+func finalRecordStart(f *os.File, size int64) (int64, error) {
+	const blockSize int64 = 32 * 1024
+	for end := size; end > 0; {
+		start := end - blockSize
+		if start < 0 {
+			start = 0
+		}
+		block := make([]byte, end-start)
+		if _, err := f.ReadAt(block, start); err != nil {
+			return 0, err
+		}
+		if index := bytes.LastIndexByte(block, '\n'); index >= 0 {
+			return start + int64(index) + 1, nil
+		}
+		end = start
+	}
+	return 0, nil
 }
 
 // List returns valid sessions ordered from most recently modified to oldest.
@@ -183,22 +295,25 @@ func List(dir string) ([]Info, error) {
 			continue
 		}
 		path := filepath.Join(dir, item.Name())
-		stat, err := item.Info()
-		if err != nil {
-			return nil, fmt.Errorf("stat session %q: %w", path, err)
-		}
 		file, err := os.Open(path)
 		if err != nil {
 			return nil, fmt.Errorf("inspect session %q: %w", path, err)
 		}
-		loaded := &Session{path: path}
-		decodeErr := loaded.decode(file)
-		closeErr := file.Close()
-		if decodeErr != nil {
-			return nil, fmt.Errorf("inspect session %q: %w", path, decodeErr)
+		stat, statErr := file.Stat()
+		if statErr != nil {
+			_ = file.Close()
+			return nil, fmt.Errorf("stat session %q: %w", path, statErr)
 		}
+		loaded, _, decodeErr := readRecoverableSession(file, path, stat.Size())
+		closeErr := file.Close()
 		if closeErr != nil {
 			return nil, fmt.Errorf("close session %q: %w", path, closeErr)
+		}
+		if decodeErr != nil {
+			// One damaged session must not make every other session unusable.
+			// Recoverable final tails are accepted by readRecoverableSession but
+			// are left untouched; Load performs the actual repair.
+			continue
 		}
 		info := Info{Path: path, Header: loaded.Header, ModifiedAt: stat.ModTime(), MessageCount: len(loaded.Messages)}
 		info.Preview = sessionPreview(loaded.Messages)
@@ -276,7 +391,7 @@ func sessionPreview(messages []model.Message) string {
 	return "(empty session)"
 }
 
-// Latest loads the most recently modified session JSONL file in dir.
+// Latest loads the most recently modified valid session JSONL file in dir.
 func Latest(dir string) (*Session, error) {
 	items, err := os.ReadDir(dir)
 	if err != nil {
@@ -306,7 +421,15 @@ func Latest(dir string) (*Session, error) {
 		}
 		return files[i].mod.After(files[j].mod)
 	})
-	return Load(files[0].path)
+	var loadErr error
+	for _, file := range files {
+		loaded, err := Load(file.path)
+		if err == nil {
+			return loaded, nil
+		}
+		loadErr = errors.Join(loadErr, err)
+	}
+	return nil, fmt.Errorf("latest valid session in %q: %w", dir, loadErr)
 }
 
 // AppendMessage appends a model message and makes it durable.
@@ -533,14 +656,43 @@ func (s *Session) appendLine(line []byte, committed func()) error {
 	if s.closed || s.file == nil {
 		return errors.New("append session: session is closed")
 	}
+	stat, err := s.file.Stat()
+	if err != nil {
+		return fmt.Errorf("stat session before append %q: %w", s.path, err)
+	}
+	originalSize := stat.Size()
 	if err := writeAll(s.file, line); err != nil {
-		return fmt.Errorf("append session %q: %w", s.path, err)
+		return s.rollbackAppend(originalSize, fmt.Errorf("append session %q: %w", s.path, err))
 	}
 	if err := s.file.Sync(); err != nil {
-		return fmt.Errorf("sync session %q: %w", s.path, err)
+		return s.rollbackAppend(originalSize, fmt.Errorf("sync session %q: %w", s.path, err))
 	}
 	committed()
 	return nil
+}
+
+// rollbackAppend restores the last durable record boundary. A failed rollback
+// leaves the file's tail in an unknown state, so the handle is permanently
+// closed to prevent a later append from turning that tail into interior damage.
+func (s *Session) rollbackAppend(size int64, appendErr error) error {
+	if err := s.file.Truncate(size); err != nil {
+		return s.disableAfterRollbackFailure(appendErr, fmt.Errorf("rollback truncate session %q to %d bytes: %w", s.path, size, err))
+	}
+	if err := s.file.Sync(); err != nil {
+		return s.disableAfterRollbackFailure(appendErr, fmt.Errorf("rollback sync session %q after truncating to %d bytes: %w", s.path, size, err))
+	}
+	return appendErr
+}
+
+func (s *Session) disableAfterRollbackFailure(appendErr, rollbackErr error) error {
+	s.closed = true
+	file := s.file
+	s.file = nil
+	closeErr := file.Close()
+	if closeErr != nil {
+		closeErr = fmt.Errorf("close unusable session %q: %w", s.path, closeErr)
+	}
+	return errors.Join(appendErr, rollbackErr, closeErr)
 }
 
 func (s *Session) decode(r io.Reader) error {

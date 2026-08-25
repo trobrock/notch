@@ -8,12 +8,12 @@ Use this skill for model-callable tools, slash commands, and lifecycle hooks. Ke
 
 ## Choose the smallest extension type
 
-- Use **Lua** for concise tools, commands, and hooks with no extra runtime or complex concurrency.
+- Use **Lua** as a first-class format for concise tools, commands, and hooks with no extra runtime or complex concurrency.
 - Use an **executable plugin** for substantial state, concurrency, streaming subprocesses, external libraries, or implementation in Go/Python/Rust/another language.
 - Use **MCP** when a suitable server already exists or the tool should be shared with other agents.
 - Change Notch core only for a generic mechanism that extensions cannot express cleanly.
 
-Extensions are trusted and unsandboxed. They run with the user's privileges. Keep tool schemas narrow, validate every argument, honor cancellation, cap output, and avoid shell interpolation.
+Extensions are trusted and unsandboxed. They run with the user's privileges, without per-command approvals; once loaded, their operations and model-requested tools execute automatically. Project extensions require persisted workspace trust and are skipped in untrusted/noninteractive or `--safe` runs. Keep tool schemas narrow, validate every argument, honor cancellation, cap output, and avoid shell interpolation.
 
 ## Locations and discovery
 
@@ -21,12 +21,12 @@ Default extension directories are:
 
 ```text
 ~/.notch/extensions
-<cwd>/.notch/extensions
+<workspace-root>/.notch/extensions  # trusted workspaces only
 ```
 
 `$NOTCH_HOME/extensions` replaces the user path. `extension_dirs` may replace the complete list. Lua discovery reads direct `.lua` files. Executable plugin discovery recursively finds `plugin.json` manifests. Restart Notch after adding or changing an extension.
 
-Tool and command names are global. Duplicate names are rejected rather than overriding built-ins or earlier extensions. Use a clear, stable prefix for project-specific tools.
+Tool and command names are global. Duplicate names are rejected rather than overriding built-ins or earlier extensions. Each Lua file or executable plugin registers its tools, commands, and hooks atomically; any failure leaves none of that extension's declarations installed, and closing it unregisters its batch. A failure during a multi-directory Lua load also rolls back files loaded by that call. Use a clear, stable prefix for project-specific tools.
 
 ## Package and share extensions
 
@@ -112,7 +112,7 @@ Session entries store extension-owned JSON data in the active durable session. U
 
 Statuses are keyed footer values. Panels are keyed, non-interactive content above the composer. Replace either by reusing its key; clear a status with an empty value and a panel with an empty title and lines.
 
-`notch.exec` executes an argv array in Notch's startup working directory; it does not invoke a shell. Non-zero exit currently raises a Lua error. UI input/select integrates with both the fullscreen modal UI and line fallback.
+`notch.exec` executes an argv array in Notch's startup working directory; it does not invoke a shell. It honors cancellation, kills the child process group where supported, and retains at most 1 MiB each of stdout and stderr while continuing to drain output. Non-zero exit currently raises a Lua error. UI input/select integrates with both the fullscreen modal UI and line fallback.
 
 ## Hooks
 
@@ -149,7 +149,7 @@ Manifest:
 }
 ```
 
-The process uses newline-delimited JSON-RPC 2.0 over stdin/stdout. Stdout is protocol-only; send diagnostics to stderr. It must answer `initialize` with tool/command/hook declarations, then handle `tool.execute`, `command.execute`, and `hook.handle`. It may send `tool.update` notifications while a tool request is active. Host calls include `host.cwd`, `host.exec`, `host.ui.input`, `host.ui.select`, `host.ui.notify`, `host.ui.editor_text`, `host.ui.set_editor_text`, `host.session.append`, `host.session.entries`, `host.ui.set_status`, and `host.ui.set_panel`. Honor `$/cancelRequest` and terminate child work when its request context is canceled.
+The process uses newline-delimited JSON-RPC 2.0 over stdin/stdout. Stdout is protocol-only; send diagnostics to stderr. The child starts with a minimal environment containing process basics such as `PATH`, home/user, temporary-directory, locale, terminal, and SSH-agent variables, not Notch's provider credentials or typical CI secrets. Executable-plugin manifests have no environment override field. It must answer `initialize` with tool/command/hook declarations, then handle `tool.execute`, `command.execute`, and `hook.handle`. It may send `tool.update` notifications while a tool request is active. Host calls include `host.cwd`, `host.exec`, `host.ui.input`, `host.ui.select`, `host.ui.notify`, `host.ui.editor_text`, `host.ui.set_editor_text`, `host.session.append`, `host.session.entries`, `host.ui.set_status`, and `host.ui.set_panel`. `host.exec` is cancellation-aware and retains at most 1 MiB from each output stream. Honor `$/cancelRequest` and terminate child work when its request context is canceled.
 
 ### Go SDK
 

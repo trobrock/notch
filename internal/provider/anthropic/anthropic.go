@@ -390,9 +390,6 @@ func (p *provider) Stream(ctx context.Context, req model.Request, onEvent func(m
 	blocks := make(map[int]*streamBlock)
 	toolNames := responseToolNames(req.Tools, p.oauthMode)
 	err = readSSE(httpResp.Body, func(event, data string) (bool, error) {
-		if data == "[DONE]" {
-			return true, nil
-		}
 		var envelope struct {
 			Type    string `json:"type"`
 			Index   int    `json:"index"`
@@ -572,8 +569,14 @@ func readSSE(r io.Reader, handle func(event, data string) (bool, error)) error {
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("anthropic: read SSE stream: %w", err)
 	}
-	_, err := dispatch()
-	return err
+	stop, err := dispatch()
+	if err != nil {
+		return err
+	}
+	if stop {
+		return nil
+	}
+	return errors.New("anthropic: SSE stream ended before message_stop")
 }
 
 func httpStatusError(service string, response *http.Response) error {

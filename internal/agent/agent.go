@@ -153,11 +153,13 @@ func (a *Agent) QueueStatus() (processing bool, steering, followUps []QueuedMess
 }
 
 func (a *Agent) appendMessage(message model.Message) error {
+	if a.session != nil {
+		if err := a.session.AppendMessage(message); err != nil {
+			return err
+		}
+	}
 	a.messages = append(a.messages, message)
 	a.messageCount.Store(int64(len(a.messages)))
-	if a.session != nil {
-		return a.session.AppendMessage(message)
-	}
 	return nil
 }
 

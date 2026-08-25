@@ -169,7 +169,7 @@ notch --mode rpc --no-tools
 
 Shorthands compatible with Pi are `-t`, `-xt`, `-nbt`, and `-nt`. Unknown allowlisted or excluded names fail startup instead of silently weakening the requested policy. `--tools` is a strict allowlist across built-in, extension, and MCP tools. `--no-builtin-tools` only affects Notch's seven built-ins; it does not disable extension hooks, commands, or host privileges.
 
-These flags work in fullscreen, line, JSON event, one-shot, and RPC modes.
+These flags work in fullscreen, line, JSON event, one-shot, and RPC modes. Workspace trust is resolved before mode selection: noninteractive RPC/JSON/one-shot runs skip untrusted project `.notch` and `.agents` inputs. Persist trust ahead of automation with `--trust-workspace`, or use `--safe` to force a global-only run. Neither flag adds per-command approvals; trusted execution remains automatic.
 
 ## Minimal Python client
 

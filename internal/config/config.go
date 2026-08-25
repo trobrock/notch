@@ -75,14 +75,33 @@ type Config struct {
 	ModelCache        string            `json:"model_cache,omitempty"`
 	ModelRefreshHours int               `json:"model_refresh_hours,omitempty"`
 	Compaction        *CompactionConfig `json:"compaction,omitempty"`
+	notchHome         string
 }
 
 // Defaults returns the built-in configuration. home is the user's home
 // directory and cwd is the project directory. NOTCH_HOME, when non-empty,
 // replaces home/.notch as the per-user notch directory.
 func Defaults(home, cwd string) Config {
+	return defaults(home, cwd, true)
+}
+
+func defaults(home, cwd string, includeProject bool) Config {
 	root := notchHome(home)
 	projectRoot := filepath.Join(cwd, ".notch")
+	extensionDirs := []string{filepath.Join(root, "extensions")}
+	skillDirs := []string{filepath.Join(root, "skills")}
+	promptDirs := []string{filepath.Join(root, "prompts")}
+	themeDirs := []string{filepath.Join(root, "themes")}
+	agentSkillDirs := []string{filepath.Join(home, ".agents", "skills")}
+	agentCommandDirs := []string{filepath.Join(home, ".agents", "commands")}
+	if includeProject {
+		extensionDirs = uniquePaths(append(extensionDirs, filepath.Join(projectRoot, "extensions"))...)
+		skillDirs = uniquePaths(append(skillDirs, filepath.Join(projectRoot, "skills"))...)
+		promptDirs = uniquePaths(append(promptDirs, filepath.Join(projectRoot, "prompts"))...)
+		themeDirs = uniquePaths(append(themeDirs, filepath.Join(projectRoot, "themes"))...)
+		agentSkillDirs = uniquePaths(append(agentSkillDirs, filepath.Join(cwd, ".agents", "skills"))...)
+		agentCommandDirs = uniquePaths(append(agentCommandDirs, filepath.Join(cwd, ".agents", "commands"))...)
+	}
 	enabled := true
 	mouseEnabled := true
 	return Config{
@@ -91,12 +110,12 @@ func Defaults(home, cwd string) Config {
 		MaxTokens:         defaultMaxTokens,
 		SystemPrompt:      defaultSystemPrompt,
 		MCPConfig:         filepath.Join(root, "mcp.json"),
-		ExtensionDirs:     uniquePaths(filepath.Join(root, "extensions"), filepath.Join(projectRoot, "extensions")),
-		SkillDirs:         uniquePaths(filepath.Join(root, "skills"), filepath.Join(projectRoot, "skills")),
-		PromptDirs:        uniquePaths(filepath.Join(root, "prompts"), filepath.Join(projectRoot, "prompts")),
-		ThemeDirs:         uniquePaths(filepath.Join(root, "themes"), filepath.Join(projectRoot, "themes")),
-		AgentSkillDirs:    uniquePaths(filepath.Join(home, ".agents", "skills"), filepath.Join(cwd, ".agents", "skills")),
-		AgentCommandDirs:  uniquePaths(filepath.Join(home, ".agents", "commands"), filepath.Join(cwd, ".agents", "commands")),
+		ExtensionDirs:     extensionDirs,
+		SkillDirs:         skillDirs,
+		PromptDirs:        promptDirs,
+		ThemeDirs:         themeDirs,
+		AgentSkillDirs:    agentSkillDirs,
+		AgentCommandDirs:  agentCommandDirs,
 		SessionDir:        filepath.Join(root, "sessions"),
 		AuthFile:          filepath.Join(root, "auth.json"),
 		Theme:             defaultTheme,
@@ -105,39 +124,93 @@ func Defaults(home, cwd string) Config {
 		ModelCache:        filepath.Join(root, "models.json"),
 		ModelRefreshHours: 24,
 		Compaction:        &CompactionConfig{Enabled: &enabled, ReserveTokens: 16384, KeepRecentTokens: 20000},
+		notchHome:         root,
 	}
 }
 
 // Load loads the built-in defaults, then the per-user configuration, then the
 // project configuration, and finally NOTCH_PROVIDER, NOTCH_MODEL, and
-// NOTCH_THINKING_LEVEL. Missing files are not errors. A non-zero value in a
-// later layer replaces the corresponding earlier value; directory lists are
-// replaced as a whole when non-empty.
+// NOTCH_THINKING_LEVEL. It preserves the historical API and treats project
+// inputs as enabled; callers handling an untrusted workspace should use
+// LoadWorkspace.
 func Load(home, cwd string) (Config, error) {
-	cfg := Defaults(home, cwd)
+	return LoadWorkspace(home, cwd, true)
+}
+
+// LoadGlobal loads only built-in and per-user configuration. It never reads
+// project configuration or adds project discovery directories.
+func LoadGlobal(home string) (Config, error) {
+	return load(home, "", false)
+}
+
+// LoadWorkspace loads global configuration and, when trusted is true, project
+// configuration and project discovery directories rooted at workspaceRoot.
+// Security-sensitive paths and endpoints are always taken from built-in or
+// global configuration, never project configuration.
+func LoadWorkspace(home, workspaceRoot string, trusted bool) (Config, error) {
+	return load(home, workspaceRoot, trusted)
+}
+
+func load(home, workspaceRoot string, includeProject bool) (Config, error) {
+	cfg := defaults(home, workspaceRoot, includeProject)
 	root := notchHome(home)
-	paths := []string{
-		filepath.Join(root, "config.json"),
-		filepath.Join(cwd, ".notch", "config.json"),
-	}
-	seen := make(map[string]bool, len(paths))
-	for _, path := range paths {
-		clean := filepath.Clean(path)
-		if seen[clean] {
-			continue
-		}
-		seen[clean] = true
-		layer, err := read(path)
+	globalPath := filepath.Join(root, "config.json")
+	if _, err := os.Lstat(globalPath); err == nil {
+		layer, err := read(globalPath)
 		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
 			return Config{}, err
 		}
 		merge(&cfg, layer)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return Config{}, fmt.Errorf("inspect config %q: %w", globalPath, err)
+	}
+	if includeProject {
+		projectNotch := filepath.Join(workspaceRoot, ".notch")
+		projectMCP := filepath.Join(projectNotch, "mcp.json")
+		if _, statErr := os.Stat(projectMCP); statErr == nil {
+			cfg.MCPConfig = projectMCP
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return Config{}, fmt.Errorf("inspect project MCP config %q: %w", projectMCP, statErr)
+		}
+		projectPath := filepath.Join(projectNotch, "config.json")
+		if filepath.Clean(projectPath) != filepath.Clean(globalPath) {
+			if _, err := os.Lstat(projectPath); err == nil {
+				layer, err := read(projectPath)
+				if err != nil {
+					return Config{}, err
+				}
+				resolveProjectPaths(&layer, workspaceRoot)
+				mergeProject(&cfg, layer)
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return Config{}, fmt.Errorf("inspect config %q: %w", projectPath, err)
+			}
+		}
 	}
 	applyEnvironment(&cfg)
 	return cfg, nil
+}
+
+func resolveProjectPaths(cfg *Config, workspaceRoot string) {
+	cfg.MCPConfig = resolveRelative(workspaceRoot, cfg.MCPConfig)
+	cfg.ExtensionDirs = resolveRelativePaths(workspaceRoot, cfg.ExtensionDirs)
+	cfg.SkillDirs = resolveRelativePaths(workspaceRoot, cfg.SkillDirs)
+	cfg.PromptDirs = resolveRelativePaths(workspaceRoot, cfg.PromptDirs)
+	cfg.ThemeDirs = resolveRelativePaths(workspaceRoot, cfg.ThemeDirs)
+}
+
+func resolveRelativePaths(root string, paths []string) []string {
+	resolved := make([]string, 0, len(paths))
+	for _, path := range paths {
+		resolved = append(resolved, resolveRelative(root, path))
+	}
+	return uniquePaths(resolved...)
+}
+
+func resolveRelative(root, path string) string {
+	if path == "" || filepath.IsAbs(path) {
+		return path
+	}
+	return filepath.Join(root, path)
 }
 
 func applyEnvironment(cfg *Config) {
@@ -162,6 +235,23 @@ func read(path string) (Config, error) {
 		return Config{}, fmt.Errorf("parse config %q: %w", path, err)
 	}
 	return cfg, nil
+}
+
+func mergeProject(dst *Config, src Config) {
+	// These values choose remote endpoints or credential/session/cache files and
+	// therefore remain global-only even after the workspace is trusted.
+	providerChanged := src.Provider != "" && src.Provider != dst.Provider
+	src.BaseURL = ""
+	src.AuthFile = ""
+	src.SessionDir = ""
+	src.ModelCache = ""
+	if providerChanged {
+		// A global custom endpoint is provider-specific. Do not carry it across a
+		// project provider override; the newly selected provider should use its
+		// official default endpoint.
+		dst.BaseURL = ""
+	}
+	merge(dst, src)
 }
 
 func merge(dst *Config, src Config) {
@@ -263,6 +353,40 @@ func EnsureDirs(cfg Config) error {
 	return nil
 }
 
+// EnsureGlobalDirs creates only configured paths below NOTCH_HOME. This is
+// used during normal startup so project discovery directories are not created
+// merely by inspecting a workspace.
+func (c Config) EnsureGlobalDirs() error {
+	root := c.notchHome
+	if root == "" {
+		return c.EnsureDirs()
+	}
+	filtered := c
+	filtered.ExtensionDirs = pathsWithin(root, c.ExtensionDirs)
+	filtered.SkillDirs = pathsWithin(root, c.SkillDirs)
+	filtered.PromptDirs = pathsWithin(root, c.PromptDirs)
+	filtered.ThemeDirs = pathsWithin(root, c.ThemeDirs)
+	if !pathWithin(root, c.SessionDir) {
+		filtered.SessionDir = ""
+	}
+	return EnsureDirs(filtered)
+}
+
+func pathsWithin(root string, paths []string) []string {
+	var filtered []string
+	for _, path := range paths {
+		if pathWithin(root, path) {
+			filtered = append(filtered, path)
+		}
+	}
+	return filtered
+}
+
+func pathWithin(root, path string) bool {
+	relative, err := filepath.Rel(root, path)
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
 // SkillDiscoveryDirs returns shared global, configured, then shared project
 // directories. Later entries win on duplicate resource names.
 func (c Config) SkillDiscoveryDirs() []string {
@@ -293,16 +417,26 @@ func (c Config) EnsureDirs() error { return EnsureDirs(c) }
 func HomeDir(home string) string { return notchHome(home) }
 
 func notchHome(home string) string {
+	path := filepath.Join(home, ".notch")
 	if value := os.Getenv("NOTCH_HOME"); value != "" {
-		return filepath.Clean(value)
+		path = value
 	}
-	return filepath.Join(home, ".notch")
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		// filepath.Abs only fails when the working directory cannot be obtained.
+		// Keep this infallible API useful while still cleaning the configured path.
+		return filepath.Clean(path)
+	}
+	return filepath.Clean(absolute)
 }
 
 func uniquePaths(paths ...string) []string {
 	out := make([]string, 0, len(paths))
 	seen := make(map[string]bool, len(paths))
 	for _, path := range paths {
+		if path == "" {
+			continue
+		}
 		clean := filepath.Clean(path)
 		if !seen[clean] {
 			seen[clean] = true

@@ -257,6 +257,19 @@ data: {"type":"error","error":{"type":"overloaded_error","message":"busy"}}
 	}
 }
 
+func TestStreamAbruptEOF(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial\"}}\n\n")
+	}))
+	defer server.Close()
+
+	_, err := New(Config{BaseURL: server.URL, HTTPClient: server.Client()}).Stream(context.Background(), model.Request{}, nil)
+	if err == nil || !strings.Contains(err.Error(), "ended before message_stop") {
+		t.Fatalf("error = %v, want incomplete stream error", err)
+	}
+}
+
 func TestStreamCancellation(t *testing.T) {
 	started := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

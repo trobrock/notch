@@ -7,14 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	sharedprocess "github.com/trobrock/notch/internal/process"
 )
 
 type rpcReply struct {
@@ -23,20 +23,36 @@ type rpcReply struct {
 }
 
 type lockedBuffer struct {
-	mu sync.Mutex
-	b  bytes.Buffer
+	mu        sync.Mutex
+	b         bytes.Buffer
+	truncated bool
 }
 
 func (b *lockedBuffer) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.b.Write(p)
+	originalLen := len(p)
+	remaining := sharedprocess.OutputLimit - b.b.Len()
+	if remaining > 0 {
+		if len(p) > remaining {
+			p = p[:remaining]
+			b.truncated = true
+		}
+		_, _ = b.b.Write(p)
+	} else if len(p) != 0 {
+		b.truncated = true
+	}
+	return originalLen, nil
 }
 
 func (b *lockedBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return strings.TrimSpace(b.b.String())
+	message := strings.TrimSpace(b.b.String())
+	if b.truncated {
+		message += "\n[stderr truncated]"
+	}
+	return message
 }
 
 type stdioClient struct {
@@ -55,23 +71,7 @@ type stdioClient struct {
 
 func newStdioClient(ctx context.Context, cfg ServerConfig) (*stdioClient, error) {
 	cmd := exec.CommandContext(ctx, cfg.Command, cfg.Args...)
-	if len(cfg.Env) != 0 {
-		// Remove inherited copies so configured values unambiguously override them.
-		for _, entry := range os.Environ() {
-			key, _, _ := strings.Cut(entry, "=")
-			if _, overridden := cfg.Env[key]; !overridden {
-				cmd.Env = append(cmd.Env, entry)
-			}
-		}
-		keys := make([]string, 0, len(cfg.Env))
-		for key := range cfg.Env {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		for _, key := range keys {
-			cmd.Env = append(cmd.Env, key+"="+cfg.Env[key])
-		}
-	}
+	cmd.Env = sharedprocess.MinimalEnvironment(cfg.Env)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("open server stdin: %w", err)

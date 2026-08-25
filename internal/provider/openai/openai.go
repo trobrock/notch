@@ -628,8 +628,14 @@ func readSSE(r io.Reader, handle func(event, data string) (bool, error)) error {
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("openai: read SSE stream: %w", err)
 	}
-	_, err := dispatch()
-	return err
+	stop, err := dispatch()
+	if err != nil {
+		return err
+	}
+	if stop {
+		return nil
+	}
+	return errors.New("openai: SSE stream ended before a completion event")
 }
 
 func httpStatusError(response *http.Response) error {

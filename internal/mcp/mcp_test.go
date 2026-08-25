@@ -93,6 +93,101 @@ func writeRPCResult(t *testing.T, w http.ResponseWriter, id int64, result any) {
 	}
 }
 
+func TestManagerCloseUnregistersTools(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		var request struct {
+			ID     int64  `json:"id"`
+			Method string `json:"method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode request: %v", err)
+			return
+		}
+		switch request.Method {
+		case "initialize":
+			writeRPCResult(t, w, request.ID, map[string]any{"protocolVersion": protocolVersion, "capabilities": map[string]any{}})
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case "tools/list":
+			writeRPCResult(t, w, request.ID, map[string]any{"tools": []any{map[string]any{"name": "owned"}}})
+		default:
+			http.Error(w, "unexpected method", http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+
+	registry := extension.NewRegistry()
+	manager, err := ConnectConfigured(context.Background(), Config{MCPServers: map[string]ServerConfig{"one": {URL: server.URL}}}, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := registry.Tool("mcp__one__owned"); !ok {
+		t.Fatal("tool was not registered")
+	}
+	if err := manager.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+	if _, ok := registry.Tool("mcp__one__owned"); ok {
+		t.Fatal("tool remained registered after manager Close")
+	}
+}
+
+func TestSecondServerFailureLeavesNoRegistrations(t *testing.T) {
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		var request struct {
+			ID     int64  `json:"id"`
+			Method string `json:"method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode first request: %v", err)
+			return
+		}
+		switch request.Method {
+		case "initialize":
+			writeRPCResult(t, w, request.ID, map[string]any{"protocolVersion": protocolVersion, "capabilities": map[string]any{}})
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case "tools/list":
+			writeRPCResult(t, w, request.ID, map[string]any{"tools": []any{map[string]any{"name": "first"}}})
+		}
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			ID int64 `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&request)
+		http.Error(w, "server two failed", http.StatusInternalServerError)
+	}))
+	defer second.Close()
+
+	registry := extension.NewRegistry()
+	manager, err := ConnectConfigured(context.Background(), Config{MCPServers: map[string]ServerConfig{
+		"one": {URL: first.URL},
+		"two": {URL: second.URL},
+	}}, registry)
+	if err == nil || manager != nil {
+		t.Fatalf("ConnectConfigured manager=%v err=%v", manager, err)
+	}
+	if _, ok := registry.Tool("mcp__one__first"); ok {
+		t.Fatal("first server tool remained after second server failed")
+	}
+	if len(registry.Tools()) != 0 {
+		t.Fatalf("failed startup left tools: %#v", registry.Tools())
+	}
+}
+
 func TestReadSSEResponse(t *testing.T) {
 	stream := strings.NewReader("event: message\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\"}\n\n" +
 		"data: {\"jsonrpc\":\"2.0\",\"id\":7,\ndata: \"result\":{\"answer\":42}}\n\n")

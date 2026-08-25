@@ -201,9 +201,42 @@ func TestManagerLoadsFilesInNameOrder(t *testing.T) {
 	}
 }
 
+func TestLoadDirsRollsBackFilesLoadedByFailedCall(t *testing.T) {
+	dir := t.TempDir()
+	files := map[string]string{
+		"a.lua": `notch.register_tool({name="temporary", execute=function() return "ok" end})`,
+		"b.lua": `notch.register_command({name="taken", execute=function() return "bad" end})`,
+	}
+	for name, source := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(source), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	registry := extension.NewRegistry()
+	if err := registry.RegisterCommand(extension.Command{Name: "taken", Source: "existing", Execute: func(context.Context, string) (string, error) { return "", nil }}); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(registry, &testHost{})
+	t.Cleanup(func() { _ = manager.Close() })
+	if err := manager.LoadDirs(dir); err == nil {
+		t.Fatal("LoadDirs succeeded despite duplicate command")
+	}
+	if _, ok := registry.Tool("temporary"); ok {
+		t.Fatal("failed LoadDirs left prior file's tool registered")
+	}
+	command, ok := registry.Command("taken")
+	if !ok || command.Source != "existing" {
+		t.Fatalf("existing command changed: %#v, %v", command, ok)
+	}
+}
+
 func TestLuaCallHonorsCancellationAndClose(t *testing.T) {
 	dir := t.TempDir()
-	source := `notch.register_command({name="spin", execute=function() while true do end end})`
+	source := `
+notch.register_command({name="spin", execute=function() while true do end end})
+notch.register_tool({name="close_tool", execute=function() return "ok" end})
+notch.on("close_hook", function() return {called=true} end)
+`
 	if err := os.WriteFile(filepath.Join(dir, "spin.lua"), []byte(source), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -222,8 +255,18 @@ func TestLuaCallHonorsCancellationAndClose(t *testing.T) {
 	if err := manager.Close(); err != nil {
 		t.Fatal(err)
 	}
+	if _, ok := registry.Command("spin"); ok {
+		t.Fatal("Lua command remained registered after manager Close")
+	}
+	if _, ok := registry.Tool("close_tool"); ok {
+		t.Fatal("Lua tool remained registered after manager Close")
+	}
+	event, hookErr := registry.RunHooks(context.Background(), "close_hook", nil)
+	if hookErr != nil || event["called"] != nil {
+		t.Fatalf("Lua hook remained registered after manager Close: event=%v err=%v", event, hookErr)
+	}
 	_, err = command.Execute(context.Background(), "")
 	if err == nil || !strings.Contains(err.Error(), "closed") {
-		t.Fatalf("post-close error = %v", err)
+		t.Fatalf("previously captured post-close command error = %v", err)
 	}
 }

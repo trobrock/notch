@@ -11,6 +11,8 @@ Optional instructions add requirements to the fixed safety-focused summary promp
 
 For durable sessions, the summary and complete replacement context are appended as a synced JSONL `compaction` record. `--continue` reconstructs the effective context from that record, so both the summary and retained recent turns survive restart. Under `--no-session`, compaction changes context only in memory.
 
+Sessions are loaded defensively. If the only malformed record is an unterminated final JSONL record and every preceding record is valid, Notch treats it as a torn write, truncates and syncs that tail, and resumes the valid prefix. A valid unterminated final record is normalized by appending a newline. Interior corruption and malformed newline-terminated records remain errors. Session listing, `/resume`, and latest-session selection skip damaged files so one bad session does not hide healthy sessions; directly resuming a damaged file still reports its error.
+
 ## Configuration
 
 The config shape matches Pi and uses camelCase inside `compaction`:
@@ -31,7 +33,7 @@ The config shape matches Pi and uses camelCase inside `compaction`:
 - `keepRecentTokens` is the target amount of recent context retained whole after summarization. The current default is **20,000**; a single complete recent turn may exceed it.
 - `context_window` overrides the inferred model context size and is useful for local or unrecognized models.
 
-These settings can be placed in global or project config using the normal layering rules.
+Project copies of these settings apply only in a trusted workspace. `context_window` and compaction settings are project-eligible; storage paths such as `session_dir` and `model_cache` remain global-only.
 
 ## Threshold and context indicator
 

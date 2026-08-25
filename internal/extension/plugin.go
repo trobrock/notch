@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/trobrock/notch/internal/model"
+	sharedprocess "github.com/trobrock/notch/internal/process"
 )
 
 const maxPluginMessage = 16 << 20 // JSON-RPC is line delimited; permit messages much larger than Scanner's 64 KiB default.
@@ -48,6 +49,7 @@ type Plugin struct {
 	done     chan struct{}
 	waitDone chan struct{}
 	stop     sync.Once
+	lease    *Registration
 	host     Host
 	ctx      context.Context
 	cancel   context.CancelFunc
@@ -184,6 +186,7 @@ func startPlugin(ctx context.Context, manifestPath string, manifest Manifest, re
 	pluginCtx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(pluginCtx, manifest.Command[0], manifest.Command[1:]...)
 	cmd.Dir = filepath.Dir(manifestPath)
+	cmd.Env = sharedprocess.MinimalEnvironment(nil)
 	cmd.Stderr = os.Stderr
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -325,29 +328,10 @@ func (p *Plugin) register(registry *Registry, initialized initializeResult) erro
 		hooks = append(hooks, name)
 	}
 
-	// Check and install while holding one lock, so partial registration cannot
-	// be observed and a failed plugin leaves no stale entries behind.
-	registry.mu.Lock()
-	defer registry.mu.Unlock()
-	for _, tool := range tools {
-		if old, ok := registry.tools[tool.Definition.Name]; ok {
-			return fmt.Errorf("tool %q already registered by %s", tool.Definition.Name, old.Source)
-		}
-	}
-	for _, command := range commands {
-		if old, ok := registry.commands[command.Name]; ok {
-			return fmt.Errorf("command %q already registered by %s", command.Name, old.Source)
-		}
-	}
-	for _, tool := range tools {
-		registry.tools[tool.Definition.Name] = tool
-	}
-	for _, command := range commands {
-		registry.commands[command.Name] = command
-	}
+	hookRegistrations := make([]HookRegistration, 0, len(hooks))
 	for _, event := range hooks {
 		event := event
-		registry.hooks[event] = append(registry.hooks[event], namedHook{source: p.Name, handler: func(ctx context.Context, value map[string]any) (map[string]any, error) {
+		hookRegistrations = append(hookRegistrations, HookRegistration{Event: event, Source: p.Name, Handler: func(ctx context.Context, value map[string]any) (map[string]any, error) {
 			params := struct {
 				Name  string         `json:"name"`
 				Event map[string]any `json:"event"`
@@ -359,6 +343,16 @@ func (p *Plugin) register(registry *Registry, initialized initializeResult) erro
 			return result, nil
 		}})
 	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.stopErr != nil {
+		return p.stopErr
+	}
+	lease, err := registry.RegisterBatch(Batch{Tools: tools, Commands: commands, Hooks: hookRegistrations})
+	if err != nil {
+		return err
+	}
+	p.lease = lease
 	return nil
 }
 
@@ -745,7 +739,12 @@ func (p *Plugin) finish(err error) {
 		pending := p.pending
 		p.pending = make(map[string]*pendingCall)
 		p.canceled = nil
+		lease := p.lease
+		p.lease = nil
 		p.mu.Unlock()
+		// Unregister before exposing the stopped plugin to new registry lookups.
+		// Close does not invoke handlers and therefore cannot acquire p.mu.
+		_ = lease.Close()
 		for _, call := range pending {
 			call.ch <- callResult{err: err}
 		}

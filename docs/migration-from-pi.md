@@ -63,7 +63,7 @@ export ANTHROPIC_API_KEY=...
 notch -p anthropic -m claude-sonnet-4-5
 ```
 
-The built-in themes are `dark`, `dracula`, and `catppuccin-mocha`. Custom Pi-style JSON themes can be copied to `~/.notch/themes` or `<cwd>/.notch/themes`; Notch reads the semantic roles it renders and ignores known Pi-only roles. Add `"base": "dark"` when the file does not define every Notch role. Thinking levels are `off|minimal|low|medium|high|xhigh` and are transmitted by every provider adapter, although model support varies. In the fullscreen UI, `/theme`, `/thinking`, and `Shift-Tab` change runtime state only. See [themes](themes.md), [TUI controls](tui.md#commands-and-thinking-level), and [compaction](compaction.md).
+The built-in themes are `dark`, `dracula`, and `catppuccin-mocha`. Custom Pi-style JSON themes can be copied to `~/.notch/themes` or a trusted `<workspace-root>/.notch/themes`; Notch reads the semantic roles it renders and ignores known Pi-only roles. Add `"base": "dark"` when the file does not define every Notch role. Thinking levels are `off|minimal|low|medium|high|xhigh` and are transmitted by every provider adapter, although model support varies. In the fullscreen UI, `/theme`, `/thinking`, and `Shift-Tab` change runtime state only. See [themes](themes.md), [TUI controls](tui.md#commands-and-thinking-level), and [compaction](compaction.md).
 
 For OpenAI-compatible local service, set `provider` to `openai` and `base_url` to the API origin. Notch always calls `<base_url>/v1/responses`, not Chat Completions. The tested Ollama route is:
 
@@ -99,7 +99,7 @@ The import copies credentials into `~/.notch/auth.json` (or `$NOTCH_HOME/auth.js
 
 ## Move skills
 
-Notch always provides `/skill:notch-config` and `/skill:notch-extension` from the binary. Disk skills with those names override the bundled versions.
+Notch always provides `/skill:notch-config` and `/skill:notch-extension` from the binary. Disk skills with those names override the bundled versions. Project resources are considered only after one-time persisted trust at the canonical Git root; noninteractive untrusted and `--safe` runs skip project `.notch` and `.agents` inputs.
 
 Notch reads shared Agent Skills directly from `~/.agents/skills` and `<project>/.agents/skills`, alongside its native locations:
 
@@ -221,7 +221,7 @@ Notch has a native MCP client, so MCP integrations generally belong in `~/.notch
 
 Notch supports stdio and Streamable HTTP with JSON or SSE responses. It performs the MCP handshake and imports advertised tools as `mcp__local__tool_name`. `enabled` defaults to true; set it to false to skip a server.
 
-Do not migrate OAuth metadata or expect an interactive authorization flow. For now, pass static headers or environment variables yourself and protect these config files appropriately. Notch does not currently consume MCP resources or prompts.
+Do not migrate OAuth metadata or expect an interactive authorization flow. For stdio servers, pass secrets explicitly in each server's `env` object because Notch supplies only a minimal child environment and does not inherit provider credentials or typical CI secrets. For HTTP, pass static headers and protect these config files appropriately. Notch does not currently consume MCP resources or prompts.
 
 Use `--mcp-config path/to/file.json` to test a project-specific file before making it the default.
 
@@ -238,7 +238,7 @@ notch --no-session    # save nothing
 
 In the fullscreen UI, `/new` creates and switches to a distinct durable session and clears conversation context, transcript, and submitted-input history. `/resume` selects an older session and restores its effective context, transcript, and submitted-input history. With `--no-session`, `/new` performs the reset only in memory. `/compact [instructions]` persists a summary and retained recent context in Notch sessions; automatic compaction is enabled by default. See [compaction](compaction.md).
 
-`--continue` means the most recently modified file in the configured session directory, regardless of project. `--resume` and fullscreen `/resume` select existing sessions, but there is still no branching or session-tree navigation beyond the flat selectors. If project isolation matters, set a project-specific `session_dir`.
+`--continue` means the most recently modified valid file in the configured global session directory, regardless of project. `--resume` and fullscreen `/resume` select existing valid sessions, but there is still no branching or session-tree navigation beyond the flat selectors. `session_dir` is global-only; use separate global configs or `NOTCH_HOME` values when automation needs isolated session stores.
 
 ## Suggested migration checklist
 

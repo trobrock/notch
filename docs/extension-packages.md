@@ -2,7 +2,7 @@
 
 Notch extension packages provide a decentralized way to share, install, update, and remove Lua extensions and executable JSON-RPC plugins. Packages use GitHub, generic Git repositories, or local directories; they do not require npm, Node.js, or a central registry.
 
-> **Security:** extensions are trusted, unsandboxed code. An executable plugin can run arbitrary programs, and Lua extensions can call the Notch host API with the user's privileges. Review third-party source before installation. Package installation does not run build, post-install, or setup scripts, but installed extensions run when Notch next starts.
+> **Security:** extensions are trusted, unsandboxed code and there are no per-command approvals after loading. An executable plugin can run arbitrary programs, and Lua extensions can call the Notch host API with the user's privileges. Review third-party source before installation. Package installation does not run build, post-install, or setup scripts, but installed extensions run automatically when Notch next starts.
 
 ## Commands
 

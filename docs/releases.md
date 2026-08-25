@@ -26,7 +26,7 @@ The executable's directory must be writable. Installations owned by a package ma
 
 ## Integrity model
 
-Every release contains platform archives and `checksums.txt`. The updater:
+Every release contains platform archives and `checksums.txt`. The release workflow also emits GitHub build-provenance attestations for the published assets. The updater:
 
 1. obtains the release and asset URLs through the GitHub API;
 2. downloads `checksums.txt` and the exact archive for the current platform;
@@ -35,11 +35,11 @@ Every release contains platform archives and `checksums.txt`. The updater:
 5. limits both compressed downloads and extracted binary size; and
 6. preserves the installed executable's permission bits during replacement.
 
-A failed request, missing asset, malformed archive, or checksum mismatch leaves the existing executable unchanged. Checksums protect against transfer corruption and mismatched assets; they share GitHub Releases as their trust root and are not a separate signature system.
+A failed request, missing asset, malformed archive, or checksum mismatch leaves the existing executable unchanged. Checksums protect against transfer corruption and mismatched assets; attestations associate release subjects with the GitHub Actions build. Both still use GitHub and this repository's workflow identity as trust roots rather than an independent maintainer signature system.
 
 ## Publishing a release
 
-The `Release` GitHub Actions workflow runs for tags named `v*`. It validates the semantic version, runs race tests and vet, builds static archives for all supported targets, generates SHA-256 checksums, and creates the GitHub release.
+The `Release` GitHub Actions workflow runs for tags named `v*`. Third-party actions in CI and release workflows are pinned to full commit SHAs. Release building runs with read-only contents permission; a separate publish job receives only contents-write plus OIDC/attestation permissions, downloads the transferred assets, creates GitHub build-provenance attestations, and publishes the release. The build validates the semantic version, runs race tests and vet, builds static archives for all supported targets, and generates SHA-256 checksums.
 
 From a clean `main` branch:
 

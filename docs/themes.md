@@ -1,6 +1,6 @@
 # Themes
 
-Notch's fullscreen UI uses semantic themes. Set `theme` in the global config (`~/.notch/config.json`, or `$NOTCH_HOME/config.json`) or project config (`<cwd>/.notch/config.json`):
+Notch's fullscreen UI uses semantic themes. Set `theme` in the global config (`~/.notch/config.json`, or `$NOTCH_HOME/config.json`) or trusted project config (`<workspace-root>/.notch/config.json`):
 
 ```json
 {
@@ -8,7 +8,7 @@ Notch's fullscreen UI uses semantic themes. Set `theme` in the global config (`~
 }
 ```
 
-Project config overrides global config. An unknown configured name is a startup error that lists every available built-in and custom theme.
+Trusted project config overrides global config. An unknown configured name is a startup error that lists every available built-in and custom theme. Untrusted/noninteractive and `--safe` runs do not load project themes.
 
 At runtime, `/theme` lists all loaded themes and `/theme NAME` applies one immediately. A runtime choice lasts only for the current process: it does not edit either config file.
 
@@ -23,7 +23,7 @@ At runtime, `/theme` lists all loaded themes and `/theme NAME` applies one immed
 Notch loads direct `.json` children from these directories, in order:
 
 1. `$NOTCH_HOME/themes`, or `~/.notch/themes` when `NOTCH_HOME` is unset;
-2. `<cwd>/.notch/themes`.
+2. `<workspace-root>/.notch/themes` for a trusted workspace.
 
 Later files replace earlier themes with the same normalized name, so a project theme overrides a user theme. A custom theme can also override a built-in. Names are case-insensitive; spaces and underscores normalize to hyphens. Additional directories can replace the defaults with `theme_dirs`:
 

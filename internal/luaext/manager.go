@@ -31,6 +31,7 @@ type luaState struct {
 	mu     sync.Mutex
 	L      *lua.LState
 	source string
+	lease  *extension.Registration
 	closed bool
 }
 
@@ -79,10 +80,15 @@ func (m *Manager) LoadDirs(dirs ...string) error {
 		return errors.New("lua extension manager has no registry")
 	}
 
+	start := len(m.states)
+	rollback := func(err error) error {
+		m.closeStatesLocked(start)
+		return err
+	}
 	for _, dir := range dirs {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
-			return fmt.Errorf("read Lua extension directory %q: %w", dir, err)
+			return rollback(fmt.Errorf("read Lua extension directory %q: %w", dir, err))
 		}
 		// os.ReadDir is documented to sort, but sorting here makes that part of
 		// this package's behavior independently of the filesystem helper.
@@ -94,12 +100,12 @@ func (m *Manager) LoadDirs(dirs ...string) error {
 			path := filepath.Join(dir, entry.Name())
 			state, decls, err := m.loadFile(path)
 			if err != nil {
-				return err
+				return rollback(err)
 			}
 			if err := m.commit(state, decls); err != nil {
 				state.L.Close()
 				state.closed = true
-				return fmt.Errorf("load Lua extension %q: %w", path, err)
+				return rollback(fmt.Errorf("load Lua extension %q: %w", path, err))
 			}
 			m.states = append(m.states, state)
 		}
@@ -122,30 +128,12 @@ func (m *Manager) loadFile(path string) (*luaState, *declarations, error) {
 }
 
 func (m *Manager) commit(state *luaState, decls *declarations) error {
-	toolNames := make(map[string]struct{}, len(decls.tools))
-	for _, d := range decls.tools {
-		if _, exists := toolNames[d.definition.Name]; exists {
-			return fmt.Errorf("tool %q is registered more than once in this file", d.definition.Name)
-		}
-		toolNames[d.definition.Name] = struct{}{}
-		if old, exists := m.registry.Tool(d.definition.Name); exists {
-			return fmt.Errorf("tool %q already registered by %s", d.definition.Name, old.Source)
-		}
-	}
-	commandNames := make(map[string]struct{}, len(decls.commands))
-	for _, d := range decls.commands {
-		if _, exists := commandNames[d.name]; exists {
-			return fmt.Errorf("command %q is registered more than once in this file", d.name)
-		}
-		commandNames[d.name] = struct{}{}
-		if old, exists := m.registry.Command(d.name); exists {
-			return fmt.Errorf("command %q already registered by %s", d.name, old.Source)
-		}
-	}
-
+	tools := make([]extension.Tool, 0, len(decls.tools))
+	commands := make([]extension.Command, 0, len(decls.commands))
+	hooks := make([]extension.HookRegistration, 0, len(decls.hooks))
 	for _, d := range decls.tools {
 		d := d
-		err := m.registry.RegisterTool(extension.Tool{
+		tools = append(tools, extension.Tool{
 			Definition: d.definition,
 			Source:     state.source,
 			Execute: func(ctx context.Context, args json.RawMessage, onUpdate func(string)) (extension.ToolResult, error) {
@@ -156,13 +144,10 @@ func (m *Manager) commit(state *luaState, decls *declarations) error {
 				return result, nil
 			},
 		})
-		if err != nil {
-			return err
-		}
 	}
 	for _, d := range decls.commands {
 		d := d
-		err := m.registry.RegisterCommand(extension.Command{
+		commands = append(commands, extension.Command{
 			Name: d.name, Description: d.description, Source: state.source,
 			Execute: func(ctx context.Context, args string) (string, error) {
 				value, err := state.call(ctx, d.fn, lua.LString(args))
@@ -178,16 +163,18 @@ func (m *Manager) commit(state *luaState, decls *declarations) error {
 				return "", fmt.Errorf("Lua command %q returned %s, want string or nil", d.name, value.Type())
 			},
 		})
-		if err != nil {
-			return err
-		}
 	}
 	for _, d := range decls.hooks {
 		d := d
-		m.registry.On(d.event, state.source, func(ctx context.Context, event map[string]any) (map[string]any, error) {
+		hooks = append(hooks, extension.HookRegistration{Event: d.event, Source: state.source, Handler: func(ctx context.Context, event map[string]any) (map[string]any, error) {
 			return state.callHook(ctx, d.event, d.fn, event)
-		})
+		}})
 	}
+	lease, err := m.registry.RegisterBatch(extension.Batch{Tools: tools, Commands: commands, Hooks: hooks})
+	if err != nil {
+		return err
+	}
+	state.lease = lease
 	return nil
 }
 
@@ -281,16 +268,16 @@ func (s *luaState) callLocked(ctx context.Context, fn *lua.LFunction, args ...lu
 	return s.L.Get(-1), nil
 }
 
-// Close closes all Lua states. Registered handlers subsequently return a
-// closed-extension error. Close is safe to call more than once.
-func (m *Manager) Close() error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.closed {
-		return nil
-	}
-	m.closed = true
-	for _, state := range m.states {
+// closeStatesLocked unregisters and closes states from start onward. m.mu must
+// be held. Leases are closed before state locks so registry lookups can no
+// longer start new calls while Close waits for in-flight calls to finish.
+func (m *Manager) closeStatesLocked(start int) {
+	states := append([]*luaState(nil), m.states[start:]...)
+	m.states = m.states[:start]
+	for i := len(states) - 1; i >= 0; i-- {
+		state := states[i]
+		_ = state.lease.Close()
+		state.lease = nil
 		state.mu.Lock()
 		if !state.closed {
 			state.closed = true
@@ -298,6 +285,17 @@ func (m *Manager) Close() error {
 		}
 		state.mu.Unlock()
 	}
-	m.states = nil
+}
+
+// Close closes all Lua states and unregisters their handlers. Close is safe to
+// call more than once.
+func (m *Manager) Close() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return nil
+	}
+	m.closed = true
+	m.closeStatesLocked(0)
 	return nil
 }

@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"os"
@@ -299,6 +300,189 @@ func TestListAndResolve(t *testing.T) {
 	}
 }
 
+func TestLoadRecoversOnlyMalformedUnterminatedTail(t *testing.T) {
+	dir := t.TempDir()
+	store, err := New(dir, "/work", "p", "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendMessage(model.TextMessage("user", "preserved")); err != nil {
+		t.Fatal(err)
+	}
+	path := store.Path()
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	good, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(append([]byte(nil), good...), []byte(`{"type":"message","message":`)...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Messages) != 1 || loaded.Messages[0].Content[0].Text != "preserved" {
+		t.Fatalf("recovered messages = %#v", loaded.Messages)
+	}
+	if err := loaded.Close(); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(recovered, good) {
+		t.Fatalf("recovered file = %q, want %q", recovered, good)
+	}
+}
+
+func TestLoadNormalizesValidUnterminatedTail(t *testing.T) {
+	store, err := New(t.TempDir(), "/work", "p", "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendMessage(model.TextMessage("user", "complete")); err != nil {
+		t.Fatal(err)
+	}
+	path := store.Path()
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	stat, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(path, stat.Size()-1); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Messages) != 1 || loaded.Messages[0].Content[0].Text != "complete" {
+		t.Fatalf("loaded messages = %#v", loaded.Messages)
+	}
+	if err := loaded.AppendMessage(model.TextMessage("assistant", "next")); err != nil {
+		t.Fatal(err)
+	}
+	if err := loaded.Close(); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(contents) == 0 || contents[len(contents)-1] != '\n' || bytes.Count(contents, []byte{'\n'}) != 3 {
+		t.Fatalf("normalized file = %q", contents)
+	}
+}
+
+func TestLoadDoesNotRecoverInteriorCorruption(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bad.jsonl")
+	header := `{"type":"metadata","version":1,"id":"x","created_at":"2025-01-01T00:00:00Z","cwd":"/","provider":"p","model":"m"}` + "\n"
+	contents := header + `{"type":"message","message":` + "\n" + `{"type":"note"}`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "line 2") {
+		t.Fatalf("Load(interior corruption) error = %v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != contents {
+		t.Fatalf("corrupt file was modified: %q", after)
+	}
+}
+
+func TestListIncludesRecoverableTornTailWithoutRepairingIt(t *testing.T) {
+	dir := t.TempDir()
+	store, err := New(dir, "/work", "p", "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendMessage(model.TextMessage("user", "preserved")); err != nil {
+		t.Fatal(err)
+	}
+	path, id := store.Path(), store.Header.ID
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	good, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	torn := append(append([]byte(nil), good...), []byte(`{"type":"message","message":`)...)
+	if err := os.WriteFile(path, torn, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	infos, err := List(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(infos) != 1 || infos[0].Path != path || infos[0].MessageCount != 1 {
+		t.Fatalf("List() = %#v", infos)
+	}
+	resolved, err := Resolve(dir, id)
+	if err != nil || resolved != path {
+		t.Fatalf("Resolve(%q) = %q, %v", id, resolved, err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, torn) {
+		t.Fatalf("List repaired torn file: got %q, want %q", after, torn)
+	}
+}
+
+func TestListSkipsCorruptAndLatestTriesOlderValidSession(t *testing.T) {
+	dir := t.TempDir()
+	valid, err := New(dir, "/valid", "p", "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	validPath := valid.Path()
+	if err := valid.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	corruptPath := filepath.Join(dir, "corrupt.jsonl")
+	if err := os.WriteFile(corruptPath, []byte(`{"not":"a session"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if err := os.Chtimes(validPath, now.Add(-time.Hour), now.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(corruptPath, now, now); err != nil {
+		t.Fatal(err)
+	}
+
+	infos, err := List(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(infos) != 1 || infos[0].Path != validPath {
+		t.Fatalf("List() = %#v", infos)
+	}
+	latest, err := Latest(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer latest.Close()
+	if latest.Path() != validPath {
+		t.Fatalf("Latest() = %q, want %q", latest.Path(), validPath)
+	}
+}
+
 func TestLoadReportsLine(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "bad.jsonl")
 	contents := `{"type":"metadata","version":1,"id":"x","created_at":"2025-01-01T00:00:00Z","cwd":"/","provider":"p","model":"m"}` + "\n" +
@@ -331,6 +515,160 @@ func TestLoadStrictCompactionAndResetErrors(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAppendLineRollsBackWriteAndSyncFailures(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		wrap func(*os.File, error) sessionFile
+	}{
+		{
+			name: "partial write",
+			wrap: func(file *os.File, failure error) sessionFile {
+				return &faultSessionFile{File: file, writeLimit: 7, writeErr: failure}
+			},
+		},
+		{
+			name: "sync",
+			wrap: func(file *os.File, failure error) sessionFile {
+				return &faultSessionFile{File: file, syncErrs: []error{failure}}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			s, err := New(t.TempDir(), "/", "p", "m")
+			if err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.ReadFile(s.Path())
+			if err != nil {
+				t.Fatal(err)
+			}
+			failure := errors.New("injected append failure")
+			s.file = test.wrap(s.file.(*os.File), failure)
+
+			if err := s.AppendMessage(model.TextMessage("user", "not committed")); !errors.Is(err, failure) {
+				t.Fatalf("AppendMessage() error = %v", err)
+			}
+			if len(s.Messages) != 0 || len(s.Entries) != 0 {
+				t.Fatalf("failed append updated memory: messages=%d entries=%d", len(s.Messages), len(s.Entries))
+			}
+			after, err := os.ReadFile(s.Path())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(after, before) {
+				t.Fatalf("failed append left tail: got %q, want %q", after, before)
+			}
+			if err := s.AppendMessage(model.TextMessage("user", "committed")); err != nil {
+				t.Fatalf("append after successful rollback: %v", err)
+			}
+			path := s.Path()
+			if err := s.Close(); err != nil {
+				t.Fatal(err)
+			}
+			loaded, err := Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer loaded.Close()
+			if len(loaded.Messages) != 1 || loaded.Messages[0].Content[0].Text != "committed" {
+				t.Fatalf("loaded messages = %#v", loaded.Messages)
+			}
+		})
+	}
+}
+
+func TestAppendLineClosesSessionWhenRollbackFails(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		configure func(*faultSessionFile, error, error)
+	}{
+		{
+			name: "truncate",
+			configure: func(file *faultSessionFile, appendFailure, rollbackFailure error) {
+				file.writeLimit = 5
+				file.writeErr = appendFailure
+				file.truncateErr = rollbackFailure
+			},
+		},
+		{
+			name: "sync",
+			configure: func(file *faultSessionFile, appendFailure, rollbackFailure error) {
+				file.syncErrs = []error{appendFailure, rollbackFailure}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			s, err := New(t.TempDir(), "/", "p", "m")
+			if err != nil {
+				t.Fatal(err)
+			}
+			appendFailure := errors.New("injected append failure")
+			rollbackFailure := errors.New("injected rollback failure")
+			fault := &faultSessionFile{File: s.file.(*os.File)}
+			test.configure(fault, appendFailure, rollbackFailure)
+			s.file = fault
+
+			err = s.AppendMessage(model.TextMessage("user", "not committed"))
+			if !errors.Is(err, appendFailure) || !errors.Is(err, rollbackFailure) {
+				t.Fatalf("AppendMessage() error = %v", err)
+			}
+			if !s.closed || s.file != nil || !fault.closeCalled {
+				t.Fatalf("session remains usable: closed=%v file=%v closeCalled=%v", s.closed, s.file, fault.closeCalled)
+			}
+			if err := s.AppendMessage(model.TextMessage("user", "must fail")); err == nil || !strings.Contains(err.Error(), "closed") {
+				t.Fatalf("append after rollback failure = %v", err)
+			}
+			if len(s.Messages) != 0 || len(s.Entries) != 0 {
+				t.Fatalf("failed append updated memory: messages=%d entries=%d", len(s.Messages), len(s.Entries))
+			}
+		})
+	}
+}
+
+type faultSessionFile struct {
+	*os.File
+	writeLimit  int
+	writeErr    error
+	syncErrs    []error
+	truncateErr error
+	closeCalled bool
+}
+
+func (f *faultSessionFile) Write(data []byte) (int, error) {
+	if f.writeErr == nil {
+		return f.File.Write(data)
+	}
+	limit := min(f.writeLimit, len(data))
+	n, err := f.File.Write(data[:limit])
+	if err != nil {
+		return n, err
+	}
+	failure := f.writeErr
+	f.writeErr = nil
+	return n, failure
+}
+
+func (f *faultSessionFile) Sync() error {
+	if len(f.syncErrs) != 0 {
+		err := f.syncErrs[0]
+		f.syncErrs = f.syncErrs[1:]
+		return err
+	}
+	return f.File.Sync()
+}
+
+func (f *faultSessionFile) Truncate(size int64) error {
+	if f.truncateErr != nil {
+		return f.truncateErr
+	}
+	return f.File.Truncate(size)
+}
+
+func (f *faultSessionFile) Close() error {
+	f.closeCalled = true
+	return f.File.Close()
 }
 
 func TestConcurrentAppend(t *testing.T) {

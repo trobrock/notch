@@ -6,17 +6,19 @@ description: Configure Notch providers, models, thinking, themes, compaction, se
 
 Use this skill when changing Notch's own runtime setup. Prefer the smallest scoped change and preserve unrelated settings.
 
-## Configuration precedence
+## Workspace trust and configuration precedence
+
+Notch identifies a workspace by its canonical Git root, falling back to the canonical current directory outside Git. Project `.notch` and `.agents` inputs are loaded only after one-time persisted workspace trust. An interactive run prompts only when supported project inputs exist; a noninteractive untrusted run skips them. Use `--trust-workspace` to persist trust in automation and `--safe` to bypass project inputs for one invocation. Trust is not per-command approval: enabled tools and extensions execute automatically.
 
 Notch resolves values in this order, with later layers winning:
 
 1. compiled defaults;
 2. `$NOTCH_HOME/config.json`, or `~/.notch/config.json` when `NOTCH_HOME` is unset;
-3. `<cwd>/.notch/config.json`;
+3. `<workspace-root>/.notch/config.json`, only when trusted;
 4. `NOTCH_PROVIDER`, `NOTCH_MODEL`, and `NOTCH_THINKING_LEVEL`;
 5. CLI flags such as `--provider` and `--model`.
 
-Use project config for repository-specific behavior and user config for defaults shared by all projects. Use environment variables for temporary shell or CI overrides. Provider and model overrides are independent.
+Use trusted project config for repository-specific behavior and user config for defaults shared by all projects. `base_url`, `auth_file`, `session_dir`, and `model_cache` are global-only and ignored in project config even after trust. Standalone `notch login`, `logout`, `auth`, and `models` commands load global configuration only. Use environment variables for temporary shell or CI overrides. Provider and model overrides are independent.
 
 Before editing, read every existing applicable config file. Do not replace unrelated keys. Ask before changing user-global configuration when a project-local change would work.
 
@@ -83,16 +85,16 @@ API-key alternatives are `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and `OPENROUTER_
 
 Never put secrets in `config.json`, project files, examples, or version control. Do not print access or refresh tokens. Notch configures credentials separately from normal config.
 
-For a local OpenAI-compatible endpoint, set `provider` to `openai`, set `base_url` to the server root, and choose an installed tool-capable model. Clear a stale provider-specific `base_url` when switching back to a hosted provider.
+For a local OpenAI-compatible endpoint, set `provider` to `openai`, set the global-only `base_url` in user config to the server root, and choose an installed tool-capable model. Clear a stale provider-specific `base_url` when switching back to a hosted provider.
 
 ## Skills and commands
 
 Notch discovers shared resources without creating their directories:
 
-- `~/.agents/skills` and `<cwd>/.agents/skills`;
-- `~/.agents/commands` and `<cwd>/.agents/commands`.
+- `~/.agents/skills` and trusted `<workspace-root>/.agents/skills`;
+- `~/.agents/commands` and trusted `<workspace-root>/.agents/commands`.
 
-It also reads configured `skill_dirs` and `prompt_dirs`, defaulting to user and project `.notch` directories. Skills are either direct Markdown files or `name/SKILL.md` directories. Command templates are direct Markdown files. Project `.agents` resources have final precedence.
+It also reads configured `skill_dirs` and `prompt_dirs`, defaulting to user paths and, when trusted, project `.notch` directories. Skills are either direct Markdown files or `name/SKILL.md` directories. Command templates are direct Markdown files. Trusted project `.agents` resources have final precedence; untrusted/noninteractive and `--safe` runs omit them.
 
 A command template may use:
 
@@ -124,11 +126,11 @@ The default MCP file is `$NOTCH_HOME/mcp.json` or `~/.notch/mcp.json`:
 }
 ```
 
-Use the `env` object for stdio-server secrets. Remote HTTP headers are currently literal and do not expand environment variables, so avoid writing a token unless the user explicitly accepts a protected local config file. Notch supports stdio and Streamable HTTP tools. MCP OAuth, resources, prompts, and app UI are not currently built in.
+Use the `env` object for every stdio-server secret or other non-baseline variable. Stdio MCP children receive only a minimal inherited environment (`PATH`, home/user, temporary-directory, locale, terminal, and SSH-agent basics, plus required Windows process variables); provider keys, token variables, and CI secrets are not inherited. Explicit `env` values are added to that baseline. Remote HTTP headers are currently literal and do not expand environment variables, so avoid writing a token unless the user explicitly accepts a protected local config file. Notch supports stdio and Streamable HTTP tools. MCP OAuth, resources, prompts, and app UI are not currently built in.
 
 ## Sessions
 
-Sessions default to `~/.notch/sessions` and are durable JSONL files. Use `--continue` for the latest, `--resume ID` for a specific session, `/resume` for the fullscreen picker, and `--no-session` for no persistence. Changing `session_dir` isolates future session discovery.
+Sessions default to `~/.notch/sessions` and are durable JSONL files. Use `--continue` for the latest valid session, `--resume ID` for a specific session, `/resume` for the fullscreen picker, and `--no-session` for no persistence. A malformed unterminated final record is treated as a torn write and truncated only when every preceding record is valid; damaged sessions are skipped by list/latest discovery instead of hiding healthy sessions. Changing the global-only `session_dir` isolates future session discovery.
 
 ## Validation
 

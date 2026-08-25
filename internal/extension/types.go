@@ -125,18 +125,167 @@ type Host interface {
 type namedHook struct {
 	source  string
 	handler HookHandler
+	owner   *registrationOwner
+}
+
+// HookRegistration describes one hook in a registration batch.
+type HookRegistration struct {
+	Event   string
+	Source  string
+	Handler HookHandler
+}
+
+// Batch is a set of registry entries that must be installed atomically.
+type Batch struct {
+	Tools    []Tool
+	Commands []Command
+	Hooks    []HookRegistration
+}
+
+type registrationOwner struct {
+	once sync.Once
+}
+
+// Registration owns the entries installed by RegisterBatch. Close atomically
+// unregisters only entries still owned by this registration and is idempotent.
+type Registration struct {
+	registry *Registry
+	owner    *registrationOwner
+}
+
+// Close unregisters this registration's entries.
+func (registration *Registration) Close() error {
+	if registration == nil || registration.registry == nil || registration.owner == nil {
+		return nil
+	}
+	registration.owner.once.Do(func() {
+		r := registration.registry
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		for name, owner := range r.toolOwners {
+			if owner == registration.owner {
+				delete(r.tools, name)
+				delete(r.toolOwners, name)
+			}
+		}
+		for name, owner := range r.commandOwners {
+			if owner == registration.owner {
+				delete(r.commands, name)
+				delete(r.commandOwners, name)
+			}
+		}
+		for event, hooks := range r.hooks {
+			kept := hooks[:0]
+			for _, hook := range hooks {
+				if hook.owner != registration.owner {
+					kept = append(kept, hook)
+				}
+			}
+			if len(kept) == 0 {
+				delete(r.hooks, event)
+			} else {
+				r.hooks[event] = kept
+			}
+		}
+	})
+	return nil
 }
 
 type Registry struct {
-	mu          sync.RWMutex
-	tools       map[string]Tool
-	activeTools map[string]bool
-	commands    map[string]Command
-	hooks       map[string][]namedHook
+	mu            sync.RWMutex
+	tools         map[string]Tool
+	toolOwners    map[string]*registrationOwner
+	activeTools   map[string]bool
+	commands      map[string]Command
+	commandOwners map[string]*registrationOwner
+	hooks         map[string][]namedHook
 }
 
 func NewRegistry() *Registry {
-	return &Registry{tools: map[string]Tool{}, commands: map[string]Command{}, hooks: map[string][]namedHook{}}
+	return &Registry{
+		tools: map[string]Tool{}, toolOwners: map[string]*registrationOwner{},
+		commands: map[string]Command{}, commandOwners: map[string]*registrationOwner{},
+		hooks: map[string][]namedHook{},
+	}
+}
+
+func (r *Registry) initLocked() {
+	if r.tools == nil {
+		r.tools = map[string]Tool{}
+	}
+	if r.toolOwners == nil {
+		r.toolOwners = map[string]*registrationOwner{}
+	}
+	if r.commands == nil {
+		r.commands = map[string]Command{}
+	}
+	if r.commandOwners == nil {
+		r.commandOwners = map[string]*registrationOwner{}
+	}
+	if r.hooks == nil {
+		r.hooks = map[string][]namedHook{}
+	}
+}
+
+// RegisterBatch validates and installs all entries in batch under one registry
+// lock. If validation fails, no entry is installed.
+func (r *Registry) RegisterBatch(batch Batch) (*Registration, error) {
+	if r == nil {
+		return nil, errors.New("extension registry is nil")
+	}
+	seenTools := make(map[string]struct{}, len(batch.Tools))
+	for _, tool := range batch.Tools {
+		name := tool.Definition.Name
+		if name == "" || tool.Execute == nil {
+			return nil, errors.New("tool requires a name and execute function")
+		}
+		if _, exists := seenTools[name]; exists {
+			return nil, fmt.Errorf("tool %q appears more than once in registration batch", name)
+		}
+		seenTools[name] = struct{}{}
+	}
+	seenCommands := make(map[string]struct{}, len(batch.Commands))
+	for _, command := range batch.Commands {
+		if command.Name == "" || command.Execute == nil {
+			return nil, errors.New("command requires a name and execute function")
+		}
+		if _, exists := seenCommands[command.Name]; exists {
+			return nil, fmt.Errorf("command %q appears more than once in registration batch", command.Name)
+		}
+		seenCommands[command.Name] = struct{}{}
+	}
+	for _, hook := range batch.Hooks {
+		if hook.Event == "" || hook.Handler == nil {
+			return nil, errors.New("hook requires an event and handler")
+		}
+	}
+
+	owner := &registrationOwner{}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.initLocked()
+	for _, tool := range batch.Tools {
+		if old, exists := r.tools[tool.Definition.Name]; exists {
+			return nil, fmt.Errorf("tool %q already registered by %s", tool.Definition.Name, old.Source)
+		}
+	}
+	for _, command := range batch.Commands {
+		if old, exists := r.commands[command.Name]; exists {
+			return nil, fmt.Errorf("command %q already registered by %s", command.Name, old.Source)
+		}
+	}
+	for _, tool := range batch.Tools {
+		r.tools[tool.Definition.Name] = tool
+		r.toolOwners[tool.Definition.Name] = owner
+	}
+	for _, command := range batch.Commands {
+		r.commands[command.Name] = command
+		r.commandOwners[command.Name] = owner
+	}
+	for _, hook := range batch.Hooks {
+		r.hooks[hook.Event] = append(r.hooks[hook.Event], namedHook{source: hook.Source, handler: hook.Handler, owner: owner})
+	}
+	return &Registration{registry: r, owner: owner}, nil
 }
 
 func (r *Registry) RegisterTool(tool Tool) error {
@@ -145,10 +294,12 @@ func (r *Registry) RegisterTool(tool Tool) error {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.initLocked()
 	if old, ok := r.tools[tool.Definition.Name]; ok {
 		return fmt.Errorf("tool %q already registered by %s", tool.Definition.Name, old.Source)
 	}
 	r.tools[tool.Definition.Name] = tool
+	delete(r.toolOwners, tool.Definition.Name)
 	return nil
 }
 
@@ -164,6 +315,7 @@ func (r *Registry) RestrictTools(names []string) []string {
 	for name := range r.tools {
 		if !allowed[name] {
 			delete(r.tools, name)
+			delete(r.toolOwners, name)
 		}
 	}
 	var missing []string
@@ -187,6 +339,7 @@ func (r *Registry) RemoveTools(names []string) []string {
 			continue
 		}
 		delete(r.tools, name)
+		delete(r.toolOwners, name)
 	}
 	sort.Strings(missing)
 	return missing
@@ -198,16 +351,19 @@ func (r *Registry) RegisterCommand(command Command) error {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.initLocked()
 	if old, ok := r.commands[command.Name]; ok {
 		return fmt.Errorf("command %q already registered by %s", command.Name, old.Source)
 	}
 	r.commands[command.Name] = command
+	delete(r.commandOwners, command.Name)
 	return nil
 }
 
 func (r *Registry) On(event, source string, handler HookHandler) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.initLocked()
 	r.hooks[event] = append(r.hooks[event], namedHook{source: source, handler: handler})
 }
 

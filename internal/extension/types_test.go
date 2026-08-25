@@ -11,6 +11,91 @@ import (
 	"github.com/trobrock/notch/internal/model"
 )
 
+func TestRegisterBatchIsAtomicAndLeaseOwnsEntries(t *testing.T) {
+	registry := NewRegistry()
+	executeTool := func(context.Context, json.RawMessage, func(string)) (ToolResult, error) {
+		return ToolResult{}, nil
+	}
+	executeCommand := func(context.Context, string) (string, error) { return "", nil }
+	if err := registry.RegisterTool(Tool{Definition: model.ToolDefinition{Name: "taken"}, Source: "existing", Execute: executeTool}); err != nil {
+		t.Fatal(err)
+	}
+
+	lease, err := registry.RegisterBatch(Batch{
+		Tools:    []Tool{{Definition: model.ToolDefinition{Name: "taken"}, Source: "batch", Execute: executeTool}},
+		Commands: []Command{{Name: "new", Source: "batch", Execute: executeCommand}},
+		Hooks: []HookRegistration{{Event: "event", Source: "batch", Handler: func(context.Context, map[string]any) (map[string]any, error) {
+			return map[string]any{"called": true}, nil
+		}}},
+	})
+	if err == nil || lease != nil {
+		t.Fatalf("RegisterBatch lease=%v err=%v", lease, err)
+	}
+	if _, ok := registry.Command("new"); ok {
+		t.Fatal("failed batch left a command registered")
+	}
+	result, err := registry.RunHooks(context.Background(), "event", nil)
+	if err != nil || result["called"] != nil {
+		t.Fatalf("failed batch left a hook registered: result=%v err=%v", result, err)
+	}
+
+	lease, err = registry.RegisterBatch(Batch{
+		Tools:    []Tool{{Definition: model.ToolDefinition{Name: "owned"}, Source: "batch", Execute: executeTool}},
+		Commands: []Command{{Name: "owned", Source: "batch", Execute: executeCommand}},
+		Hooks: []HookRegistration{{Event: "event", Source: "batch", Handler: func(context.Context, map[string]any) (map[string]any, error) {
+			return map[string]any{"called": true}, nil
+		}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := registry.Tool("owned"); !ok {
+		t.Fatal("batch tool was not registered")
+	}
+	if _, ok := registry.Command("owned"); !ok {
+		t.Fatal("batch command was not registered")
+	}
+	if err := lease.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+	if _, ok := registry.Tool("owned"); ok {
+		t.Fatal("owned tool remained after Close")
+	}
+	if _, ok := registry.Command("owned"); ok {
+		t.Fatal("owned command remained after Close")
+	}
+	result, err = registry.RunHooks(context.Background(), "event", nil)
+	if err != nil || result["called"] != nil {
+		t.Fatalf("owned hook remained after Close: result=%v err=%v", result, err)
+	}
+	if _, ok := registry.Tool("taken"); !ok {
+		t.Fatal("Close removed an entry owned by another registration")
+	}
+}
+
+func TestRegistrationCloseDoesNotRemoveReplacement(t *testing.T) {
+	registry := NewRegistry()
+	handler := func(context.Context, json.RawMessage, func(string)) (ToolResult, error) { return ToolResult{}, nil }
+	lease, err := registry.RegisterBatch(Batch{Tools: []Tool{{Definition: model.ToolDefinition{Name: "replace"}, Source: "owner", Execute: handler}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry.RemoveTools([]string{"replace"})
+	if err := registry.RegisterTool(Tool{Definition: model.ToolDefinition{Name: "replace"}, Source: "replacement", Execute: handler}); err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.Close(); err != nil {
+		t.Fatal(err)
+	}
+	tool, ok := registry.Tool("replace")
+	if !ok || tool.Source != "replacement" {
+		t.Fatalf("replacement was removed: %#v, %v", tool, ok)
+	}
+}
+
 func TestRunHooksBestEffortContinuesAfterErrors(t *testing.T) {
 	registry := NewRegistry()
 	var called []string

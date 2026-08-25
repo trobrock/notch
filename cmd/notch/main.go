@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -40,6 +41,7 @@ import (
 	"github.com/trobrock/notch/internal/tui"
 	"github.com/trobrock/notch/internal/ui"
 	"github.com/trobrock/notch/internal/upgrade"
+	"github.com/trobrock/notch/internal/workspace"
 	"golang.org/x/term"
 )
 
@@ -53,6 +55,7 @@ type options struct {
 	provider, modelName, thinking, prompt, systemPrompt, systemPromptFile, mcpConfig, resumeSession, mode, toolAllow, toolExclude string
 	continueSession, noSession, jsonOutput, noTUI, init, showVersion, rpcMode                                                     bool
 	noTools, noBuiltinTools, noExtensions, noResources                                                                            bool
+	safe, trustWorkspace                                                                                                          bool
 }
 
 func main() {
@@ -108,6 +111,8 @@ func run(args []string) error {
 	flags.BoolVar(&opts.noBuiltinTools, "nbt", false, "disable built-in tools (shorthand)")
 	flags.BoolVar(&opts.noExtensions, "no-extensions", false, "disable official and configured extensions")
 	flags.BoolVar(&opts.noResources, "no-resources", false, "disable skills and prompt templates")
+	flags.BoolVar(&opts.safe, "safe", false, "skip project configuration, extensions, and resources")
+	flags.BoolVar(&opts.trustWorkspace, "trust-workspace", false, "persist trust in this workspace")
 	flags.BoolVar(&opts.init, "init", false, "create ~/.notch and a starter config")
 	flags.BoolVar(&opts.showVersion, "version", false, "print version")
 	if err := flags.Parse(args); err != nil {
@@ -123,6 +128,9 @@ func run(args []string) error {
 	rpcMode := opts.rpcMode || opts.mode == "rpc"
 	if rpcMode && (opts.prompt != "" || opts.jsonOutput || flags.NArg() != 0) {
 		return errors.New("RPC mode cannot be combined with --print, --json, or prompt arguments")
+	}
+	if opts.safe && opts.trustWorkspace {
+		return errors.New("--safe and --trust-workspace cannot be combined")
 	}
 	if opts.noTools && (opts.toolAllow != "" || opts.toolExclude != "") {
 		return errors.New("--no-tools cannot be combined with --tools or --exclude-tools")
@@ -145,7 +153,28 @@ func run(args []string) error {
 	if err != nil {
 		return fmt.Errorf("get home directory: %w", err)
 	}
-	cfg, err := config.Load(home, cwd)
+	workspaceRoot := cwd
+	var cfg config.Config
+	switch {
+	case opts.init:
+		// Initialization must never inspect, prompt for, trust, or load project
+		// inputs. cwd is retained only for the project paths printed below.
+		cfg, err = config.LoadGlobal(home)
+	case opts.safe:
+		// Safe mode is also an emergency bypass for malformed or hostile Git
+		// metadata, so it must not perform workspace discovery.
+		cfg, err = config.LoadWorkspace(home, cwd, false)
+	default:
+		workspaceRoot, err = workspace.Root(cwd)
+		if err != nil {
+			return err
+		}
+		var trusted bool
+		trusted, err = resolveWorkspaceTrust(home, workspaceRoot, opts, os.Stdin, os.Stderr, terminalsInteractive(os.Stdin, os.Stdout))
+		if err == nil {
+			cfg, err = config.LoadWorkspace(home, workspaceRoot, trusted)
+		}
+	}
 	if err != nil {
 		return err
 	}
@@ -168,6 +197,9 @@ func run(args []string) error {
 			return fmt.Errorf("invalid thinking level %q (expected off, minimal, low, medium, high, or xhigh)", opts.thinking)
 		}
 	}
+	if opts.init {
+		return initialize(home, workspaceRoot, cfg)
+	}
 	if opts.mcpConfig != "" {
 		cfg.MCPConfig = opts.mcpConfig
 	}
@@ -183,9 +215,6 @@ func run(args []string) error {
 	} else if opts.systemPrompt != "" {
 		cfg.SystemPrompt = opts.systemPrompt
 	}
-	if opts.init {
-		return initialize(home, cwd, cfg)
-	}
 	if opts.noExtensions {
 		cfg.ExtensionDirs = nil
 	}
@@ -197,7 +226,7 @@ func run(args []string) error {
 		}
 	}
 	cfg.ExtensionDirs = append(cfg.ExtensionDirs, packageDirs...)
-	if err := cfg.EnsureDirs(); err != nil {
+	if err := cfg.EnsureGlobalDirs(); err != nil {
 		return err
 	}
 
@@ -702,6 +731,57 @@ func runUpgrade(args []string) error {
 	return nil
 }
 
+func terminalsInteractive(in, out *os.File) bool {
+	return term.IsTerminal(int(in.Fd())) && term.IsTerminal(int(out.Fd()))
+}
+
+func resolveWorkspaceTrust(home, root string, opts options, in io.Reader, diagnostic io.Writer, interactive bool) (bool, error) {
+	if opts.safe {
+		return false, nil
+	}
+	store := workspace.NewStore(config.HomeDir(home))
+	if opts.trustWorkspace {
+		if err := store.TrustRoot(root); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	hasInputs, err := workspace.HasProjectInputs(root)
+	if err != nil {
+		return false, err
+	}
+	if !hasInputs {
+		return false, nil
+	}
+	trusted, err := store.IsTrustedRoot(root)
+	if err != nil {
+		// --safe must remain usable as an emergency bypass, but an unreadable or
+		// insecure trust database must never silently downgrade a normal run.
+		return false, err
+	}
+	if trusted {
+		return true, nil
+	}
+	if !interactive {
+		return false, nil
+	}
+	fmt.Fprintf(diagnostic, "Trust workspace %s and load its .notch/.agents inputs? [y/N] ", root)
+	reader := bufio.NewReader(in)
+	answer, readErr := reader.ReadString('\n')
+	if readErr != nil && !errors.Is(readErr, io.EOF) {
+		return false, fmt.Errorf("read workspace trust response: %w", readErr)
+	}
+	switch strings.ToLower(strings.TrimSpace(answer)) {
+	case "y", "yes":
+		if err := store.TrustRoot(root); err != nil {
+			return false, err
+		}
+		return true, nil
+	default:
+		return false, nil
+	}
+}
+
 func runListModels(args []string) error {
 	flags := flag.NewFlagSet("notch models", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
@@ -718,11 +798,7 @@ func runListModels(args []string) error {
 	if err != nil {
 		return err
 	}
-	cwd, err := os.Getwd()
-	if err != nil {
-		return err
-	}
-	cfg, err := config.Load(home, cwd)
+	cfg, err := config.LoadGlobal(home)
 	if err != nil {
 		return err
 	}
@@ -963,15 +1039,13 @@ func resolveCredential(ctx context.Context, store *credentials.Store, provider s
 }
 
 func runAuth(args []string) error {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return err
-	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return err
 	}
-	cfg, err := config.Load(home, cwd)
+	// Authentication never reads project configuration, even for a workspace
+	// that has previously been trusted.
+	cfg, err := config.LoadGlobal(home)
 	if err != nil {
 		return err
 	}
@@ -1110,10 +1184,7 @@ func initialize(home, cwd string, cfg config.Config) error {
 	if err := cfg.EnsureDirs(); err != nil {
 		return err
 	}
-	root := os.Getenv("NOTCH_HOME")
-	if root == "" {
-		root = filepath.Join(home, ".notch")
-	}
+	root := config.HomeDir(home)
 	path := filepath.Join(root, "config.json")
 	if _, err := os.Stat(path); err == nil {
 		fmt.Println(path, "already exists")

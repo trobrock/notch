@@ -29,7 +29,7 @@ See the [fullscreen TUI guide](docs/tui.md), [RPC mode](docs/rpc.md), [themes](d
 
 Notch has a Pi-style fullscreen terminal UI with a multiline composer, transcript scrolling, Markdown-aware rendering, themes, thinking controls, context compaction, and extension prompts, plus a line-oriented fallback for redirection and automation. It does **not** yet have session branching/tree navigation or MCP OAuth. The TUI supports app-owned mouse-wheel scrollback and drag selection with `Ctrl-Y` copy (including tmux when mouse forwarding is enabled), and mouse capture can be disabled to restore terminal-native selection. It does not yet provide configurable keybindings, inline (non-alternate-screen) mode, or tool-output expand/collapse. Its Markdown support covers common prose and code constructs, but not terminal table layout, image display, or extensions such as task lists and strikethrough. Themes can be built in or loaded from simple semantic JSON files. MCP HTTP credentials can only be supplied as static headers. Provider OAuth is implemented for `openai-codex`, `anthropic`, and `openrouter`, but sessions and configuration are not automatically imported from Pi; credentials have an explicit one-time import command. Existing Pi TypeScript extensions do not run in Notch and must be ported to Lua or the executable JSON-RPC protocol.
 
-Tools and extensions run with the user's privileges. There is no sandbox or tool-approval UI yet.
+Tools, extensions, plugins, and MCP servers run with the user's privileges. Notch has no sandbox or per-command approval prompts: once a workspace is trusted, enabled project code and model-requested tools execute automatically. See [Workspace trust](#workspace-trust) and [SECURITY.md](SECURITY.md).
 
 ## Build and install
 
@@ -132,6 +132,8 @@ notch [flags] [prompt words...]
   --rpc                   shorthand for --mode rpc
   --tools, -t string      strict comma-separated tool allowlist
   --exclude-tools string  comma-separated tools to disable
+  --safe                  skip project configuration, extensions, and resources
+  --trust-workspace       persist trust for this workspace (automation/CI)
   --no-builtin-tools      disable built-in tools
   --no-extensions         disable official and configured extensions
   --no-resources          disable skills and prompt templates
@@ -191,16 +193,22 @@ An interactive invocation uses the fullscreen TUI only when both stdin and stdou
 
 `--continue` selects the latest session globally in the configured session directory. `--resume ID-OR-PREFIX` opens a specific session by ID, filename, unambiguous prefix, or path. Fullscreen `/resume` presents saved sessions with time, original directory, model, and prompt preview. Resumed requests use the current provider/model configuration while preserving the selected session's conversation context. Each completed provider response, including compaction summaries, appends a `usage` record with provider, model, input/output token counts, and stop reason to the session JSONL.
 
+## Workspace trust
+
+Project-controlled `.notch` and `.agents` inputs are loaded only for a trusted workspace. Notch identifies a Git worktree by its canonical Git root (or the canonical current directory outside Git), so one decision applies throughout the repository. If supported project inputs exist and the workspace is not already trusted, a run with terminal stdin and stdout prompts once and persists an accepted decision in `$NOTCH_HOME/trusted-workspaces.json` (default `~/.notch/trusted-workspaces.json`). Runs without project inputs do not prompt.
+
+Noninteractive runs never prompt and skip project `.notch`/`.agents` config, MCP, extensions, skills, prompts, and themes unless trust was previously persisted. Use `--trust-workspace` to persist trust explicitly for automation or CI. Use `--safe` to bypass project trust and project inputs for that invocation; it cannot be combined with `--trust-workspace`. Global inputs and installed extension packages remain available. Trust is an execution boundary, not an approval workflow: Notch has no per-command approvals, and tools/extensions execute automatically after loading.
+
 ## Configuration
 
-Configuration is JSON. Notch starts with defaults, then merges:
+Configuration is JSON. For trusted workspaces, Notch starts with defaults, then merges:
 
 1. `$NOTCH_HOME/config.json`, when `NOTCH_HOME` is set, otherwise `~/.notch/config.json`
-2. `<working-directory>/.notch/config.json`
+2. `<workspace-root>/.notch/config.json` (trusted workspaces only)
 3. `NOTCH_PROVIDER`, `NOTCH_MODEL`, and `NOTCH_THINKING_LEVEL`
 4. CLI overrides such as `--provider`, `--model`, and `--thinking`
 
-Later non-empty values replace earlier ones, so CLI flags take precedence over environment variables and environment variables take precedence over project and user config. Empty or whitespace-only values for the three runtime environment variables are ignored and fall back to the merged config files. Non-empty directory arrays replace the complete earlier array; they are not appended. API keys can come from environment variables; OAuth credentials are kept separately from config in the protected auth store.
+Later non-empty values replace earlier ones, so CLI flags take precedence over environment variables and environment variables take precedence over project and user config. Empty or whitespace-only values for the three runtime environment variables are ignored and fall back to the merged config files. Non-empty directory arrays replace the complete earlier array; they are not appended. `base_url`, `auth_file`, `session_dir`, and `model_cache` are security-sensitive global-only settings and are ignored in project config. API keys can come from environment variables; OAuth credentials are kept separately from config in the protected auth store. Standalone `notch login`, `logout`, `auth`, and `models` commands also load global configuration only.
 
 ```json
 {
@@ -246,7 +254,7 @@ For example, a shell or per-command override can select a runtime without editin
 NOTCH_PROVIDER=openai-codex NOTCH_MODEL=gpt-5.6-sol NOTCH_THINKING_LEVEL=high notch
 ```
 
-Provider and model overrides are independent: if only one environment variable is set, the other value comes from the merged config. `notch models [provider]` lists provider-discovered or fallback models; add `--refresh` to bypass the cache, `--json` for a versioned machine-readable catalog, or `--all` for every supported provider. Fullscreen `/model` selects a provider and filters its models, while `/model refresh` forces discovery. Runtime selection changes subsequent turns and new sessions but does not edit config files. The paths above illustrate the defaults; actual home and working-directory paths are resolved at startup. `NOTCH_HOME` relocates user config, user resources, user extensions, the default MCP file, and sessions. Project resources remain under `<cwd>/.notch`. Configured resource directories are created automatically. Notch also discovers shared skills in `~/.agents/skills` and `<cwd>/.agents/skills`, plus command templates in `~/.agents/commands` and `<cwd>/.agents/commands`; these shared directories are discovered but never created by Notch. `theme` and `thinking_level` can be set in either global or project config. Direct JSON files in `theme_dirs` add or override themes; see [themes](docs/themes.md) for the small semantic schema. The mode-0600 model cache refreshes stale selected-provider data on startup or selector use without a polling timer; `model_refresh_hours` defaults to 24. `context_window: 0` means use the provider/model default; omit it for the same behavior. The compaction object deliberately uses Pi-compatible camelCase keys. See [themes](docs/themes.md), [thinking controls](docs/tui.md#commands-and-thinking-level), and [compaction](docs/compaction.md).
+Provider and model overrides are independent: if only one environment variable is set, the other value comes from the merged config. `notch models [provider]` lists provider-discovered or fallback models; add `--refresh` to bypass the cache, `--json` for a versioned machine-readable catalog, or `--all` for every supported provider. Fullscreen `/model` selects a provider and filters its models, while `/model refresh` forces discovery. Runtime selection changes subsequent turns and new sessions but does not edit config files. The paths above illustrate the defaults; actual home and workspace-root paths are resolved at startup. `NOTCH_HOME` relocates user config, user resources, user extensions, the default MCP file, and sessions. Trusted project resources remain under `<workspace-root>/.notch`. Only global configured resource directories are created before trust; trusted project directories may then be created. Notch also discovers shared skills in `~/.agents/skills` and trusted `<workspace-root>/.agents/skills`, plus command templates in `~/.agents/commands` and trusted `<workspace-root>/.agents/commands`; these shared directories are discovered but never created by Notch. `theme` and `thinking_level` can be set in either global or trusted project config. Direct JSON files in `theme_dirs` add or override themes; see [themes](docs/themes.md) for the small semantic schema. The mode-0600 model cache refreshes stale selected-provider data on startup or selector use without a polling timer; `model_refresh_hours` defaults to 24. `context_window: 0` means use the provider/model default; omit it for the same behavior. The compaction object deliberately uses Pi-compatible camelCase keys. See [themes](docs/themes.md), [thinking controls](docs/tui.md#commands-and-thinking-level), and [compaction](docs/compaction.md).
 
 Provider credentials:
 
@@ -266,7 +274,7 @@ Every binary includes two built-in skills:
 
 The built-ins require no source checkout or external documentation. A user or project skill declaring the same name overrides the bundled version, so the defaults remain customizable.
 
-Additional skills may be either `skills/name.md` or `skills/name/SKILL.md`. Notch discovers them in `~/.agents/skills`, configured `skill_dirs` (defaulting to user and project `.notch/skills`), and `<cwd>/.agents/skills`. Command/prompt templates are top-level `.md` files discovered from the matching `.agents/commands` and configured prompt directories. Later locations win when names collide, so project `.agents` resources have final precedence.
+Additional skills may be either `skills/name.md` or `skills/name/SKILL.md`. Notch discovers them in `~/.agents/skills`, configured `skill_dirs` (defaulting to the user path and, for a trusted workspace, project `.notch/skills`), and trusted `<workspace-root>/.agents/skills`. Command/prompt templates are top-level `.md` files discovered from matching `.agents/commands` and configured prompt directories. Later locations win when names collide, so trusted project `.agents` resources have final precedence. Untrusted/noninteractive and `--safe` runs skip all project resources.
 
 ```markdown
 ---
@@ -302,7 +310,7 @@ The default MCP file is `~/.notch/mcp.json` (or `$NOTCH_HOME/mcp.json`). It is o
 }
 ```
 
-A server must specify exactly one of `command` or `url`. `enabled` defaults to true. Remote tools are exposed as `mcp__<server>__<tool>`. Notch performs the MCP 2025-06-18 handshake, follows paginated `tools/list`, and calls tools over stdio or HTTP responses in JSON or SSE form. Resource/prompt MCP capabilities and OAuth are not implemented yet.
+A server must specify exactly one of `command` or `url`. `enabled` defaults to true. Stdio children receive only a minimal inherited process environment plus variables explicitly supplied in that server's `env` object; provider credentials and typical CI secrets are not inherited automatically. Remote tools are exposed as `mcp__<server>__<tool>`. Notch performs the MCP 2025-06-18 handshake, follows paginated `tools/list`, and calls tools over stdio or HTTP responses in JSON or SSE form. Resource/prompt MCP capabilities and OAuth are not implemented yet.
 
 ## Sessions and JSON output
 
@@ -315,9 +323,9 @@ Unless `--no-session` is used, every new invocation creates a mode-0600 JSONL fi
 Place `.lua` files or executable-plugin directories below either:
 
 - `~/.notch/extensions` (or `$NOTCH_HOME/extensions`)
-- `<cwd>/.notch/extensions`
+- `<workspace-root>/.notch/extensions` (trusted workspaces only)
 
-Lua files are loaded directly from each extension directory. Executable manifests named `plugin.json` are discovered recursively. Extensions can register model tools, interactive slash commands, and agent hooks. Full examples and the wire protocol are in [docs/extensions.md](docs/extensions.md).
+Lua is a first-class extension format alongside executable plugins. Lua files are loaded directly from each extension directory; executable manifests named `plugin.json` are discovered recursively. Each extension's tools, commands, and hooks register atomically, and registrations are removed when that Lua state, plugin, or MCP connection closes, so failed loads do not leave partial entries behind. Extensions can register model tools, interactive slash commands, and agent hooks. Full examples and the wire protocol are in [docs/extensions.md](docs/extensions.md).
 
 Use `notch extensions install SOURCE` to install a shareable package from GitHub, generic Git, or a local directory. Installed content and its exact commit/digest lock live under `$NOTCH_HOME` or `~/.notch`; updates and removals are atomic. See [extension packages](docs/extension-packages.md) for the manifest, source syntax, integrity checks, security model, and publishing workflow.
 

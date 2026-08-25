@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"sort"
@@ -22,6 +21,7 @@ import (
 	"github.com/trobrock/notch/internal/extension"
 	"github.com/trobrock/notch/internal/model"
 	"github.com/trobrock/notch/internal/modelregistry"
+	sharedprocess "github.com/trobrock/notch/internal/process"
 	"github.com/trobrock/notch/internal/resources"
 	"github.com/trobrock/notch/internal/session"
 )
@@ -2388,24 +2388,7 @@ func compactToolText(text string, maxLines int) string {
 func (a *App) CWD() string { return a.cfg.CWD }
 
 func (a *App) Exec(ctx context.Context, command string, args []string) (string, string, int, error) {
-	if command == "" {
-		return "", "", -1, errors.New("empty command")
-	}
-	cmd := exec.CommandContext(ctx, command, args...)
-	cmd.Dir = a.cfg.CWD
-	var stdout, stderr strings.Builder
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	err := cmd.Run()
-	exitCode := 0
-	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			exitCode = exitErr.ExitCode()
-		} else {
-			exitCode = -1
-		}
-	}
-	return stdout.String(), stderr.String(), exitCode, err
+	return sharedprocess.Run(ctx, a.cfg.CWD, command, args)
 }
 
 func (a *App) Input(ctx context.Context, prompt, placeholder string) (string, error) {

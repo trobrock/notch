@@ -89,6 +89,9 @@ func writeTestManifest(t *testing.T, root, name string, enabled bool) string {
 
 func TestDiscoverRegisterAndExecutePlugin(t *testing.T) {
 	t.Setenv("NOTCH_PLUGIN_HELPER", "1")
+	t.Setenv("OPENAI_API_KEY", "must-not-reach-plugin")
+	t.Setenv("GITHUB_TOKEN", "must-not-reach-plugin")
+	t.Setenv("CI_JOB_TOKEN", "must-not-reach-plugin")
 	root := t.TempDir()
 	writeTestManifest(t, root, "working", true)
 	writeTestManifest(t, root, "disabled", false)
@@ -164,6 +167,19 @@ func TestDiscoverRegisterAndExecutePlugin(t *testing.T) {
 
 	if _, err := command.Execute(ctx, "protocol-error"); err == nil || !strings.Contains(err.Error(), "protocol error") {
 		t.Fatalf("malformed stdout error = %v", err)
+	}
+	if err := plugins[0].Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := registry.Tool("echo"); ok {
+		t.Fatal("plugin tool remained registered after Close")
+	}
+	if _, ok := registry.Command("say"); ok {
+		t.Fatal("plugin command remained registered after Close")
+	}
+	event, err = registry.RunHooks(ctx, "before", map[string]any{})
+	if err != nil || event["plugin"] != nil {
+		t.Fatalf("plugin hook remained after Close: event=%v err=%v", event, err)
 	}
 }
 
@@ -243,8 +259,22 @@ func TestPluginCallCancellation(t *testing.T) {
 // TestPluginHelper is run in a subprocess by the integration tests. Keeping the
 // fake plugin in this test binary avoids non-standard dependencies or scripts.
 func TestPluginHelper(t *testing.T) {
-	if os.Getenv("NOTCH_PLUGIN_HELPER") != "1" {
+	helper := false
+	for _, arg := range os.Args[1:] {
+		if arg == "-test.run=^TestPluginHelper$" {
+			if _, err := os.Stat("plugin.json"); err == nil {
+				helper = true
+			}
+			break
+		}
+	}
+	if !helper {
 		return
+	}
+	// Plugin subprocesses intentionally do not inherit arbitrary test flags
+	// such as NOTCH_PLUGIN_HELPER, or provider/CI credentials.
+	if os.Getenv("NOTCH_PLUGIN_HELPER") != "" || os.Getenv("OPENAI_API_KEY") != "" || os.Getenv("GITHUB_TOKEN") != "" || os.Getenv("CI_JOB_TOKEN") != "" {
+		os.Exit(3)
 	}
 
 	scanner := bufio.NewScanner(os.Stdin)

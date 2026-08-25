@@ -12,11 +12,16 @@ import (
 	"github.com/trobrock/notch/internal/model"
 )
 
+type clientConnection struct {
+	client rpcClient
+	lease  *extension.Registration
+}
+
 // Manager owns the connections and processes backing configured MCP servers.
 type Manager struct {
-	mu      sync.Mutex
-	clients []rpcClient
-	closed  bool
+	mu          sync.Mutex
+	connections []clientConnection
+	closed      bool
 }
 
 // ConnectConfigured connects enabled servers, performs the MCP handshake, and
@@ -47,7 +52,9 @@ func ConnectConfigured(ctx context.Context, cfg Config, registry *extension.Regi
 			_ = manager.Close()
 			return nil, fmt.Errorf("connect MCP server %q: %w", name, err)
 		}
-		manager.clients = append(manager.clients, client)
+		connection := clientConnection{client: client}
+		manager.connections = append(manager.connections, connection)
+		connectionIndex := len(manager.connections) - 1
 		if err := initialize(ctx, client); err != nil {
 			_ = manager.Close()
 			return nil, fmt.Errorf("MCP server %q: %w", name, err)
@@ -57,6 +64,7 @@ func ConnectConfigured(ctx context.Context, cfg Config, registry *extension.Regi
 			_ = manager.Close()
 			return nil, fmt.Errorf("MCP server %q: %w", name, err)
 		}
+		serverTools := make([]extension.Tool, 0, len(tools))
 		for _, remote := range tools {
 			if remote.Name == "" {
 				_ = manager.Close()
@@ -93,11 +101,14 @@ func ConnectConfigured(ctx context.Context, cfg Config, registry *extension.Regi
 					return extension.ToolResult{Content: content, IsError: result.IsError, Details: details}, nil
 				},
 			}
-			if err := registry.RegisterTool(tool); err != nil {
-				_ = manager.Close()
-				return nil, fmt.Errorf("register MCP server %q tool %q: %w", name, remote.Name, err)
-			}
+			serverTools = append(serverTools, tool)
 		}
+		lease, err := registry.RegisterBatch(extension.Batch{Tools: serverTools})
+		if err != nil {
+			_ = manager.Close()
+			return nil, fmt.Errorf("register MCP server %q tools: %w", name, err)
+		}
+		manager.connections[connectionIndex].lease = lease
 	}
 	return manager, nil
 }
@@ -130,13 +141,16 @@ func (m *Manager) Close() error {
 		return nil
 	}
 	m.closed = true
-	clients := append([]rpcClient(nil), m.clients...)
-	m.clients = nil
+	connections := append([]clientConnection(nil), m.connections...)
+	m.connections = nil
 	m.mu.Unlock()
 
 	var errs []error
-	for i := len(clients) - 1; i >= 0; i-- {
-		if err := clients[i].close(); err != nil {
+	for i := len(connections) - 1; i >= 0; i-- {
+		if err := connections[i].lease.Close(); err != nil {
+			errs = append(errs, err)
+		}
+		if err := connections[i].client.close(); err != nil {
 			errs = append(errs, err)
 		}
 	}

@@ -8,13 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os/exec"
 	"sort"
 	"strings"
 	"sync"
 
 	"github.com/trobrock/notch/internal/agent"
 	"github.com/trobrock/notch/internal/extension"
+	sharedprocess "github.com/trobrock/notch/internal/process"
 	"github.com/trobrock/notch/internal/resources"
 	"github.com/trobrock/notch/internal/session"
 )
@@ -79,24 +79,7 @@ func (s *Server) SetSession(current *session.Session) {
 func (s *Server) CWD() string { return s.cwd }
 
 func (s *Server) Exec(ctx context.Context, command string, args []string) (string, string, int, error) {
-	if strings.TrimSpace(command) == "" {
-		return "", "", -1, errors.New("empty command")
-	}
-	cmd := exec.CommandContext(ctx, command, args...)
-	cmd.Dir = s.cwd
-	var stdout, stderr strings.Builder
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	err := cmd.Run()
-	exitCode := 0
-	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			exitCode = exitErr.ExitCode()
-		} else {
-			exitCode = -1
-		}
-	}
-	return stdout.String(), stderr.String(), exitCode, err
+	return sharedprocess.Run(ctx, s.cwd, command, args)
 }
 
 func (s *Server) Input(context.Context, string, string) (string, error) {

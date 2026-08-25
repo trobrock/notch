@@ -14,8 +14,16 @@ Include the affected version, platform, impact, reproduction steps, and any sugg
 
 ## Security boundaries
 
-Notch executes tools, extensions, plugins, MCP servers, and provider-directed tool calls with the current user's privileges. It does not currently provide a sandbox or per-tool approval UI. Only install extensions and MCP servers you trust, review commands before requesting destructive work, and avoid running Notch with elevated privileges.
+Notch executes enabled tools, Lua extensions, executable plugins, MCP servers, and provider-directed tool calls with the current user's privileges. It does not provide a sandbox or per-command approval UI. Workspace trust is a one-time gate for loading project-controlled `.notch` and `.agents` inputs at the canonical Git root; after trust, enabled project code and tool calls execute automatically. Review project inputs before trusting a workspace, install only extensions and MCP servers you trust, review commands before requesting destructive work, and avoid running Notch with elevated privileges.
+
+Interactive runs prompt only when an untrusted workspace contains supported project inputs. Noninteractive runs skip project `.notch`/`.agents` inputs unless trust was previously persisted; automation can opt in explicitly with `--trust-workspace`. `--safe` bypasses project trust and all project inputs for one run. These controls do not disable global extensions, installed packages, or model tools.
+
+Executable plugins and stdio MCP servers receive a minimal child environment rather than the full Notch environment, excluding provider credentials and typical CI secrets. MCP variables must be passed explicitly with the server's `env` object. This reduces accidental credential exposure but is not a sandbox. Extension host process execution is cancellation-aware and retains at most 1 MiB from each of stdout and stderr while continuing to drain the child.
+
+Human-facing fullscreen and line-mode output sanitizes untrusted model, tool, extension, and session text before display. The line-mode sanitizer is enabled only when its destination is a TTY and retains state across streamed model deltas; redirected line output, JSON event mode, and RPC remain raw machine-oriented streams.
 
 Extension package installation runs no package scripts, rejects unsafe archive/filesystem entries, and locks Git sources to exact commits plus a tree digest. Those checks protect package-manager integrity; they do not make extension code safe. Review a package before `notch extensions install`, and inspect `notch extensions list` for modified or missing content.
 
 Credentials belong in environment variables or Notch's mode-0600 credential store, never in issues, configuration examples, session excerpts, or commits. See [docs/providers.md](docs/providers.md) for credential storage details.
+
+Release GitHub Actions are pinned to full commit SHAs. Build and publish run as separate least-privilege jobs, and published assets receive GitHub build-provenance attestations. Checksums and attestations still depend on GitHub and the repository's workflow security.

@@ -9,7 +9,7 @@ Notch has two first-class extension formats:
 
 Both register the same three concepts: model-callable tools, interactive slash commands, and agent hooks. Executable plugins are the portable option for Go, Python, Rust, shell, or any other language; they do not imply a Node/npm runtime.
 
-Extensions are trusted. Neither format is sandboxed, and host operations execute with the Notch user's privileges.
+Extensions are trusted. Neither format is sandboxed, and host operations execute with the Notch user's privileges. There are no per-command approvals: after an extension is loaded, its operations and model-requested tools execute automatically. Project extensions are loaded only for a trusted workspace.
 
 ## Discovery and ordering
 
@@ -17,14 +17,14 @@ Default extension directories are:
 
 ```text
 ~/.notch/extensions
-<cwd>/.notch/extensions
+<workspace-root>/.notch/extensions  # trusted workspaces only
 ```
 
-`$NOTCH_HOME/extensions` replaces the first path when `NOTCH_HOME` is set. `extension_dirs` can replace the list in config. Directories exported by packages installed through `notch extensions install` are appended after the configured direct directories.
+`$NOTCH_HOME/extensions` replaces the first path when `NOTCH_HOME` is set. `extension_dirs` can replace the list in config. Project `.notch`/`.agents` inputs require one-time persisted trust at the canonical Git root and are skipped by untrusted noninteractive and `--safe` runs; `--trust-workspace` is the explicit automation opt-in. Directories exported by packages installed through `notch extensions install` are appended after the configured direct directories.
 
 Notch recursively discovers files named `plugin.json` for executable plugins. It also loads `.lua` files located directly in each configured extension directory; Lua discovery is not recursive. Manifest paths and Lua filenames are sorted. User directories precede project directories by default.
 
-Tool and command names are global. A duplicate is rejected rather than overriding a built-in or an earlier extension. Executable plugin failures are reported independently. Lua loading stops on the first Lua error and reports a warning; declarations from Lua files already committed remain loaded.
+Tool and command names are global. A duplicate is rejected rather than overriding a built-in or an earlier extension. Lua and executable plugins register each extension's complete tool/command/hook set atomically, and closing an extension unregisters that batch. Executable plugin failures are reported independently. A Lua load failure rolls back every Lua file loaded by that `LoadDirs` call, so no partial Lua registrations remain.
 
 ## Lua API
 
@@ -128,7 +128,7 @@ local entries = notch.session.entries("example-state")
 
 `notch.session.append` / `entries` are available to Lua and executable plugins in every run mode when session persistence is enabled. Editor access is fullscreen-only.
 
-`notch.exec` executes an argv array in Notch's working directory; it does not invoke a shell. A failed start or non-zero exit raises a Lua error with the current host implementation. UI levels are display labels rather than a fixed enum. `notch.follow_up` asks the host to deliver a synthetic user follow-up. Keyed statuses persist in the fullscreen footer until replaced or cleared. Keyed panels provide bounded, non-interactive content above the composer; publishing an empty title and lines clears one. Line mode ignores statuses and panels, while RPC mode emits corresponding events. Lua execution observes agent cancellation, including tight-running Lua code.
+`notch.exec` executes an argv array in Notch's working directory; it does not invoke a shell. It honors cancellation, terminates the child process group where supported, and retains at most 1 MiB from each of stdout and stderr while continuing to drain the process. A failed start or non-zero exit raises a Lua error with the current host implementation. UI levels are display labels rather than a fixed enum. `notch.follow_up` asks the host to deliver a synthetic user follow-up. Keyed statuses persist in the fullscreen footer until replaced or cleared. Keyed panels provide bounded, non-interactive content above the composer; publishing an empty title and lines clears one. Line mode ignores statuses and panels, while RPC mode emits corresponding events. Lua execution observes agent cancellation, including tight-running Lua code.
 
 Extension prompts are rendered as dedicated question blocks rather than ordinary notices. Selection prompts show a bold question, a highlighted current option, descriptions on separate muted lines, keyboard hints, and a filter only after typing. Up/Down changes selection, Enter confirms, typing filters labels and descriptions, Backspace/Ctrl-U edits the filter, and Escape/Ctrl-C cancels. Free-form prompts clearly show their placeholder and submit/newline/cancel controls.
 
@@ -235,7 +235,7 @@ A plugin is a directory containing `plugin.json` and its program. For example:
 }
 ```
 
-`name` and a non-empty `command` array are required. **`enabled` must be explicitly `true`**; unlike MCP server config, omission disables the plugin. The child working directory is the manifest directory. Environment is inherited. stderr is passed through to Notch's stderr, while stdout is reserved exclusively for protocol messages.
+`name` and a non-empty `command` array are required. **`enabled` must be explicitly `true`**; unlike MCP server config, omission disables the plugin. The child working directory is the manifest directory. It receives only a minimal inherited environment (`PATH`, home/user, temporary-directory, locale, terminal, and SSH-agent basics, plus required Windows process variables), intentionally excluding provider credentials, token variables, and typical CI secrets; plugin manifests do not add environment overrides. stderr is passed through to Notch's stderr, while stdout is reserved exclusively for protocol messages.
 
 ## Executable plugin protocol
 
@@ -339,7 +339,7 @@ Get the working directory:
 {"jsonrpc":"2.0","id":"host-1","method":"host.cwd","params":{}}
 ```
 
-Run a program without a shell:
+Run a program without a shell. Host execution is cancellation-aware, terminates the child process group where supported, and retains at most 1 MiB each of stdout and stderr while continuing to drain larger output:
 
 ```json
 {"jsonrpc":"2.0","id":"host-2","method":"host.exec","params":{"command":"git","args":["status","--short"]}}
@@ -417,4 +417,4 @@ for line in sys.stdin:
 
 ## Choosing a format
 
-Use Lua for small, trusted, low-deployment-cost customizations. Use an executable plugin when you need a different language, process isolation for crashes, external libraries, or a protocol boundary shared with other tools. Porting a Pi TypeScript extension generally means translating its registrations and event handlers to one of these APIs; Notch does not embed a TypeScript/JavaScript runtime.
+Use Lua as a first-class format for small, trusted, low-deployment-cost customizations. Use an executable plugin when you need a different language, process isolation for crashes, external libraries, or a protocol boundary shared with other tools. Porting a Pi TypeScript extension generally means translating its registrations and event handlers to one of these APIs; Notch does not embed a TypeScript/JavaScript runtime.

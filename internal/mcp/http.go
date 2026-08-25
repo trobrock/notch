@@ -16,7 +16,10 @@ import (
 	"time"
 )
 
-const sessionHeader = "Mcp-Session-Id"
+const (
+	sessionHeader       = "Mcp-Session-Id"
+	maxHTTPResponseSize = 16 << 20
+)
 
 type httpClient struct {
 	url     string
@@ -123,9 +126,19 @@ func (c *httpClient) post(ctx context.Context, message any, expectedID int64, re
 	switch mediaType {
 	case "application/json":
 		var result rpcResponse
-		decoder := json.NewDecoder(response.Body)
+		limited := &io.LimitedReader{R: response.Body, N: maxHTTPResponseSize + 1}
+		decoder := json.NewDecoder(limited)
 		if err := decoder.Decode(&result); err != nil {
 			return rpcResponse{}, fmt.Errorf("decode MCP HTTP response: %w", err)
+		}
+		if limited.N <= 0 {
+			return rpcResponse{}, fmt.Errorf("MCP HTTP JSON response exceeds %d MiB", maxHTTPResponseSize>>20)
+		}
+		var extra any
+		if err := decoder.Decode(&extra); err == nil {
+			return rpcResponse{}, errors.New("MCP HTTP JSON response contains multiple values")
+		} else if !errors.Is(err, io.EOF) {
+			return rpcResponse{}, fmt.Errorf("finish MCP HTTP response: %w", err)
 		}
 		return result, nil
 	case "text/event-stream":
@@ -164,12 +177,14 @@ func readSSEResponse(reader io.Reader, expectedID int64) (rpcResponse, error) {
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 4096), 4<<20)
 	var data []string
+	dataBytes := 0
 	parseEvent := func() (rpcResponse, bool, error) {
 		if len(data) == 0 {
 			return rpcResponse{}, false, nil
 		}
 		payload := strings.Join(data, "\n")
 		data = data[:0]
+		dataBytes = 0
 		var response rpcResponse
 		if err := json.Unmarshal([]byte(payload), &response); err != nil {
 			return rpcResponse{}, false, fmt.Errorf("decode MCP SSE data: %w", err)
@@ -195,6 +210,14 @@ func readSSEResponse(reader io.Reader, expectedID int64) (rpcResponse, error) {
 			if strings.HasPrefix(value, " ") {
 				value = value[1:]
 			}
+			additional := len(value)
+			if len(data) != 0 {
+				additional++
+			}
+			if dataBytes > maxHTTPResponseSize-additional {
+				return rpcResponse{}, fmt.Errorf("MCP SSE event exceeds %d MiB", maxHTTPResponseSize>>20)
+			}
+			dataBytes += additional
 			data = append(data, value)
 		}
 	}

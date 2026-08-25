@@ -5,7 +5,7 @@ This maps the Pi installation reviewed before Notch was created. It is a porting
 | Pi extension | Notch target | Current status |
 |---|---|---|
 | `developerly-ask-user-question.ts` | Official Lua tool using `notch.ui.input/select` | Host primitives exist; port needed |
-| `developerly-auto-trust-worktrees.ts` | Early native trust policy | Trust phase/store not implemented |
+| `developerly-auto-trust-worktrees.ts` | Native persisted workspace trust | Implemented at canonical Git root; interactive prompt only when project inputs exist, plus `--trust-workspace` and `--safe` |
 | `developerly-explore-subagent.ts` | Official executable plugin spawning an isolated Notch child | Plugin/process primitives exist; hardened runner and port needed |
 | `developerly-goal-loop.ts` | Executable plugin using lifecycle hooks | Basic hooks exist; follow-up/session host APIs need expansion |
 | `developerly-model-system-prompt.ts` | Lua `before_agent_start` hook | Supported; port needed |
@@ -24,7 +24,7 @@ This maps the Pi installation reviewed before Notch was created. It is a porting
 1. Harden official subagent plugins around isolated `notch --mode rpc --no-session --tools ...` children with model/tool/cwd selection, structured events, usage, cancellation, depth guards, and concurrency limits. Promote child execution to a core host service only if the subprocess boundary proves insufficient.
 2. Add supervised background jobs that survive individual turns and can enqueue a follow-up.
 3. Add context replacement and compaction hooks.
-4. Add active-tool sets, keybindings, and a trust hook that runs before project extensions.
+4. Add active-tool sets and configurable keybindings; the native persisted workspace trust gate now runs before project inputs are loaded.
 5. Add a narrow declarative task-widget host API first, then broader widgets, editor dialogs, and session-tree events only when another feature needs them.
 6. Add branch-aware custom session entries if Notch later gains session trees; flat current-session custom entries and prompt-editor access are now supported.
 7. Add MCP OAuth, elicitation, sampling, resources/prompts, and app UI support.

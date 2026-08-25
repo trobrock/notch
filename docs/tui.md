@@ -108,7 +108,7 @@ When thinking is enabled, a static `● Thinking…` row appears while the model
 
 Tool cards use `●`, `✓`, and `✗` for pending, successful, and failed calls respectively, together with distinct state-colored backgrounds. Arguments are summarized as compact `key=value` pairs: useful keys are prioritized, large content/edit bodies are omitted, and long values or summaries are shortened. The summary stays on the title row when it fits and otherwise wraps below it. Output appears below a `│` bar in muted text. Updates and successful results retain at most eight lines, errors at most sixteen, and output text is capped at 2,000 runes with an ellipsis or omitted-line count. There is currently no expand control for the shortened content.
 
-All model, tool, label, argument, URL, and notice text is sanitized before display: terminal control characters are replaced rather than allowed to inject cursor movement, OSC commands, or other terminal controls. Only renderer-generated styling sequences reach the screen.
+Model, tool, label, argument, URL, notice, extension, and session text is sanitized in the fullscreen renderer and before line-mode writes to a TTY: ANSI/CSI/OSC and related terminal controls are removed, with line-mode streaming sanitizer state retained across model deltas. Only renderer-generated styling sequences reach the fullscreen display. Redirected line output, JSON event mode, and RPC are not sanitized, preserving raw machine-oriented streams.
 
 ## Rendering and idle behavior
 
@@ -128,4 +128,4 @@ The fullscreen UI currently has no:
 - inline mode that preserves output in the normal screen buffer;
 - expand/collapse control for shortened tool output.
 
-It also does not add tool approval or interactive session-tree navigation. Use `--no-tui` when alternate-screen operation is undesirable.
+It also does not add an interactive session tree. Notch intentionally has no per-command approval prompts; trusted tool execution is automatic. Use `--no-tui` when alternate-screen operation is undesirable.

@@ -6,8 +6,8 @@ Notch is one Go program with a deliberately small provider-independent agent loo
 
 `cmd/notch/main.go` is the composition root. Startup proceeds in this order:
 
-1. Dispatch standalone authentication, model-list, extension-package, version, and upgrade commands; otherwise parse agent flags and determine the current directory and home directory.
-2. Load defaults, user config, and project config; apply `NOTCH_PROVIDER`, `NOTCH_MODEL`, and `NOTCH_THINKING_LEVEL`; then apply CLI overrides.
+1. Dispatch standalone authentication, model-list, extension-package, version, and upgrade commands. Authentication and model-list commands load global configuration only. Otherwise parse agent flags, determine the current directory and home directory, and resolve the canonical workspace root from Git (falling back to the current directory outside Git).
+2. Resolve one-time persisted workspace trust. Prompt only when project inputs exist and stdin/stdout are terminals; noninteractive untrusted and `--safe` runs skip project `.notch`/`.agents` inputs, while `--trust-workspace` persists trust for automation. Load defaults and user config, add trusted project config/discovery paths, apply `NOTCH_PROVIDER`, `NOTCH_MODEL`, and `NOTCH_THINKING_LEVEL`, then CLI overrides. Project `base_url`, `auth_file`, `session_dir`, and `model_cache` are always ignored as global-only.
 3. Recover any interrupted package transaction, validate installed package manifests, append their exported extension directories, and create configured extension, skill, prompt, theme, and session directories.
 4. Load built-in and custom theme JSON, select the configured theme, then create the terminal and extension registry and register built-in tools and official extensions.
 5. Discover and start executable plugins, then load top-level Lua files.
@@ -16,7 +16,7 @@ Notch is one Go program with a deliberately small provider-independent agent loo
 8. Resolve the selected provider's environment or stored credential (refreshing expiring OAuth when needed), create the provider, refresh its model cache in the background when stale, create or resume a session, and construct the agent.
 9. Run RPC mode, one prompt, the fullscreen TUI when both interactive streams are terminals, or the line-oriented fallback loop.
 
-Malformed custom themes and plugin, Lua, and MCP load failures are generally shown as warnings so startup can continue. A failure while connecting a configured MCP set causes that set to be closed rather than leaving partial MCP connections active. Duplicate tool or command names are rejected; built-ins therefore cannot be silently replaced.
+Malformed custom themes and plugin, Lua, and MCP load failures are generally shown as warnings so startup can continue. Extension registry batches make each plugin, Lua file, or MCP server registration atomic and remove its tools, commands, and hooks on close. A Lua load call rolls back all files loaded by that call on failure; a failure while connecting a configured MCP set closes connections and unregisters their tools. Duplicate tool or command names are rejected; built-ins therefore cannot be silently replaced.
 
 ## Packages
 
@@ -32,7 +32,9 @@ Malformed custom themes and plugin, Lua, and MCP load failures are generally sho
 - `internal/agent`: serialized model/tool loop and event emission.
 - `internal/tools`: built-in filesystem, search, edit, and shell tools.
 - `internal/officialext`: official extensions linked into the binary and registered automatically.
-- `internal/session`: durable append-only JSONL conversation storage.
+- `internal/workspace`: canonical Git-root discovery and mode-protected persisted workspace trust.
+- `internal/process`: cancellation-aware bounded host execution and minimal child environments.
+- `internal/session`: durable append-only JSONL conversation storage with torn-tail recovery and invalid-session isolation during discovery.
 - `internal/resources`: discovery and expansion of Markdown skills/templates.
 - `internal/extension`: common registry plus executable JSON-RPC plugin host.
 - `internal/luaext`: embedded Lua manager and Notch Lua API.
@@ -44,7 +46,7 @@ Malformed custom themes and plugin, Lua, and MCP load failures are generally sho
 
 ## Agent loop
 
-The agent stores a provider-neutral ordered message list. Calls to an agent are mutex-serialized, so interactive history and the session file cannot interleave.
+The agent stores a provider-neutral ordered message list. Calls to an agent are mutex-serialized, so interactive history and the session file cannot interleave. Session appends are made durable before the corresponding in-memory message becomes visible.
 
 For each user prompt:
 
@@ -70,7 +72,7 @@ The model layer represents text, tool use, and tool results as typed blocks. Eac
 - Codex reuses the native Responses translation but sends to ChatGPT's `/backend-api/codex/responses` path with the OAuth account scope required by the Codex backend.
 - OpenRouter sends streaming requests to `<base_url>/chat/completions` and translates Chat Completions messages and tool calls.
 
-Answer text and provider-supplied thinking summaries are streamed to the terminal; tool arguments are assembled from deltas before execution. Completed assistant content, thinking blocks, and token usage are retained. OpenAI Responses/Codex reasoning summaries, Anthropic thinking blocks and signatures, and OpenRouter reasoning deltas use the same provider-neutral stream event. All adapters receive the provider-neutral thinking level: OpenAI Responses, Codex, and OpenRouter translate it to native reasoning effort, while Anthropic uses adaptive effort on supported models or a bounded thinking budget on older models. Provider/model support still varies and services may clamp or reject a setting. API keys come from environment variables, while OAuth login supports `openai-codex`, `anthropic`, and `openrouter`. Stored credentials live in `~/.notch/auth.json` (or `$NOTCH_HOME/auth.json`) and refresh near expiry when the provider issues refresh tokens. There is no provider discovery, automatic model selection, fallback, retry policy, or rate-limit scheduler yet. See [providers.md](providers.md) for authentication precedence and verification notes.
+A clean EOF is accepted only after the provider's explicit completion event (`message_stop`, a Responses completion event, or `[DONE]`). If an SSE connection ends first, the adapter returns an incomplete-stream error rather than treating partial text as a successful response. Answer text and provider-supplied thinking summaries are streamed to the terminal; tool arguments are assembled from deltas before execution. Completed assistant content, thinking blocks, and token usage are retained. OpenAI Responses/Codex reasoning summaries, Anthropic thinking blocks and signatures, and OpenRouter reasoning deltas use the same provider-neutral stream event. All adapters receive the provider-neutral thinking level: OpenAI Responses, Codex, and OpenRouter translate it to native reasoning effort, while Anthropic uses adaptive effort on supported models or a bounded thinking budget on older models. Provider/model support still varies and services may clamp or reject a setting. API keys come from environment variables, while OAuth login supports `openai-codex`, `anthropic`, and `openrouter`. Stored credentials live in `~/.notch/auth.json` (or `$NOTCH_HOME/auth.json`) and refresh near expiry when the provider issues refresh tokens. There is no provider discovery, automatic model selection, fallback, retry policy, or rate-limit scheduler yet. See [providers.md](providers.md) for authentication precedence and verification notes.
 
 Ollama uses the OpenAI adapter with `base_url` such as `http://localhost:11434`. Consequently it must expose `/v1/responses`; configuring an older Chat Completions-only server is insufficient.
 
@@ -92,11 +94,11 @@ The built-ins resolve relative paths against Notch's startup working directory. 
 
 ## Sessions and resources
 
-Sessions are version-1 JSONL files. Creation is exclusive, names combine UTC time and random bytes, and files are mode 0600. The metadata header includes the original CWD/provider/model; messages use the provider-neutral block representation. Appends and the initial header are synced to disk. `--continue` opens the most recently modified `.jsonl` file; `--resume` resolves an exact path, ID, filename, or unambiguous ID prefix. The fullscreen `/resume` selector inspects valid sessions and orders them by modification time.
+Sessions are version-1 JSONL files. Creation is exclusive, names combine UTC time and random bytes, and files are mode 0600. The metadata header includes the original CWD/provider/model; messages use the provider-neutral block representation. Appends and the initial header are synced to disk before the in-memory message is committed. `--continue` opens the most recently modified valid `.jsonl` file; `--resume` resolves an exact path, ID, filename, or unambiguous ID prefix. A malformed unterminated final record is truncated only when its valid prefix proves it is a torn write. Discovery skips other damaged sessions so one file does not break `/resume` or latest-session selection.
 
 Sessions preserve conversation state, not process state: extension declarations, current config, system prompt, and MCP connections are rebuilt on every launch. Message, compaction, and reset records determine the effective context. Per-turn `usage` records retain provider, model, input/output token counts, and stop reason for external accounting without changing resumed context. When continuing, the provider and model used for new requests come from current config/CLI, even though the original values remain in the session header. Fullscreen `/new` creates and switches to a distinct session when persistence is enabled; `/resume` restores an existing session's effective messages and submitted-input history. In no-session mode `/new` resets only memory and resume is disabled.
 
-Resources are read once at startup. The binary embeds `notch-config` and `notch-extension` skills so an installed Notch can configure itself and author extensions without a source checkout. Bundled skills are the lowest-precedence layer and may be overridden by a disk skill with the same declared name. In addition to configured Notch directories, discovery reads `~/.agents/skills`, `<cwd>/.agents/skills`, `~/.agents/commands`, and `<cwd>/.agents/commands` without creating those shared directories. Skills accept top-level Markdown files and one-level `name/SKILL.md` directories. Commands/templates accept top-level Markdown files and expose descriptions plus optional `argument-hint` metadata to slash completion. Later directories overwrite earlier resources by declared name. Their bodies are expanded into ordinary user input before it enters the agent.
+Resources are read once at startup. The binary embeds `notch-config` and `notch-extension` skills so an installed Notch can configure itself and author extensions without a source checkout. Bundled skills are the lowest-precedence layer and may be overridden by a disk skill with the same declared name. In addition to configured Notch directories, discovery reads `~/.agents/skills` and `~/.agents/commands`, plus trusted `<workspace-root>/.agents/skills` and `<workspace-root>/.agents/commands`, without creating those shared directories. Untrusted/noninteractive and `--safe` runs omit project resources. Skills accept top-level Markdown files and one-level `name/SKILL.md` directories. Commands/templates accept top-level Markdown files and expose descriptions plus optional `argument-hint` metadata to slash completion. Later directories overwrite earlier resources by declared name. Their bodies are expanded into ordinary user input before it enters the agent.
 
 The system prompt normally comes from layered configuration. `--system-prompt` and `--system-prompt-file` provide mutually exclusive process-local overrides; the file form lets subprocess integrations pass multiline instructions without command-line quoting or size issues.
 
@@ -120,7 +122,7 @@ The official extensions currently provide `ask_user_question`, an automatically 
 
 Lua extensions run in-process in isolated Lua states (one state per file). Calls into a state are serialized and inherit the request context for cancellation. They are trusted code and can call exposed host operations.
 
-Executable plugins run as child processes with their working directory set to the manifest directory. Newline-delimited JSON-RPC 2.0 travels over stdin/stdout; stderr is inherited for diagnostics. This boundary is language-neutral but is not a security sandbox. The host can execute programs, read input, present a selection, notify the user, publish keyed footer statuses and non-interactive panels, and report the working directory.
+Executable plugins run as child processes with their working directory set to the manifest directory. Newline-delimited JSON-RPC 2.0 travels over stdin/stdout; stderr is inherited for diagnostics. Children receive a minimal process environment rather than provider credentials or typical CI secrets. Stdio MCP servers use the same baseline plus their explicitly configured `env` values. This boundary is language-neutral but is not a security sandbox. The host can execute programs, read input, present a selection, notify the user, publish keyed footer statuses and non-interactive panels, and report the working directory. Host execution honors cancellation and bounds retained stdout and stderr to 1 MiB each.
 
 MCP is a separate client boundary. Stdio servers are child processes; HTTP servers support JSON and SSE responses plus MCP session IDs. Tools are namespaced to avoid cross-server collisions. Notch currently consumes MCP tools only. MCP resources, prompts, sampling, elicitation, and OAuth are outside the MVP.
 
@@ -132,4 +134,4 @@ The fullscreen event loop blocks on terminal input, agent/extension events, and 
 
 Extension `Input` and `Select` calls rendezvous with the fullscreen event loop and appear as modal transcript/composer interactions; requests are queued and honor cancellation. The line fallback presents the same host operations as ordinary prompts.
 
-With `--json`, agent events are JSON-encoded to stdout as JSONL. Startup warnings can still appear on stderr. Consumers should treat event additions as possible while the MVP API settles. Current fullscreen gaps include general mouse clicking beyond text selection, configurable keybindings, inline (non-alternate-screen) mode, tool-output expand/collapse, tool approval, and branching/session-tree navigation beyond the flat resume selector.
+With `--json`, agent events are JSON-encoded to stdout as JSONL. Startup warnings can still appear on stderr. Consumers should treat event additions as possible while the MVP API settles. Current fullscreen gaps include general mouse clicking beyond text selection, configurable keybindings, inline (non-alternate-screen) mode, tool-output expand/collapse, and branching/session-tree navigation beyond the flat resume selector. Notch deliberately has no per-command approval flow; trusted tool execution remains automatic.

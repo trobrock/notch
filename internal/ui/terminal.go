@@ -9,13 +9,15 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
 
+	"golang.org/x/term"
+
 	"github.com/trobrock/notch/internal/agent"
 	"github.com/trobrock/notch/internal/extension"
+	sharedprocess "github.com/trobrock/notch/internal/process"
 	"github.com/trobrock/notch/internal/session"
 )
 
@@ -27,10 +29,45 @@ type Terminal struct {
 	mu        sync.Mutex
 	sessionMu sync.RWMutex
 	session   *session.Session
+
+	outTTY      bool
+	errTTY      bool
+	outSanitize terminalSanitizer
 }
 
 func NewTerminal(in io.Reader, out, errOut io.Writer, cwd string) *Terminal {
-	return &Terminal{reader: bufio.NewReader(in), out: out, errOut: errOut, cwd: cwd}
+	return &Terminal{
+		reader: bufio.NewReader(in), out: out, errOut: errOut, cwd: cwd,
+		outTTY: isTerminalWriter(out), errTTY: isTerminalWriter(errOut),
+	}
+}
+
+func isTerminalWriter(writer io.Writer) bool {
+	file, ok := writer.(*os.File)
+	return ok && term.IsTerminal(int(file.Fd()))
+}
+
+func (t *Terminal) writeOut(text string) {
+	if t.outTTY {
+		var sanitizer terminalSanitizer
+		text = sanitizer.clean(text)
+	}
+	_, _ = io.WriteString(t.out, text)
+}
+
+func (t *Terminal) writeStreamOut(text string) {
+	if t.outTTY {
+		text = t.outSanitize.clean(text)
+	}
+	_, _ = io.WriteString(t.out, text)
+}
+
+func (t *Terminal) writeErr(text string) {
+	if t.errTTY {
+		var sanitizer terminalSanitizer
+		text = sanitizer.clean(text)
+	}
+	_, _ = io.WriteString(t.errOut, text)
 }
 
 // SetSession supplies the current session used by extension persistence APIs.
@@ -43,24 +80,7 @@ func (t *Terminal) SetSession(current *session.Session) {
 func (t *Terminal) CWD() string { return t.cwd }
 
 func (t *Terminal) Exec(ctx context.Context, command string, args []string) (string, string, int, error) {
-	if command == "" {
-		return "", "", -1, errors.New("empty command")
-	}
-	cmd := exec.CommandContext(ctx, command, args...)
-	cmd.Dir = t.cwd
-	var stdout, stderr strings.Builder
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	err := cmd.Run()
-	exit := 0
-	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			exit = exitErr.ExitCode()
-		} else {
-			exit = -1
-		}
-	}
-	return stdout.String(), stderr.String(), exit, err
+	return sharedprocess.Run(ctx, t.cwd, command, args)
 }
 
 func (t *Terminal) Input(ctx context.Context, prompt, placeholder string) (string, error) {
@@ -70,9 +90,9 @@ func (t *Terminal) Input(ctx context.Context, prompt, placeholder string) (strin
 		return "", err
 	}
 	if placeholder != "" {
-		fmt.Fprintf(t.out, "%s (%s): ", prompt, placeholder)
+		t.writeOut(fmt.Sprintf("%s (%s): ", prompt, placeholder))
 	} else {
-		fmt.Fprintf(t.out, "%s: ", prompt)
+		t.writeOut(fmt.Sprintf("%s: ", prompt))
 	}
 	line, err := t.reader.ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
@@ -94,11 +114,11 @@ func (t *Terminal) Select(ctx context.Context, prompt string, options []string) 
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	fmt.Fprintln(t.out, prompt)
+	t.writeOut(prompt + "\n")
 	for i, option := range options {
-		fmt.Fprintf(t.out, "  %d. %s\n", i+1, option)
+		t.writeOut(fmt.Sprintf("  %d. %s\n", i+1, option))
 	}
-	fmt.Fprint(t.out, "> ")
+	t.writeOut("> ")
 	line, err := t.reader.ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
 		return "", err
@@ -116,7 +136,7 @@ func (t *Terminal) Notify(message, level string) {
 	if level == "" {
 		level = "info"
 	}
-	fmt.Fprintf(t.errOut, "[%s] %s\n", level, message)
+	t.writeErr(fmt.Sprintf("[%s] %s\n", level, message))
 }
 
 func (t *Terminal) FollowUp(string) error {
@@ -164,7 +184,7 @@ func (t *Terminal) SetPanel(string, string, []string) {}
 func (t *Terminal) ReadPrompt(label string) (string, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	fmt.Fprint(t.out, label)
+	t.writeOut(label)
 	line, err := t.reader.ReadString('\n')
 	if err != nil && !(errors.Is(err, io.EOF) && line != "") {
 		return "", err
@@ -177,17 +197,17 @@ func (t *Terminal) Render(event agent.Event) {
 	defer t.mu.Unlock()
 	switch event.Type {
 	case "text_delta":
-		fmt.Fprint(t.out, event.Text)
+		t.writeStreamOut(event.Text)
 	case "tool_start":
-		fmt.Fprintf(t.errOut, "\n→ %s\n", event.ToolName)
+		t.writeErr(fmt.Sprintf("\n→ %s\n", event.ToolName))
 	case "tool_update":
-		fmt.Fprintf(t.errOut, "  %s\n", event.Text)
+		t.writeErr(fmt.Sprintf("  %s\n", event.Text))
 	case "tool_end":
 		if event.Result != nil && event.Result.IsError {
-			fmt.Fprintf(t.errOut, "  error: %s\n", event.Result.Content)
+			t.writeErr(fmt.Sprintf("  error: %s\n", event.Result.Content))
 		}
 	case "error":
-		fmt.Fprintf(t.errOut, "error: %s\n", event.Text)
+		t.writeErr(fmt.Sprintf("error: %s\n", event.Text))
 	}
 }
 

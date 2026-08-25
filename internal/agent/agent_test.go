@@ -28,6 +28,35 @@ func (f *fakeProvider) Stream(_ context.Context, req model.Request, emit func(mo
 	return model.Response{Content: []model.Block{{Type: "text", Text: "done"}}, StopReason: "end_turn"}, nil
 }
 
+func TestPromptDoesNotMutateMessagesWhenSessionAppendFails(t *testing.T) {
+	store, err := session.New(t.TempDir(), "/work", "fake", "fake")
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &fakeProvider{}
+	a, err := New(Config{Provider: provider, Registry: extension.NewRegistry(), Session: store, Model: "fake"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	err = a.Prompt(context.Background(), "must be durable", nil)
+	if err == nil || !strings.Contains(err.Error(), "session is closed") {
+		t.Fatalf("Prompt() error = %v", err)
+	}
+	if messages := a.Messages(); len(messages) != 0 {
+		t.Fatalf("messages mutated after failed append: %#v", messages)
+	}
+	if count := a.MessageCount(); count != 0 {
+		t.Fatalf("message count = %d, want 0", count)
+	}
+	if provider.calls != 0 {
+		t.Fatalf("provider calls = %d, want 0", provider.calls)
+	}
+}
+
 func TestPromptExecutesToolAndContinues(t *testing.T) {
 	reg := extension.NewRegistry()
 	err := reg.RegisterTool(extension.Tool{Definition: model.ToolDefinition{Name: "echo", InputSchema: map[string]any{"type": "object"}}, Source: "test", Execute: func(_ context.Context, args json.RawMessage, _ func(string)) (extension.ToolResult, error) {
