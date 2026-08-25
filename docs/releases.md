@@ -24,6 +24,24 @@ The updater queries releases from `trobrock/notch`. It supports Linux, macOS, an
 
 The executable's directory must be writable. Installations owned by a package manager should be upgraded through that package manager instead; Notch does not invoke `sudo`. On Unix, the verified binary is written beside the current executable, synced, and atomically renamed into place. On Windows, the current executable is moved aside before replacement; a temporary `.old` file can remain if the running process prevents immediate cleanup.
 
+## POSIX installer
+
+Linux and macOS users can bootstrap a prebuilt release without installing Go:
+
+```sh
+curl --proto '=https' --proto-redir '=https' --tlsv1.2 -sSfL https://raw.githubusercontent.com/trobrock/notch/main/install.sh | sh
+```
+
+The installer supports amd64 and arm64, verifies the selected archive against the release's `checksums.txt`, and atomically places `notch` in `${NOTCH_INSTALL_DIR:-$HOME/.local/bin}`. It never invokes `sudo`. Download the script first to inspect it or pass `--version` and `--install-dir`:
+
+```sh
+curl --proto '=https' --proto-redir '=https' --tlsv1.2 -sSfLo install.sh https://raw.githubusercontent.com/trobrock/notch/main/install.sh
+sh install.sh --version v0.2.0 --install-dir "$HOME/.local/bin"
+rm install.sh
+```
+
+`NOTCH_VERSION` and `NOTCH_INSTALL_DIR` provide equivalent environment-based configuration, including when piping the script. The default version is GitHub's latest stable release. Prereleases require an explicit version.
+
 ## Integrity model
 
 Every release contains platform archives and `checksums.txt`. The release workflow also emits GitHub build-provenance attestations for the published assets. The updater:

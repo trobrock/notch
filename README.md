@@ -43,7 +43,21 @@ make build
 ./bin/notch --version
 ```
 
-Prebuilt archives for Linux, macOS, and Windows on amd64 and arm64 are attached to each [GitHub release](https://github.com/trobrock/notch/releases). Verify an archive against the release's `checksums.txt`, unpack it, and place `notch` on `PATH`. Or install directly into `GOBIN`/`$GOPATH/bin`:
+Prebuilt archives for Linux, macOS, and Windows on amd64 and arm64 are attached to each [GitHub release](https://github.com/trobrock/notch/releases). On Linux or macOS, the POSIX installer downloads the latest compatible archive, verifies its SHA-256 checksum, and installs it to `~/.local/bin`:
+
+```sh
+curl --proto '=https' --proto-redir '=https' --tlsv1.2 -sSfL https://raw.githubusercontent.com/trobrock/notch/main/install.sh | sh
+```
+
+To choose an exact version or installation directory, download the script and pass options (or set `NOTCH_VERSION` and `NOTCH_INSTALL_DIR`):
+
+```sh
+curl --proto '=https' --proto-redir '=https' --tlsv1.2 -sSfLo install.sh https://raw.githubusercontent.com/trobrock/notch/main/install.sh
+sh install.sh --version v0.2.0 --install-dir "$HOME/.local/bin"
+rm install.sh
+```
+
+For Windows, or to install manually, verify the archive against the release's `checksums.txt`, unpack it, and place `notch` or `notch.exe` on `PATH`. Alternatively, install directly into `GOBIN`/`$GOPATH/bin` with Go:
 
 ```sh
 go install github.com/trobrock/notch/cmd/notch@latest
