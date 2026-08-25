@@ -65,6 +65,6 @@ jobs:
           if [[ "$GITHUB_REF_NAME" == *-* ]]; then
             flags+=(--prerelease)
           fi
-          gh release create "$GITHUB_REF_NAME" dist/* "${flags[@]}"
+          gh release create --repo "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" dist/* "${flags[@]}"
         env:
           GH_TOKEN: ${{ github.token }}
