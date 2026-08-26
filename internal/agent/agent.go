@@ -18,6 +18,8 @@ import (
 	"github.com/trobrock/notch/internal/session"
 )
 
+var ErrNotProcessing = errors.New("agent is not processing")
+
 type QueuedMessage struct {
 	ID   string `json:"id"`
 	Mode string `json:"mode"`
@@ -226,7 +228,7 @@ func (a *Agent) enqueueMessage(mode, text string) (QueuedMessage, error) {
 	a.queueMu.Lock()
 	if !a.processing {
 		a.queueMu.Unlock()
-		return QueuedMessage{}, errors.New("agent is not processing")
+		return QueuedMessage{}, ErrNotProcessing
 	}
 	a.queueSequence++
 	message := QueuedMessage{ID: fmt.Sprintf("q-%d", a.queueSequence), Mode: mode, Text: text}

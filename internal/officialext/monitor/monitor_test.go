@@ -13,8 +13,10 @@ import (
 )
 
 type testHost struct {
-	mu        sync.Mutex
-	followups []string
+	mu          sync.Mutex
+	followups   []string
+	followUpErr error
+	notices     []string
 }
 
 func (*testHost) CWD() string { return "." }
@@ -23,12 +25,16 @@ func (*testHost) Exec(context.Context, string, []string) (string, string, int, e
 }
 func (*testHost) Input(context.Context, string, string) (string, error)    { return "", nil }
 func (*testHost) Select(context.Context, string, []string) (string, error) { return "", nil }
-func (*testHost) Notify(string, string)                                    {}
+func (h *testHost) Notify(message, _ string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.notices = append(h.notices, message)
+}
 func (h *testHost) FollowUp(s string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.followups = append(h.followups, s)
-	return nil
+	return h.followUpErr
 }
 func (*testHost) Handoff(string, bool) error                                       { return nil }
 func (*testHost) SetActiveTools([]string) error                                    { return nil }
@@ -122,5 +128,27 @@ func TestStopMonitor(t *testing.T) {
 	}
 	if result.Content != "Stopped monitor mon-1" {
 		t.Fatalf("result=%#v", result)
+	}
+}
+
+func TestMonitorReportsWakeupDeliveryFailure(t *testing.T) {
+	r, h := setup(t)
+	h.followUpErr = errors.New("agent is idle")
+	tool, _ := r.Tool("monitor_command")
+	if _, err := tool.Execute(context.Background(), json.RawMessage(`{"command":"printf done","name":"delivery"}`), nil); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		return len(h.notices) != 0
+	})
+	list, _ := r.Tool("list_monitors")
+	result, err := list.Execute(context.Background(), json.RawMessage(`{}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result.Content, "Wake-up delivery failed: agent is idle") {
+		t.Fatalf("list=%q", result.Content)
 	}
 }

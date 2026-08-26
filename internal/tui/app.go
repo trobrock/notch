@@ -98,6 +98,7 @@ type appState struct {
 	tools               map[string]int
 	queuedText          map[string]string
 	promptErrored       bool
+	pendingFollowUps    []string
 	providerUsage       *agent.Usage
 	commandHelp         bool
 	completionDismissed string
@@ -737,6 +738,17 @@ func (a *App) applyEvent(runCtx context.Context, event appEvent) bool {
 	}
 	if event.promptDone != nil {
 		changed = a.finishPrompt(event.promptDone.err) || changed
+		if !a.state.activeModel && len(a.state.pendingFollowUps) != 0 {
+			message := a.state.pendingFollowUps[0]
+			a.state.pendingFollowUps = a.state.pendingFollowUps[1:]
+			for i, pending := range a.state.layout.PendingMessages {
+				if pending.ID == "" && pending.Mode == "follow_up" && pending.Text == message {
+					a.state.layout.PendingMessages = append(a.state.layout.PendingMessages[:i], a.state.layout.PendingMessages[i+1:]...)
+					break
+				}
+			}
+			changed = a.submit(runCtx, message) || changed
+		}
 	}
 	if event.command != nil {
 		changed = a.finishCommand(*event.command) || changed
@@ -797,6 +809,12 @@ func (a *App) applyEvent(runCtx context.Context, event appEvent) bool {
 				}
 				a.state.queuedText[queued.ID] = event.followUp
 				a.state.layout.PendingMessages = append(a.state.layout.PendingMessages, PendingMessage{ID: queued.ID, Mode: queued.Mode, Text: event.followUp})
+			} else if errors.Is(err, agent.ErrNotProcessing) {
+				// The model goroutine can settle before its promptDone event reaches
+				// the UI loop. Retain the wake-up and submit it immediately after
+				// prompt completion instead of dropping the monitor notification.
+				a.state.pendingFollowUps = append(a.state.pendingFollowUps, event.followUp)
+				a.state.layout.PendingMessages = append(a.state.layout.PendingMessages, PendingMessage{Mode: "follow_up", Text: event.followUp})
 			} else {
 				a.addNotice(err.Error(), "error")
 			}

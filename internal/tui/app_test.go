@@ -1042,3 +1042,35 @@ func TestAppDisplaysProviderRetryWithoutMarkingPromptFailed(t *testing.T) {
 		t.Fatalf("retry notice = %#v", last)
 	}
 }
+
+func TestMonitorFollowUpSurvivesSettledAgentBeforePromptDone(t *testing.T) {
+	runner := newAppTestAgent(t, nil)
+	if err := runner.Prompt(context.Background(), "initial", nil); err != nil {
+		t.Fatal(err)
+	}
+	a := NewApp(AppConfig{})
+	a.runner = runner
+	// Reproduce the race: the provider goroutine has settled but the UI has not
+	// applied promptDone yet, so activeModel is still true.
+	a.state.activeModel = true
+	if !a.applyEvent(context.Background(), appEvent{followUp: "monitor completed"}) {
+		t.Fatal("follow-up event was not handled")
+	}
+	if len(a.state.pendingFollowUps) != 1 || a.state.pendingFollowUps[0] != "monitor completed" {
+		t.Fatalf("pending follow-ups = %#v", a.state.pendingFollowUps)
+	}
+	if !a.applyEvent(context.Background(), appEvent{promptDone: &promptResult{}}) {
+		t.Fatal("prompt completion was not handled")
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		messages := runner.Messages()
+		if len(messages) >= 4 && messages[2].Content[0].Text == "monitor completed" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("monitor follow-up was not submitted: %#v", messages)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}

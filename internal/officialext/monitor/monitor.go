@@ -39,6 +39,7 @@ type Monitor struct {
 	CompletedAt                                         time.Time
 	ExitCode                                            int
 	Output                                              string
+	DeliveryError                                       string
 	cmd                                                 *exec.Cmd
 	cancel                                              context.CancelFunc
 	triggered                                           bool
@@ -362,7 +363,17 @@ func (s *state) wakeup(m *Monitor, reason, output string) {
 	if m.Prompt != "" {
 		message += "\n\nRequested follow-up:\n" + m.Prompt
 	}
-	_ = s.host.FollowUp(message)
+	err := s.host.FollowUp(message)
+	s.mu.Lock()
+	if err != nil {
+		m.DeliveryError = err.Error()
+	} else {
+		m.DeliveryError = ""
+	}
+	s.mu.Unlock()
+	if err != nil {
+		s.host.Notify(fmt.Sprintf("monitor %s completed but could not wake the agent: %v", m.ID, err), "warning")
+	}
 }
 func (s *state) stop(id string) error {
 	s.mu.Lock()
@@ -396,6 +407,9 @@ func (s *state) list(include bool) string {
 	var parts []string
 	for _, m := range items {
 		line := fmt.Sprintf("%s [%s] %s", m.ID, m.Status, m.Name)
+		if m.DeliveryError != "" {
+			line += "\nWake-up delivery failed: " + m.DeliveryError
+		}
 		if include {
 			line += "\nCommand: " + m.Command + "\nRecent output:\n" + m.Output
 		}

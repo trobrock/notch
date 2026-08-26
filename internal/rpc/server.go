@@ -54,6 +54,7 @@ type Server struct {
 	session    *session.Session
 	state      StateConfig
 	active     bool
+	pending    []string
 	compacting bool
 	cancel     context.CancelFunc
 	wg         sync.WaitGroup
@@ -98,16 +99,28 @@ func (s *Server) Notify(message, level string) {
 }
 
 func (s *Server) FollowUp(message string) error {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return errors.New("follow-up message is empty")
+	}
 	s.mu.Lock()
 	runner, active := s.runner, s.active
-	s.mu.Unlock()
 	if runner == nil {
+		s.mu.Unlock()
 		return errors.New("RPC server is not configured")
 	}
 	if !active {
+		s.mu.Unlock()
 		return errors.New("extension follow-up requires an active RPC prompt")
 	}
 	_, err := runner.FollowUp(message)
+	if errors.Is(err, agent.ErrNotProcessing) {
+		// The agent may have settled while RPC still considers its prompt
+		// active. Preserve the wake-up for the prompt goroutine to run next.
+		s.pending = append(s.pending, message)
+		err = nil
+	}
+	s.mu.Unlock()
 	return err
 }
 
@@ -284,12 +297,30 @@ func (s *Server) handlePrompt(ctx context.Context, request command) error {
 	go func() {
 		defer s.wg.Done()
 		adapter := newEventAdapter(s, state)
-		err := runner.PromptWithStart(promptCtx, message, adapter.Handle, func() {
-			close(started)
-			<-release
+		prompt := message
+		for {
+			err := runner.PromptWithStart(promptCtx, prompt, adapter.Handle, func() {
+				if prompt == message {
+					close(started)
+					<-release
+					adapter.Start()
+				}
+			})
+			adapter.Finish(err)
+			if err != nil {
+				break
+			}
+			s.mu.Lock()
+			if len(s.pending) == 0 {
+				s.active, s.compacting, s.cancel = false, false, nil
+				s.mu.Unlock()
+				break
+			}
+			prompt, s.pending = s.pending[0], s.pending[1:]
+			s.mu.Unlock()
+			adapter = newEventAdapter(s, state)
 			adapter.Start()
-		})
-		adapter.Finish(err)
+		}
 		s.mu.Lock()
 		s.active, s.compacting, s.cancel = false, false, nil
 		s.mu.Unlock()
