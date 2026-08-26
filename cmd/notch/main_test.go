@@ -18,6 +18,32 @@ import (
 	"github.com/trobrock/notch/internal/modelregistry"
 )
 
+func TestRootHelpListsCommands(t *testing.T) {
+	output, err := captureStdout(t, func() error { return run([]string{"--help"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, command := range []string{"version", "upgrade", "models", "login", "logout", "auth", "mcp", "extensions"} {
+		if !strings.Contains(output, "  "+command) {
+			t.Errorf("help does not list %q:\n%s", command, output)
+		}
+	}
+	if !strings.Contains(output, "Options:") || !strings.Contains(output, "-provider") {
+		t.Fatalf("help does not list options:\n%s", output)
+	}
+}
+
+func TestRootHelpAliases(t *testing.T) {
+	for _, argument := range []string{"help", "-h"} {
+		t.Run(argument, func(t *testing.T) {
+			output, err := captureStdout(t, func() error { return run([]string{argument}) })
+			if err != nil || !strings.Contains(output, "Commands:") {
+				t.Fatalf("output = %q, err = %v", output, err)
+			}
+		})
+	}
+}
+
 func TestExtensionsSyncUsesDefaultConfigManifest(t *testing.T) {
 	configHome, dataHome, source := t.TempDir(), t.TempDir(), t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configHome)

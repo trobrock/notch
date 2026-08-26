@@ -52,6 +52,21 @@ var (
 	buildDate = "unknown"
 )
 
+const notchUsage = `Usage: notch [OPTIONS] [PROMPT]
+       notch COMMAND [ARGS]
+
+Commands:
+  version              show detailed version and build information
+  upgrade              check for or install a Notch release
+  models               list available provider models
+  login PROVIDER       authenticate with a provider
+  logout PROVIDER      remove a stored provider credential
+  auth                 inspect or import provider credentials
+  mcp                   manage MCP authentication and status
+  extensions            manage extension packages
+
+Run 'notch COMMAND --help' for command-specific help.`
+
 type options struct {
 	provider, modelName, thinking, prompt, systemPrompt, systemPromptFile, mcpConfig, resumeSession, mode, toolAllow, toolExclude string
 	continueSession, noSession, jsonOutput, noTUI, init, showVersion, rpcMode                                                     bool
@@ -66,28 +81,8 @@ func main() {
 	}
 }
 
-func run(args []string) error {
-	if len(args) > 0 && args[0] == "version" {
-		return runVersion(args[1:])
-	}
-	if len(args) > 0 && args[0] == "upgrade" {
-		return runUpgrade(args[1:])
-	}
-	if len(args) > 0 && (args[0] == "login" || args[0] == "logout" || args[0] == "auth") {
-		return runAuth(args)
-	}
-	if len(args) > 0 && args[0] == "mcp" {
-		return runMCP(args[1:])
-	}
-	if len(args) > 0 && args[0] == "models" {
-		return runListModels(args[1:])
-	}
-	if len(args) > 0 && (args[0] == "extension" || args[0] == "extensions") {
-		return runExtensions(args[1:])
-	}
-	var opts options
+func newRootFlagSet(opts *options) *flag.FlagSet {
 	flags := flag.NewFlagSet("notch", flag.ContinueOnError)
-	flags.SetOutput(os.Stderr)
 	flags.StringVar(&opts.provider, "provider", "", "provider: openai-codex, anthropic-claude-code, openrouter, anthropic, or openai")
 	flags.StringVar(&opts.provider, "p", "", "model provider (shorthand)")
 	flags.StringVar(&opts.modelName, "model", "", "model ID")
@@ -119,6 +114,39 @@ func run(args []string) error {
 	flags.BoolVar(&opts.trustWorkspace, "trust-workspace", false, "persist trust in this workspace")
 	flags.BoolVar(&opts.init, "init", false, "create the XDG config directory and a starter config")
 	flags.BoolVar(&opts.showVersion, "version", false, "print version")
+	return flags
+}
+
+func run(args []string) error {
+	if len(args) > 0 && (args[0] == "help" || args[0] == "--help" || args[0] == "-h") {
+		fmt.Println(notchUsage)
+		fmt.Println("\nOptions:")
+		flags := newRootFlagSet(&options{})
+		flags.SetOutput(os.Stdout)
+		flags.PrintDefaults()
+		return nil
+	}
+	if len(args) > 0 && args[0] == "version" {
+		return runVersion(args[1:])
+	}
+	if len(args) > 0 && args[0] == "upgrade" {
+		return runUpgrade(args[1:])
+	}
+	if len(args) > 0 && (args[0] == "login" || args[0] == "logout" || args[0] == "auth") {
+		return runAuth(args)
+	}
+	if len(args) > 0 && args[0] == "mcp" {
+		return runMCP(args[1:])
+	}
+	if len(args) > 0 && args[0] == "models" {
+		return runListModels(args[1:])
+	}
+	if len(args) > 0 && (args[0] == "extension" || args[0] == "extensions") {
+		return runExtensions(args[1:])
+	}
+	var opts options
+	flags := newRootFlagSet(&opts)
+	flags.SetOutput(os.Stderr)
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
