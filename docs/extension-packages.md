@@ -35,6 +35,51 @@ notch extensions update package-name
 notch extensions remove package-name
 ```
 
+### Declarative sync
+
+Keep a portable desired-state manifest in dotfiles at
+`$XDG_CONFIG_HOME/notch/extensions.json` (normally
+`~/.config/notch/extensions.json`):
+
+```json
+{
+  "version": 1,
+  "packages": [
+    {
+      "name": "example-extension",
+      "source": "github:owner/example-extension",
+      "ref": "v1.2.0"
+    },
+    {
+      "name": "monorepo-extension",
+      "source": "github:owner/repository",
+      "ref": "0123456789abcdef",
+      "subdir": "packages/notch"
+    }
+  ]
+}
+```
+
+Install packages that are declared but missing:
+
+```sh
+notch extensions sync
+notch extensions sync --dry-run
+notch extensions sync --json /path/to/extensions.json
+```
+
+The optional positional path overrides the default manifest. Relative local
+sources are resolved from the manifest's directory, which makes paths inside a
+dotfiles repository portable. Package `name` must match the fetched package's
+`notch-package.json` name. Sync is intentionally additive: it does not update,
+replace, or remove installed packages. If an installed package with the same
+name has a different source, sync stops and reports the mismatch. Use explicit
+`update` or `remove` commands for those changes. Pin `ref` to a tag or commit
+when reproducibility matters.
+
+The desired-state manifest is separate from the generated private lock at
+`$XDG_DATA_HOME/notch/packages.json`; do not copy or hand-edit that lock.
+
 `notch extension` is an alias for `notch extensions`. `add`, `upgrade`, `uninstall`, `rm`, and `ls` are also accepted where their meaning is unambiguous.
 
 Restart Notch after install, update, or remove. An already-running process keeps its current extension registry until exit.

@@ -19,6 +19,7 @@ const extensionsUsage = `usage: notch extensions COMMAND
 
 Commands:
   install SOURCE       install a local, GitHub, or Git package
+  sync [MANIFEST]      install packages missing from a declarative manifest
   list                 list installed packages and integrity state
   update [NAME...]     update selected packages, or all packages
   remove NAME          remove an installed package
@@ -35,6 +36,8 @@ func runExtensions(args []string) error {
 	switch args[0] {
 	case "install", "add":
 		return runExtensionsInstall(args[1:])
+	case "sync":
+		return runExtensionsSync(args[1:])
 	case "update", "upgrade":
 		return runExtensionsUpdate(args[1:])
 	case "remove", "rm", "uninstall":
@@ -49,6 +52,78 @@ func runExtensions(args []string) error {
 	default:
 		return fmt.Errorf("unknown extensions command %q\n%s", args[0], extensionsUsage)
 	}
+}
+
+func runExtensionsSync(args []string) error {
+	flags := flag.NewFlagSet("notch extensions sync", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	dryRun := flags.Bool("dry-run", false, "show missing packages without installing them")
+	jsonOutput := flags.Bool("json", false, "emit sync results as JSON")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() > 1 {
+		return errors.New("usage: notch extensions sync [--dry-run] [--json] [MANIFEST]")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	manifestPath := ""
+	if flags.NArg() == 1 {
+		manifestPath = flags.Arg(0)
+	} else {
+		configRoot, err := config.ConfigDir(home)
+		if err != nil {
+			return err
+		}
+		manifestPath = filepath.Join(configRoot, "extensions.json")
+	}
+	desired, err := extpkg.LoadDesiredManifest(manifestPath)
+	if err != nil {
+		return err
+	}
+	store, _, err := extensionStore()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	results, err := store.SyncMissing(ctx, desired, *dryRun)
+	if err != nil {
+		return err
+	}
+	if *jsonOutput {
+		return json.NewEncoder(os.Stdout).Encode(struct {
+			Version int                 `json:"version"`
+			DryRun  bool                `json:"dry_run"`
+			Results []extpkg.SyncResult `json:"results"`
+		}{Version: 1, DryRun: *dryRun, Results: results})
+	}
+	installed := 0
+	for _, result := range results {
+		switch result.Action {
+		case "install":
+			fmt.Printf("Would install %s.\n", result.Name)
+		case "installed":
+			installed++
+			fmt.Printf("Installed %s %s from %s\n", result.Installed.Name, result.Installed.Version, result.Installed.Source.String())
+		}
+	}
+	if *dryRun {
+		missing := 0
+		for _, result := range results {
+			if result.Action == "install" {
+				missing++
+			}
+		}
+		fmt.Printf("%d package(s) missing.\n", missing)
+	} else if installed == 0 {
+		fmt.Println("All declared extension packages are installed.")
+	} else {
+		fmt.Println("Restart Notch to load installed extensions.")
+	}
+	return nil
 }
 
 func runExtensionsInstall(args []string) error {

@@ -18,6 +18,30 @@ import (
 	"github.com/trobrock/notch/internal/modelregistry"
 )
 
+func TestExtensionsSyncUsesDefaultConfigManifest(t *testing.T) {
+	configHome, dataHome, source := t.TempDir(), t.TempDir(), t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	manifestDir := filepath.Join(configHome, "notch")
+	if err := os.MkdirAll(manifestDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `{"version":1,"packages":[{"name":"demo","source":"` + filepath.ToSlash(source) + `"}]}`
+	if err := os.WriteFile(filepath.Join(manifestDir, "extensions.json"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	output, err := captureStdout(t, func() error { return runExtensions([]string{"sync", "--dry-run"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output, "Would install demo.") || !strings.Contains(output, "1 package(s) missing.") {
+		t.Fatalf("output = %q", output)
+	}
+	if _, err := os.Stat(filepath.Join(dataHome, "notch", "packages.json")); !os.IsNotExist(err) {
+		t.Fatalf("dry run created package state: %v", err)
+	}
+}
+
 func TestAuthenticationCommandsIgnoreProjectConfig(t *testing.T) {
 	cwd := t.TempDir()
 	oldCWD, err := os.Getwd()
