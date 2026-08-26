@@ -127,8 +127,18 @@ func decode(raw json.RawMessage) (Input, error) {
 		return input, fmt.Errorf("decode arguments: %w", err)
 	}
 	input.Task = strings.TrimSpace(input.Task)
+	for i := range input.Tasks {
+		input.Tasks[i].Task = strings.TrimSpace(input.Tasks[i].Task)
+	}
 	if input.Task != "" && len(input.Tasks) != 0 {
-		return input, errors.New("provide either task or tasks, not both")
+		// Some model providers populate every optional schema property and use a
+		// blank task as a placeholder for the unused mode. Treat that placeholder
+		// as omitted, while still rejecting two actual exploration requests.
+		if len(input.Tasks) == 1 && input.Tasks[0].Task == "" {
+			input.Tasks = nil
+		} else {
+			return input, errors.New("provide either task or tasks, not both")
+		}
 	}
 	if input.Task == "" && len(input.Tasks) == 0 {
 		return input, errors.New("task or tasks is required")
@@ -140,7 +150,6 @@ func decode(raw json.RawMessage) (Input, error) {
 		input.Tasks = []Task{{Task: input.Task}}
 	}
 	for i := range input.Tasks {
-		input.Tasks[i].Task = strings.TrimSpace(input.Tasks[i].Task)
 		if input.Tasks[i].Task == "" {
 			return input, fmt.Errorf("task %d must not be empty", i+1)
 		}

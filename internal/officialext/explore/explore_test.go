@@ -130,6 +130,17 @@ func TestExploreValidatesModes(t *testing.T) {
 	}
 }
 
+func TestExploreIgnoresBlankBatchPlaceholderWithSingleTask(t *testing.T) {
+	input, err := decode(json.RawMessage(`{"task":"find parser","tasks":[{"task":" "}],"model":"test/model","cwd":"/work"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Input{Task: "find parser", Tasks: []Task{{Task: "find parser"}}, Model: "test/model", CWD: "/work"}
+	if !reflect.DeepEqual(input, want) {
+		t.Fatalf("input=%#v, want %#v", input, want)
+	}
+}
+
 func TestExploreTaskOverridesDefaults(t *testing.T) {
 	input, err := decode(json.RawMessage(`{"tasks":[{"task":"one","model":"task/model","cwd":"/task"}],"model":"default/model","cwd":"/default"}`))
 	if err != nil {
