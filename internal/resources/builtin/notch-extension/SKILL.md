@@ -20,11 +20,11 @@ Extensions are trusted and unsandboxed. They run with the user's privileges, wit
 Default extension directories are:
 
 ```text
-~/.notch/extensions
+~/.config/notch/extensions
 <workspace-root>/.notch/extensions  # trusted workspaces only
 ```
 
-`$NOTCH_HOME/extensions` replaces the user path. `extension_dirs` may replace the complete list. Lua discovery reads direct `.lua` files. Executable plugin discovery recursively finds `plugin.json` manifests. Restart Notch after adding or changing an extension.
+`XDG_CONFIG_HOME` relocates the user path and must be absolute when set. `extension_dirs` may replace the complete list. Lua discovery reads direct `.lua` files. Executable plugin discovery recursively finds `plugin.json` manifests. Restart Notch after adding or changing an extension.
 
 Tool and command names are global. Duplicate names are rejected rather than overriding built-ins or earlier extensions. Each Lua file or executable plugin registers its tools, commands, and hooks atomically; any failure leaves none of that extension's declarations installed, and closing it unregisters its batch. A failure during a multi-directory Lua load also rolls back files loaded by that call. Use a clear, stable prefix for project-specific tools.
 
@@ -42,7 +42,7 @@ notch extensions update [--force] [NAME...]
 notch extensions remove NAME
 ```
 
-Sources may be `github:owner/repository`, a raw GitHub URL, a generic HTTPS/SSH Git URL, or a local directory. GitHub and local sources are handled natively; generic Git invokes `git`. Installed packages are copied under `$NOTCH_HOME/packages` or `~/.notch/packages`, locked to an exact commit or tree digest, and loaded after direct extension directories. Never install a third-party package without reviewing it. See `docs/extension-packages.md` in the Notch repository for the full format and security rules.
+Sources may be `github:owner/repository`, a raw GitHub URL, a generic HTTPS/SSH Git URL, or a local directory. GitHub and local sources are handled natively; generic Git invokes `git`. Installed packages are copied under `$XDG_DATA_HOME/notch/packages` or `~/.local/share/notch/packages`, locked to an exact commit or tree digest, and loaded after direct extension directories. Never install a third-party package without reviewing it. See `docs/extension-packages.md` in the Notch repository for the full format and security rules.
 
 ## Lua extension API
 

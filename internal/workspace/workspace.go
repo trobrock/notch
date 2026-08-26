@@ -155,9 +155,9 @@ type Store struct {
 	home string
 }
 
-// NewStore creates a trust store rooted at notchHome.
-func NewStore(notchHome string) *Store {
-	return &Store{home: filepath.Clean(notchHome)}
+// NewStore creates a trust store rooted at the Notch XDG data directory.
+func NewStore(dataRoot string) *Store {
+	return &Store{home: filepath.Clean(dataRoot)}
 }
 
 // Path returns the trust database path.
@@ -202,7 +202,7 @@ func (s *Store) Trust(path string) error {
 }
 
 // TrustRoot atomically persists the exact canonical root as trusted. The Notch
-// home and trust database are forced to owner-only permissions. Unlike normal
+// data directory and trust database are forced to owner-only permissions. Unlike normal
 // trust reads, this explicit trust operation repairs an unsafe regular trust
 // database mode before reading it.
 func (s *Store) TrustRoot(root string) error {

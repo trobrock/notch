@@ -66,33 +66,37 @@ type Config struct {
 	ThemeDirs         []string          `json:"theme_dirs,omitempty"`
 	AgentSkillDirs    []string          `json:"-"`
 	AgentCommandDirs  []string          `json:"-"`
-	SessionDir        string            `json:"session_dir,omitempty"`
-	AuthFile          string            `json:"auth_file,omitempty"`
-	MCPAuthFile       string            `json:"mcp_auth_file,omitempty"`
+	SessionDir        string            `json:"-"`
+	AuthFile          string            `json:"-"`
+	MCPAuthFile       string            `json:"-"`
 	Theme             string            `json:"theme,omitempty"`
 	ThinkingLevel     string            `json:"thinking_level,omitempty"`
 	MouseCapture      *bool             `json:"mouse,omitempty"`
 	ContextWindow     int               `json:"context_window,omitempty"`
-	ModelCache        string            `json:"model_cache,omitempty"`
+	ModelCache        string            `json:"-"`
 	ModelRefreshHours int               `json:"model_refresh_hours,omitempty"`
 	Compaction        *CompactionConfig `json:"compaction,omitempty"`
-	notchHome         string
+	configRoot        string
+	dataRoot          string
 }
 
 // Defaults returns the built-in configuration. home is the user's home
-// directory and cwd is the project directory. NOTCH_HOME, when non-empty,
-// replaces home/.notch as the per-user notch directory.
-func Defaults(home, cwd string) Config {
+// directory and cwd is the project directory. XDG_CONFIG_HOME and
+// XDG_DATA_HOME, when non-empty, must be absolute.
+func Defaults(home, cwd string) (Config, error) {
 	return defaults(home, cwd, true)
 }
 
-func defaults(home, cwd string, includeProject bool) Config {
-	root := notchHome(home)
+func defaults(home, cwd string, includeProject bool) (Config, error) {
+	configRoot, dataRoot, err := Roots(home)
+	if err != nil {
+		return Config{}, err
+	}
 	projectRoot := filepath.Join(cwd, ".notch")
-	extensionDirs := []string{filepath.Join(root, "extensions")}
-	skillDirs := []string{filepath.Join(root, "skills")}
-	promptDirs := []string{filepath.Join(root, "prompts")}
-	themeDirs := []string{filepath.Join(root, "themes")}
+	extensionDirs := []string{filepath.Join(configRoot, "extensions")}
+	skillDirs := []string{filepath.Join(configRoot, "skills")}
+	promptDirs := []string{filepath.Join(configRoot, "prompts")}
+	themeDirs := []string{filepath.Join(configRoot, "themes")}
 	agentSkillDirs := []string{filepath.Join(home, ".agents", "skills")}
 	agentCommandDirs := []string{filepath.Join(home, ".agents", "commands")}
 	if includeProject {
@@ -110,24 +114,25 @@ func defaults(home, cwd string, includeProject bool) Config {
 		Model:             defaultModel,
 		MaxTokens:         defaultMaxTokens,
 		SystemPrompt:      defaultSystemPrompt,
-		MCPConfig:         filepath.Join(root, "mcp.json"),
+		MCPConfig:         filepath.Join(configRoot, "mcp.json"),
 		ExtensionDirs:     extensionDirs,
 		SkillDirs:         skillDirs,
 		PromptDirs:        promptDirs,
 		ThemeDirs:         themeDirs,
 		AgentSkillDirs:    agentSkillDirs,
 		AgentCommandDirs:  agentCommandDirs,
-		SessionDir:        filepath.Join(root, "sessions"),
-		AuthFile:          filepath.Join(root, "auth.json"),
-		MCPAuthFile:       filepath.Join(root, "mcp-auth.json"),
+		SessionDir:        filepath.Join(dataRoot, "sessions"),
+		AuthFile:          filepath.Join(dataRoot, "auth.json"),
+		MCPAuthFile:       filepath.Join(dataRoot, "mcp-auth.json"),
 		Theme:             defaultTheme,
 		ThinkingLevel:     defaultThinking,
 		MouseCapture:      &mouseEnabled,
-		ModelCache:        filepath.Join(root, "models.json"),
+		ModelCache:        filepath.Join(dataRoot, "models.json"),
 		ModelRefreshHours: 24,
 		Compaction:        &CompactionConfig{Enabled: &enabled, ReserveTokens: 16384, KeepRecentTokens: 20000},
-		notchHome:         root,
-	}
+		configRoot:        configRoot,
+		dataRoot:          dataRoot,
+	}, nil
 }
 
 // Load loads the built-in defaults, then the per-user configuration, then the
@@ -154,14 +159,17 @@ func LoadWorkspace(home, workspaceRoot string, trusted bool) (Config, error) {
 }
 
 func load(home, workspaceRoot string, includeProject bool) (Config, error) {
-	cfg := defaults(home, workspaceRoot, includeProject)
-	root := notchHome(home)
-	globalPath := filepath.Join(root, "config.json")
+	cfg, err := defaults(home, workspaceRoot, includeProject)
+	if err != nil {
+		return Config{}, err
+	}
+	globalPath := filepath.Join(cfg.configRoot, "config.json")
 	if _, err := os.Lstat(globalPath); err == nil {
 		layer, err := read(globalPath)
 		if err != nil {
 			return Config{}, err
 		}
+		resolveGlobalPaths(&layer, cfg.configRoot)
 		merge(&cfg, layer)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return Config{}, fmt.Errorf("inspect config %q: %w", globalPath, err)
@@ -193,11 +201,19 @@ func load(home, workspaceRoot string, includeProject bool) (Config, error) {
 }
 
 func resolveProjectPaths(cfg *Config, workspaceRoot string) {
-	cfg.MCPConfig = resolveRelative(workspaceRoot, cfg.MCPConfig)
-	cfg.ExtensionDirs = resolveRelativePaths(workspaceRoot, cfg.ExtensionDirs)
-	cfg.SkillDirs = resolveRelativePaths(workspaceRoot, cfg.SkillDirs)
-	cfg.PromptDirs = resolveRelativePaths(workspaceRoot, cfg.PromptDirs)
-	cfg.ThemeDirs = resolveRelativePaths(workspaceRoot, cfg.ThemeDirs)
+	resolveConfigPaths(cfg, workspaceRoot)
+}
+
+func resolveGlobalPaths(cfg *Config, configRoot string) {
+	resolveConfigPaths(cfg, configRoot)
+}
+
+func resolveConfigPaths(cfg *Config, root string) {
+	cfg.MCPConfig = resolveRelative(root, cfg.MCPConfig)
+	cfg.ExtensionDirs = resolveRelativePaths(root, cfg.ExtensionDirs)
+	cfg.SkillDirs = resolveRelativePaths(root, cfg.SkillDirs)
+	cfg.PromptDirs = resolveRelativePaths(root, cfg.PromptDirs)
+	cfg.ThemeDirs = resolveRelativePaths(root, cfg.ThemeDirs)
 }
 
 func resolveRelativePaths(root string, paths []string) []string {
@@ -288,15 +304,6 @@ func merge(dst *Config, src Config) {
 	if len(src.ThemeDirs) != 0 {
 		dst.ThemeDirs = append([]string(nil), src.ThemeDirs...)
 	}
-	if src.SessionDir != "" {
-		dst.SessionDir = src.SessionDir
-	}
-	if src.AuthFile != "" {
-		dst.AuthFile = src.AuthFile
-	}
-	if src.MCPAuthFile != "" {
-		dst.MCPAuthFile = src.MCPAuthFile
-	}
 	if src.Theme != "" {
 		dst.Theme = src.Theme
 	}
@@ -309,9 +316,6 @@ func merge(dst *Config, src Config) {
 	}
 	if src.ContextWindow > 0 {
 		dst.ContextWindow = src.ContextWindow
-	}
-	if src.ModelCache != "" {
-		dst.ModelCache = src.ModelCache
 	}
 	if src.ModelRefreshHours > 0 {
 		dst.ModelRefreshHours = src.ModelRefreshHours
@@ -333,46 +337,59 @@ func merge(dst *Config, src Config) {
 	}
 }
 
-// EnsureDirs creates all configured extension, skill, prompt, theme, and
-// session directories. Empty entries are ignored.
+// EnsureDirs creates all configured extension, skill, prompt, and theme
+// directories, plus the private session directory. Empty entries are ignored.
 func EnsureDirs(cfg Config) error {
-	dirs := make([]string, 0, len(cfg.ExtensionDirs)+len(cfg.SkillDirs)+len(cfg.PromptDirs)+len(cfg.ThemeDirs)+1)
+	dirs := make([]string, 0, len(cfg.ExtensionDirs)+len(cfg.SkillDirs)+len(cfg.PromptDirs)+len(cfg.ThemeDirs))
 	dirs = append(dirs, cfg.ExtensionDirs...)
 	dirs = append(dirs, cfg.SkillDirs...)
 	dirs = append(dirs, cfg.PromptDirs...)
 	dirs = append(dirs, cfg.ThemeDirs...)
-	dirs = append(dirs, cfg.SessionDir)
-	seen := make(map[string]bool, len(dirs))
+	seen := make(map[string]bool, len(dirs)+1)
 	for _, dir := range dirs {
-		if dir == "" {
-			continue
+		if err := ensureDir(dir, 0o755, seen); err != nil {
+			return err
 		}
-		clean := filepath.Clean(dir)
-		if seen[clean] {
-			continue
-		}
-		seen[clean] = true
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return fmt.Errorf("create config directory %q: %w", dir, err)
+	}
+	return ensureDir(cfg.SessionDir, 0o700, seen)
+}
+
+func ensureDir(dir string, mode os.FileMode, seen map[string]bool) error {
+	if dir == "" {
+		return nil
+	}
+	clean := filepath.Clean(dir)
+	if seen[clean] {
+		return nil
+	}
+	seen[clean] = true
+	if err := os.MkdirAll(dir, mode); err != nil {
+		return fmt.Errorf("create config directory %q: %w", dir, err)
+	}
+	if mode == 0o700 {
+		if err := os.Chmod(dir, mode); err != nil {
+			return fmt.Errorf("secure private data directory %q: %w", dir, err)
 		}
 	}
 	return nil
 }
 
-// EnsureGlobalDirs creates only configured paths below NOTCH_HOME. This is
-// used during normal startup so project discovery directories are not created
-// merely by inspecting a workspace.
+// EnsureGlobalDirs creates only configured paths below the XDG config root,
+// plus the fixed private session directory below the XDG data root. This avoids
+// creating project or arbitrary configured paths merely by inspecting them.
 func (c Config) EnsureGlobalDirs() error {
-	root := c.notchHome
-	if root == "" {
+	if c.configRoot == "" || c.dataRoot == "" {
 		return c.EnsureDirs()
 	}
+	if err := ensureDir(c.dataRoot, 0o700, make(map[string]bool)); err != nil {
+		return err
+	}
 	filtered := c
-	filtered.ExtensionDirs = pathsWithin(root, c.ExtensionDirs)
-	filtered.SkillDirs = pathsWithin(root, c.SkillDirs)
-	filtered.PromptDirs = pathsWithin(root, c.PromptDirs)
-	filtered.ThemeDirs = pathsWithin(root, c.ThemeDirs)
-	if !pathWithin(root, c.SessionDir) {
+	filtered.ExtensionDirs = pathsWithin(c.configRoot, c.ExtensionDirs)
+	filtered.SkillDirs = pathsWithin(c.configRoot, c.SkillDirs)
+	filtered.PromptDirs = pathsWithin(c.configRoot, c.PromptDirs)
+	filtered.ThemeDirs = pathsWithin(c.configRoot, c.ThemeDirs)
+	if !pathWithin(c.dataRoot, c.SessionDir) {
 		filtered.SessionDir = ""
 	}
 	return EnsureDirs(filtered)
@@ -419,21 +436,41 @@ func layeredDiscoveryDirs(shared, configured []string) []string {
 // EnsureDirs creates the directories named by c.
 func (c Config) EnsureDirs() error { return EnsureDirs(c) }
 
-// HomeDir returns the effective Notch data directory for a user home.
-func HomeDir(home string) string { return notchHome(home) }
+// ConfigDir returns the strict per-user Notch configuration root.
+func ConfigDir(home string) (string, error) {
+	configRoot, _, err := Roots(home)
+	return configRoot, err
+}
 
-func notchHome(home string) string {
-	path := filepath.Join(home, ".notch")
-	if value := os.Getenv("NOTCH_HOME"); value != "" {
-		path = value
-	}
-	absolute, err := filepath.Abs(path)
+// DataDir returns the strict per-user Notch private data root.
+func DataDir(home string) (string, error) {
+	_, dataRoot, err := Roots(home)
+	return dataRoot, err
+}
+
+// Roots resolves the XDG configuration and data roots. NOTCH_HOME is
+// intentionally ignored; there is no legacy ~/.notch fallback or migration.
+func Roots(home string) (string, string, error) {
+	configBase, err := xdgBase("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	if err != nil {
-		// filepath.Abs only fails when the working directory cannot be obtained.
-		// Keep this infallible API useful while still cleaning the configured path.
-		return filepath.Clean(path)
+		return "", "", err
 	}
-	return filepath.Clean(absolute)
+	dataBase, err := xdgBase("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	if err != nil {
+		return "", "", err
+	}
+	return filepath.Join(configBase, "notch"), filepath.Join(dataBase, "notch"), nil
+}
+
+func xdgBase(name, fallback string) (string, error) {
+	value := os.Getenv(name)
+	if value == "" {
+		value = fallback
+	}
+	if !filepath.IsAbs(value) {
+		return "", fmt.Errorf("%s must be an absolute path, got %q", name, value)
+	}
+	return filepath.Clean(value), nil
 }
 
 func uniquePaths(paths ...string) []string {

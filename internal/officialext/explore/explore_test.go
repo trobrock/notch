@@ -44,16 +44,14 @@ func TestExploreSchemaAndDescriptionGuideCorrectUse(t *testing.T) {
 		t.Fatalf("description = %q", tool.Definition.Description)
 	}
 	schema := tool.Definition.InputSchema
-	oneOf, ok := schema["oneOf"].([]any)
-	if !ok || len(oneOf) != 2 {
-		t.Fatalf("oneOf = %#v", schema["oneOf"])
+	for _, keyword := range []string{"oneOf", "anyOf", "allOf"} {
+		if _, present := schema[keyword]; present {
+			t.Fatalf("Anthropic-incompatible top-level %s = %#v", keyword, schema[keyword])
+		}
 	}
-	encoded, err := json.Marshal(schema)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(encoded), `"not":{"required":["tasks"]}`) || !strings.Contains(string(encoded), `"not":{"required":["task"]}`) {
-		t.Fatalf("schema does not make task/tasks exclusive: %s", encoded)
+	properties, ok := schema["properties"].(map[string]any)
+	if !ok || properties["task"] == nil || properties["tasks"] == nil {
+		t.Fatalf("schema does not expose both task modes: %#v", schema)
 	}
 }
 

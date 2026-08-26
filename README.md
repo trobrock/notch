@@ -114,8 +114,8 @@ A tested local setup uses Ollama's OpenAI-compatible Responses endpoint. Start O
 ollama serve
 # In another terminal; substitute an installed tool-capable model.
 ollama pull qwen3.5:9b
-mkdir -p ~/.notch
-cat > ~/.notch/config.json <<'JSON'
+mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/notch"
+cat > "${XDG_CONFIG_HOME:-$HOME/.config}/notch/config.json" <<'JSON'
 {
   "provider": "openai",
   "model": "qwen3.5:9b",
@@ -209,20 +209,26 @@ An interactive invocation uses the fullscreen TUI only when both stdin and stdou
 
 ## Workspace trust
 
-Project-controlled `.notch` and `.agents` inputs are loaded only for a trusted workspace. Notch identifies a Git worktree by its canonical Git root (or the canonical current directory outside Git), so one decision applies throughout the repository. If supported project inputs exist and the workspace is not already trusted, a run with terminal stdin and stdout prompts once and persists an accepted decision in `$NOTCH_HOME/trusted-workspaces.json` (default `~/.notch/trusted-workspaces.json`). Runs without project inputs do not prompt.
+Project-controlled `.notch` and `.agents` inputs are loaded only for a trusted workspace. Notch identifies a Git worktree by its canonical Git root (or the canonical current directory outside Git), so one decision applies throughout the repository. If supported project inputs exist and the workspace is not already trusted, a run with terminal stdin and stdout prompts once and persists an accepted decision in `$XDG_DATA_HOME/notch/trusted-workspaces.json` (default `~/.local/share/notch/trusted-workspaces.json`). Runs without project inputs do not prompt.
 
 Noninteractive runs never prompt and skip project `.notch`/`.agents` config, MCP, extensions, skills, prompts, and themes unless trust was previously persisted. Use `--trust-workspace` to persist trust explicitly for automation or CI. Use `--safe` to bypass project trust and project inputs for that invocation; it cannot be combined with `--trust-workspace`. Global inputs and installed extension packages remain available. Trust is an execution boundary, not an approval workflow: Notch has no per-command approvals, and tools/extensions execute automatically after loading.
+
+## XDG paths and clean break
+
+Notch uses a strict XDG split. Configuration (`config.json`, `mcp.json`, extensions, skills, prompts, and themes) lives under `$XDG_CONFIG_HOME/notch`, defaulting to `~/.config/notch`. Private data (OAuth stores, sessions, model cache, workspace trust, and installed package state/content) lives under `$XDG_DATA_HOME/notch`, defaulting to `~/.local/share/notch`. Set XDG variables must be absolute.
+
+This is a clean break: Notch does not read, migrate, or fall back to `~/.notch`, and `NOTCH_HOME` is ignored. Existing users must manually copy configuration/resources to the config root and private runtime data to the data root, preserving restrictive permissions for secrets. Relative paths in global config resolve from the config root; relative project paths remain workspace-relative.
 
 ## Configuration
 
 Configuration is JSON. For trusted workspaces, Notch starts with defaults, then merges:
 
-1. `$NOTCH_HOME/config.json`, when `NOTCH_HOME` is set, otherwise `~/.notch/config.json`
+1. `$XDG_CONFIG_HOME/notch/config.json`, or `~/.config/notch/config.json` when unset
 2. `<workspace-root>/.notch/config.json` (trusted workspaces only)
 3. `NOTCH_PROVIDER`, `NOTCH_MODEL`, and `NOTCH_THINKING_LEVEL`
 4. CLI overrides such as `--provider`, `--model`, and `--thinking`
 
-Later non-empty values replace earlier ones, so CLI flags take precedence over environment variables and environment variables take precedence over project and user config. Empty or whitespace-only values for the three runtime environment variables are ignored and fall back to the merged config files. Non-empty directory arrays replace the complete earlier array; they are not appended. `base_url`, `auth_file`, `mcp_auth_file`, `session_dir`, and `model_cache` are security-sensitive global-only settings and are ignored in project config. API keys can come from environment variables; OAuth credentials are kept separately from config in the protected auth store. Standalone `notch login`, `logout`, `auth`, and `models` commands also load global configuration only.
+Later non-empty values replace earlier ones, so CLI flags take precedence over environment variables and environment variables take precedence over project and user config. Empty or whitespace-only values for the three runtime environment variables are ignored and fall back to the merged config files. Non-empty directory arrays replace the complete earlier array; they are not appended. `base_url` is global-only and ignored in project config. `auth_file`, `mcp_auth_file`, `session_dir`, and `model_cache` are not JSON settings: they are fixed below the XDG data root and JSON keys with those names are ignored. API keys can come from environment variables; OAuth credentials are kept separately from config in the protected auth store. Standalone `notch login`, `logout`, `auth`, and `models` commands also load global configuration only.
 
 ```json
 {
@@ -233,7 +239,6 @@ Later non-empty values replace earlier ones, so CLI flags take precedence over e
   "theme": "dark",
   "thinking_level": "medium",
   "context_window": 0,
-  "model_cache": "/home/me/.notch/models.json",
   "model_refresh_hours": 24,
   "compaction": {
     "enabled": true,
@@ -241,25 +246,23 @@ Later non-empty values replace earlier ones, so CLI flags take precedence over e
     "keepRecentTokens": 20000
   },
   "system_prompt": "You are a coding agent. Help the user understand and modify their codebase.",
-  "mcp_config": "/home/me/.notch/mcp.json",
-  "mcp_auth_file": "/home/me/.notch/mcp-auth.json",
+  "mcp_config": "/home/me/.config/notch/mcp.json",
   "extension_dirs": [
-    "/home/me/.notch/extensions",
+    "/home/me/.config/notch/extensions",
     "/work/project/.notch/extensions"
   ],
   "skill_dirs": [
-    "/home/me/.notch/skills",
+    "/home/me/.config/notch/skills",
     "/work/project/.notch/skills"
   ],
   "prompt_dirs": [
-    "/home/me/.notch/prompts",
+    "/home/me/.config/notch/prompts",
     "/work/project/.notch/prompts"
   ],
   "theme_dirs": [
-    "/home/me/.notch/themes",
+    "/home/me/.config/notch/themes",
     "/work/project/.notch/themes"
-  ],
-  "session_dir": "/home/me/.notch/sessions"
+  ]
 }
 ```
 
@@ -269,7 +272,7 @@ For example, a shell or per-command override can select a runtime without editin
 NOTCH_PROVIDER=openai-codex NOTCH_MODEL=gpt-5.6-sol NOTCH_THINKING_LEVEL=high notch
 ```
 
-Provider and model overrides are independent: if only one environment variable is set, the other value comes from the merged config. `notch models [provider]` lists provider-discovered or fallback models; add `--refresh` to bypass the cache, `--json` for a versioned machine-readable catalog, or `--all` for every supported provider. Fullscreen `/model` selects a provider and filters its models, while `/model refresh` forces discovery. Runtime selection changes subsequent turns and new sessions but does not edit config files. The paths above illustrate the defaults; actual home and workspace-root paths are resolved at startup. `NOTCH_HOME` relocates user config, user resources, user extensions, the default MCP file, and sessions. Trusted project resources remain under `<workspace-root>/.notch`. Only global configured resource directories are created before trust; trusted project directories may then be created. Notch also discovers shared skills in `~/.agents/skills` and trusted `<workspace-root>/.agents/skills`, plus command templates in `~/.agents/commands` and trusted `<workspace-root>/.agents/commands`; these shared directories are discovered but never created by Notch. `theme` and `thinking_level` can be set in either global or trusted project config. Direct JSON files in `theme_dirs` add or override themes; see [themes](docs/themes.md) for the small semantic schema. The mode-0600 model cache refreshes stale selected-provider data on startup or selector use without a polling timer; `model_refresh_hours` defaults to 24. `context_window: 0` means use the provider/model default; omit it for the same behavior. The compaction object deliberately uses Pi-compatible camelCase keys. See [themes](docs/themes.md), [thinking controls](docs/tui.md#commands-and-thinking-level), and [compaction](docs/compaction.md).
+Provider and model overrides are independent: if only one environment variable is set, the other value comes from the merged config. `notch models [provider]` lists provider-discovered or fallback models; add `--refresh` to bypass the cache, `--json` for a versioned machine-readable catalog, or `--all` for every supported provider. Fullscreen `/model` selects a provider and filters its models, while `/model refresh` forces discovery. Runtime selection changes subsequent turns and new sessions but does not edit config files. The paths above illustrate the defaults; actual home and workspace-root paths are resolved at startup. `XDG_CONFIG_HOME` relocates config and user resources; `XDG_DATA_HOME` relocates private runtime data. Both must be absolute when set. `NOTCH_HOME` is ignored. Trusted project resources remain under `<workspace-root>/.notch`. Only global configured resource directories are created before trust; trusted project directories may then be created. Notch also discovers shared skills in `~/.agents/skills` and trusted `<workspace-root>/.agents/skills`, plus command templates in `~/.agents/commands` and trusted `<workspace-root>/.agents/commands`; these shared directories are discovered but never created by Notch. `theme` and `thinking_level` can be set in either global or trusted project config. Direct JSON files in `theme_dirs` add or override themes; see [themes](docs/themes.md) for the small semantic schema. The mode-0600 model cache refreshes stale selected-provider data on startup or selector use without a polling timer; `model_refresh_hours` defaults to 24. `context_window: 0` means use the provider/model default; omit it for the same behavior. The compaction object deliberately uses Pi-compatible camelCase keys. See [themes](docs/themes.md), [thinking controls](docs/tui.md#commands-and-thinking-level), and [compaction](docs/compaction.md).
 
 Provider credentials:
 
@@ -278,7 +281,7 @@ Provider credentials:
 - `anthropic`: `ANTHROPIC_API_KEY` or Claude Pro/Max OAuth from `notch login anthropic`.
 - `openai`: `OPENAI_API_KEY`, unless `base_url` points to a local service such as Ollama.
 
-OAuth credentials are stored in `~/.notch/auth.json` (or `$NOTCH_HOME/auth.json`) with mode `0600` and refreshed when close to expiry. Full details and current real-service verification notes are in [docs/providers.md](docs/providers.md).
+OAuth credentials are stored in `~/.local/share/notch/auth.json` (or `$XDG_DATA_HOME/notch/auth.json`) with mode `0600` and refreshed when close to expiry. Full details and current real-service verification notes are in [docs/providers.md](docs/providers.md).
 
 ## Skills and prompt templates
 
@@ -303,7 +306,8 @@ Put that file at `.notch/prompts/review.md` or `.agents/commands/review.md` and 
 
 ## MCP
 
-The default MCP file is `~/.notch/mcp.json` (or `$NOTCH_HOME/mcp.json`). It is only loaded if the file exists.
+The default MCP file is `$XDG_CONFIG_HOME/notch/mcp.json` (or `~/.config/notch/mcp.json` when unset). It is only loaded if the file exists.
+Because `mcp.json` is configuration rather than a private credential store, static secrets placed in MCP `headers` or `env` are stored in the config root. Prefer MCP OAuth (stored privately under the data root), environment indirection supported by your server, or otherwise protect the file appropriately.
 
 ```json
 {
@@ -329,7 +333,7 @@ The default MCP file is `~/.notch/mcp.json` (or `$NOTCH_HOME/mcp.json`). It is o
 }
 ```
 
-A server must specify exactly one of `command` or `url`. `enabled` defaults to true. Stdio children receive only a minimal inherited process environment plus variables explicitly supplied in that server's `env` object; provider credentials and typical CI secrets are not inherited automatically. For OAuth-protected Streamable HTTP servers, set `"auth": "oauth"`, then run `notch mcp login NAME`; `notch mcp status` and `notch mcp logout NAME` inspect or remove the login. Existing Linux `pi-mcp-adapter` keyring entries can be copied with `notch mcp import-pi [PATH]` after the same server names and URLs are present in Notch's global MCP config. OAuth uses protected-resource and authorization-server metadata discovery, dynamic client registration, S256 PKCE, loopback browser callbacks, RFC 8707 resource binding, refresh tokens, and a separate mode-0600 credential store at `~/.notch/mcp-auth.json`. An optional `"oauth": {"scope": "scope1 scope2"}` object can request explicit scopes instead of the server-advertised defaults. Project MCP configurations may use only a global credential already bound to the exact configured URL; they cannot redirect it to another server.
+A server must specify exactly one of `command` or `url`. `enabled` defaults to true. Stdio children receive only a minimal inherited process environment plus variables explicitly supplied in that server's `env` object; provider credentials and typical CI secrets are not inherited automatically. For OAuth-protected Streamable HTTP servers, set `"auth": "oauth"`, then run `notch mcp login NAME`; `notch mcp status` and `notch mcp logout NAME` inspect or remove the login. Existing Linux `pi-mcp-adapter` keyring entries can be copied with `notch mcp import-pi [PATH]` after the same server names and URLs are present in Notch's global MCP config. OAuth uses protected-resource and authorization-server metadata discovery, dynamic client registration, S256 PKCE, loopback browser callbacks, RFC 8707 resource binding, refresh tokens, and a separate mode-0600 credential store at `~/.local/share/notch/mcp-auth.json`. An optional `"oauth": {"scope": "scope1 scope2"}` object can request explicit scopes instead of the server-advertised defaults. Project MCP configurations may use only a global credential already bound to the exact configured URL; they cannot redirect it to another server.
 
 Remote tools are exposed as `mcp__<server>__<tool>`. Notch performs the MCP 2025-06-18 handshake, follows paginated `tools/list`, and calls tools over stdio or HTTP responses in JSON or SSE form. Resource/prompt MCP capabilities are not implemented yet.
 
@@ -343,12 +347,12 @@ Unless `--no-session` is used, every new invocation creates a mode-0600 JSONL fi
 
 Place `.lua` files or executable-plugin directories below either:
 
-- `~/.notch/extensions` (or `$NOTCH_HOME/extensions`)
+- `$XDG_CONFIG_HOME/notch/extensions` (or `~/.config/notch/extensions` when unset)
 - `<workspace-root>/.notch/extensions` (trusted workspaces only)
 
 Lua is a first-class extension format alongside executable plugins. Lua files are loaded directly from each extension directory; executable manifests named `plugin.json` are discovered recursively. Each extension's tools, commands, and hooks register atomically, and registrations are removed when that Lua state, plugin, or MCP connection closes, so failed loads do not leave partial entries behind. Extensions can register model tools, interactive slash commands, and agent hooks. Full examples and the wire protocol are in [docs/extensions.md](docs/extensions.md).
 
-Use `notch extensions install SOURCE` to install a shareable package from GitHub, generic Git, or a local directory. Installed content and its exact commit/digest lock live under `$NOTCH_HOME` or `~/.notch`; updates and removals are atomic. See [extension packages](docs/extension-packages.md) for the manifest, source syntax, integrity checks, security model, and publishing workflow.
+Use `notch extensions install SOURCE` to install a shareable package from GitHub, generic Git, or a local directory. Installed content and its exact commit/digest lock live under `$XDG_DATA_HOME/notch` or `~/.local/share/notch`; updates and removals are atomic. See [extension packages](docs/extension-packages.md) for the manifest, source syntax, integrity checks, security model, and publishing workflow.
 
 ## Community
 

@@ -51,8 +51,9 @@ func TestImportPiMCPFromKeyring(t *testing.T) {
 	if err := os.WriteFile(secretTool, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	notchHome := filepath.Join(home, ".notch")
-	if err := os.MkdirAll(notchHome, 0o700); err != nil {
+	configHome := filepath.Join(home, ".config", "notch")
+	dataHome := filepath.Join(home, ".local", "share", "notch")
+	if err := os.MkdirAll(configHome, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	piConfig := filepath.Join(home, "pi-mcp.json")
@@ -72,12 +73,12 @@ func TestImportPiMCPFromKeyring(t *testing.T) {
 	if err := os.WriteFile(piConfig, []byte(mcpJSON), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(notchHome, "mcp.json"), []byte(mcpJSON), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(configHome, "mcp.json"), []byte(mcpJSON), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	command := exec.Command(os.Args[0], "-test.run=^TestMCPImportPiHelper$")
 	command.Env = append(os.Environ(),
-		"GO_WANT_MCP_IMPORT_HELPER=1", "HOME="+home, "NOTCH_HOME="+notchHome,
+		"GO_WANT_MCP_IMPORT_HELPER=1", "HOME="+home, "XDG_CONFIG_HOME="+filepath.Join(home, ".config"), "XDG_DATA_HOME="+filepath.Join(home, ".local", "share"),
 		"PI_MCP_CONFIG="+piConfig, "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
 	)
 	command.Env = append(command.Env, "SSL_CERT_FILE="+writeServerCert(t, server))
@@ -88,7 +89,7 @@ func TestImportPiMCPFromKeyring(t *testing.T) {
 	if !strings.Contains(string(output), "imported 1") {
 		t.Fatalf("output = %q", output)
 	}
-	data, err := os.ReadFile(filepath.Join(notchHome, "mcp-auth.json"))
+	data, err := os.ReadFile(filepath.Join(dataHome, "mcp-auth.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

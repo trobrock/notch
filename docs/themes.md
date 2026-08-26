@@ -1,6 +1,6 @@
 # Themes
 
-Notch's fullscreen UI uses semantic themes. Set `theme` in the global config (`~/.notch/config.json`, or `$NOTCH_HOME/config.json`) or trusted project config (`<workspace-root>/.notch/config.json`):
+Notch's fullscreen UI uses semantic themes. Set `theme` in the global config (`$XDG_CONFIG_HOME/notch/config.json`, default `~/.config/notch/config.json`) or trusted project config (`<workspace-root>/.notch/config.json`):
 
 ```json
 {
@@ -22,7 +22,7 @@ At runtime, `/theme` lists all loaded themes and `/theme NAME` applies one immed
 
 Notch loads direct `.json` children from these directories, in order:
 
-1. `$NOTCH_HOME/themes`, or `~/.notch/themes` when `NOTCH_HOME` is unset;
+1. `$XDG_CONFIG_HOME/notch/themes`, or `~/.config/notch/themes` when unset;
 2. `<workspace-root>/.notch/themes` for a trusted workspace.
 
 Later files replace earlier themes with the same normalized name, so a project theme overrides a user theme. A custom theme can also override a built-in. Names are case-insensitive; spaces and underscores normalize to hyphens. Additional directories can replace the defaults with `theme_dirs`:

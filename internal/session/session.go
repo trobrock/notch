@@ -127,6 +127,9 @@ func New(dir, cwd, provider, modelName string) (*Session, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create session directory %q: %w", dir, err)
 	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("secure session directory %q: %w", dir, err)
+	}
 
 	for attempt := 0; attempt < 100; attempt++ {
 		now := time.Now().UTC()

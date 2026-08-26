@@ -251,5 +251,9 @@ func extensionStore() (*extpkg.Store, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	return extpkg.New(config.HomeDir(home)), cwd, nil
+	dataRoot, err := config.DataDir(home)
+	if err != nil {
+		return nil, "", err
+	}
+	return extpkg.New(dataRoot), cwd, nil
 }

@@ -33,7 +33,7 @@ The config shape matches Pi and uses camelCase inside `compaction`:
 - `keepRecentTokens` is the target amount of recent context retained whole after summarization. The current default is **20,000**; a single complete recent turn may exceed it.
 - `context_window` overrides the inferred model context size and is useful for local or unrecognized models.
 
-Project copies of these settings apply only in a trusted workspace. `context_window` and compaction settings are project-eligible; storage paths such as `session_dir` and `model_cache` remain global-only.
+Project copies of these settings apply only in a trusted workspace. `context_window` and compaction settings are project-eligible; session and model-cache paths are fixed below the XDG data root and cannot be configured in JSON.
 
 ## Threshold and context indicator
 

@@ -9,7 +9,10 @@ import (
 )
 
 func TestDefaultSystemPromptGuidesCodebaseExploration(t *testing.T) {
-	cfg := Defaults(t.TempDir(), t.TempDir())
+	cfg, err := Defaults(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, text := range []string{"use explore_codebase proactively", "direct grep", "exactly one of task", "never provide both"} {
 		if !strings.Contains(cfg.SystemPrompt, text) {
 			t.Fatalf("default system prompt missing %q: %q", text, cfg.SystemPrompt)
@@ -17,67 +20,54 @@ func TestDefaultSystemPromptGuidesCodebaseExploration(t *testing.T) {
 	}
 }
 
-func TestDefaultsAndNotchHome(t *testing.T) {
+func TestDefaultsUseXDGSplitAndIgnoreLegacyHome(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "home")
 	cwd := filepath.Join(t.TempDir(), "project")
-	t.Setenv("NOTCH_HOME", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("NOTCH_HOME", filepath.Join(t.TempDir(), "ignored"))
 
-	cfg := Defaults(home, cwd)
-	root := filepath.Join(home, ".notch")
-	if cfg.Provider == "" || cfg.Model == "" || cfg.MaxTokens == 0 || cfg.SystemPrompt == "" {
-		t.Fatalf("incomplete defaults: %+v", cfg)
-	}
-	if cfg.Theme != "dark" || cfg.ThinkingLevel != "medium" || cfg.MouseCapture == nil || !*cfg.MouseCapture || cfg.Compaction == nil || cfg.Compaction.Enabled == nil || !*cfg.Compaction.Enabled {
-		t.Fatalf("interactive defaults are incomplete: %+v", cfg)
-	}
-	if cfg.MCPConfig != filepath.Join(root, "mcp.json") || cfg.MCPAuthFile != filepath.Join(root, "mcp-auth.json") || cfg.SessionDir != filepath.Join(root, "sessions") || cfg.ModelCache != filepath.Join(root, "models.json") || cfg.ModelRefreshHours != 24 {
-		t.Fatalf("defaults use wrong home: %+v", cfg)
-	}
-	wantExtensions := []string{filepath.Join(root, "extensions"), filepath.Join(cwd, ".notch", "extensions")}
-	if !reflect.DeepEqual(cfg.ExtensionDirs, wantExtensions) {
-		t.Fatalf("extension dirs = %#v, want %#v", cfg.ExtensionDirs, wantExtensions)
-	}
-	wantThemes := []string{filepath.Join(root, "themes"), filepath.Join(cwd, ".notch", "themes")}
-	if !reflect.DeepEqual(cfg.ThemeDirs, wantThemes) {
-		t.Fatalf("theme dirs = %#v, want %#v", cfg.ThemeDirs, wantThemes)
-	}
-	wantAgentSkills := []string{filepath.Join(home, ".agents", "skills"), filepath.Join(cwd, ".agents", "skills")}
-	wantAgentCommands := []string{filepath.Join(home, ".agents", "commands"), filepath.Join(cwd, ".agents", "commands")}
-	if !reflect.DeepEqual(cfg.AgentSkillDirs, wantAgentSkills) || !reflect.DeepEqual(cfg.AgentCommandDirs, wantAgentCommands) {
-		t.Fatalf(".agents dirs = %#v / %#v", cfg.AgentSkillDirs, cfg.AgentCommandDirs)
-	}
-	wantSkillOrder := []string{wantAgentSkills[0], filepath.Join(root, "skills"), filepath.Join(cwd, ".notch", "skills"), wantAgentSkills[1]}
-	if !reflect.DeepEqual(cfg.SkillDiscoveryDirs(), wantSkillOrder) {
-		t.Fatalf("skill discovery order = %#v, want %#v", cfg.SkillDiscoveryDirs(), wantSkillOrder)
-	}
-
-	custom := filepath.Join(t.TempDir(), "custom-notch")
-	t.Setenv("NOTCH_HOME", custom)
-	cfg = Defaults(home, cwd)
-	if cfg.SessionDir != filepath.Join(custom, "sessions") || cfg.MCPConfig != filepath.Join(custom, "mcp.json") || cfg.MCPAuthFile != filepath.Join(custom, "mcp-auth.json") {
-		t.Fatalf("NOTCH_HOME not respected: %+v", cfg)
-	}
-}
-
-func TestRelativeNotchHomeIsNormalizedAbsolute(t *testing.T) {
-	cwd := t.TempDir()
-	oldCWD, err := os.Getwd()
+	cfg, err := Defaults(home, cwd)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chdir(cwd); err != nil {
+	configRoot := filepath.Join(home, ".config", "notch")
+	dataRoot := filepath.Join(home, ".local", "share", "notch")
+	if cfg.MCPConfig != filepath.Join(configRoot, "mcp.json") || cfg.MCPAuthFile != filepath.Join(dataRoot, "mcp-auth.json") || cfg.AuthFile != filepath.Join(dataRoot, "auth.json") || cfg.SessionDir != filepath.Join(dataRoot, "sessions") || cfg.ModelCache != filepath.Join(dataRoot, "models.json") {
+		t.Fatalf("defaults use wrong XDG roots: %+v", cfg)
+	}
+	wantExtensions := []string{filepath.Join(configRoot, "extensions"), filepath.Join(cwd, ".notch", "extensions")}
+	if !reflect.DeepEqual(cfg.ExtensionDirs, wantExtensions) {
+		t.Fatalf("extension dirs = %#v, want %#v", cfg.ExtensionDirs, wantExtensions)
+	}
+	wantAgentSkills := []string{filepath.Join(home, ".agents", "skills"), filepath.Join(cwd, ".agents", "skills")}
+	wantSkillOrder := []string{wantAgentSkills[0], filepath.Join(configRoot, "skills"), filepath.Join(cwd, ".notch", "skills"), wantAgentSkills[1]}
+	if !reflect.DeepEqual(cfg.SkillDiscoveryDirs(), wantSkillOrder) {
+		t.Fatalf("skill discovery order = %#v, want %#v", cfg.SkillDiscoveryDirs(), wantSkillOrder)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".notch")); !os.IsNotExist(err) {
+		t.Fatalf("legacy ~/.notch unexpectedly used: %v", err)
+	}
+}
+
+func TestXDGOverridesAndRelativeRejection(t *testing.T) {
+	home := t.TempDir()
+	configBase, dataBase := filepath.Join(t.TempDir(), "config"), filepath.Join(t.TempDir(), "data")
+	t.Setenv("XDG_CONFIG_HOME", configBase)
+	t.Setenv("XDG_DATA_HOME", dataBase)
+	cfg, err := Defaults(home, t.TempDir())
+	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chdir(oldCWD) })
-	t.Setenv("NOTCH_HOME", filepath.Join("state", "notch"))
-
-	want := filepath.Join(cwd, "state", "notch")
-	if got := HomeDir(t.TempDir()); got != want {
-		t.Fatalf("HomeDir = %q, want %q", got, want)
+	if cfg.MCPConfig != filepath.Join(configBase, "notch", "mcp.json") || cfg.AuthFile != filepath.Join(dataBase, "notch", "auth.json") {
+		t.Fatalf("XDG overrides not applied: %+v", cfg)
 	}
-	cfg := Defaults(t.TempDir(), t.TempDir())
-	if cfg.SessionDir != filepath.Join(want, "sessions") || cfg.MCPConfig != filepath.Join(want, "mcp.json") {
-		t.Fatalf("relative NOTCH_HOME was not normalized consistently: %+v", cfg)
+	for _, variable := range []string{"XDG_CONFIG_HOME", "XDG_DATA_HOME"} {
+		t.Setenv(variable, "relative/path")
+		if _, err := LoadGlobal(home); err == nil || !strings.Contains(err.Error(), variable+" must be an absolute path") {
+			t.Fatalf("%s relative error = %v", variable, err)
+		}
+		t.Setenv(variable, "")
 	}
 }
 
@@ -86,7 +76,7 @@ func TestLoadMergesUserThenProject(t *testing.T) {
 	home := t.TempDir()
 	cwd := t.TempDir()
 	t.Setenv("NOTCH_HOME", "")
-	writeJSON(t, filepath.Join(home, ".notch", "config.json"), `{
+	writeJSON(t, filepath.Join(home, ".config", "notch", "config.json"), `{
 		"provider":"openai", "model":"global-model", "base_url":"https://global.test",
 		"max_tokens":123, "system_prompt":"global prompt", "extension_dirs":["global-ext"],
 		"skill_dirs":["global-skill"], "prompt_dirs":["global-prompt"], "theme_dirs":["global-theme"], "session_dir":"global-sessions",
@@ -106,15 +96,15 @@ func TestLoadMergesUserThenProject(t *testing.T) {
 	if cfg.Provider != "openai" || cfg.Model != "project-model" || cfg.BaseURL != "https://global.test" || cfg.MaxTokens != 456 {
 		t.Fatalf("scalar merge failed: %+v", cfg)
 	}
-	if cfg.SystemPrompt != "global prompt" || cfg.MCPConfig != filepath.Join(cwd, "project-mcp.json") || cfg.SessionDir != "global-sessions" {
+	if cfg.SystemPrompt != "global prompt" || cfg.MCPConfig != filepath.Join(cwd, "project-mcp.json") || cfg.SessionDir != filepath.Join(home, ".local", "share", "notch", "sessions") {
 		t.Fatalf("scalar inheritance failed: %+v", cfg)
 	}
-	if cfg.Theme != "dracula" || cfg.ThinkingLevel != "high" || cfg.MouseCapture == nil || *cfg.MouseCapture || cfg.ContextWindow != 99999 || cfg.ModelCache != "custom-models.json" || cfg.ModelRefreshHours != 12 || cfg.Compaction == nil || cfg.Compaction.Enabled == nil || *cfg.Compaction.Enabled || cfg.Compaction.ReserveTokens != 1000 || cfg.Compaction.KeepRecentTokens != 3000 {
+	if cfg.Theme != "dracula" || cfg.ThinkingLevel != "high" || cfg.MouseCapture == nil || *cfg.MouseCapture || cfg.ContextWindow != 99999 || cfg.ModelCache != filepath.Join(home, ".local", "share", "notch", "models.json") || cfg.ModelRefreshHours != 12 || cfg.Compaction == nil || cfg.Compaction.Enabled == nil || *cfg.Compaction.Enabled || cfg.Compaction.ReserveTokens != 1000 || cfg.Compaction.KeepRecentTokens != 3000 {
 		t.Fatalf("theme/thinking/compaction merge failed: %+v", cfg)
 	}
 	if !reflect.DeepEqual(cfg.ExtensionDirs, []string{filepath.Join(cwd, "project-ext")}) ||
-		!reflect.DeepEqual(cfg.SkillDirs, []string{"global-skill"}) ||
-		!reflect.DeepEqual(cfg.PromptDirs, []string{"global-prompt"}) ||
+		!reflect.DeepEqual(cfg.SkillDirs, []string{filepath.Join(home, ".config", "notch", "global-skill")}) ||
+		!reflect.DeepEqual(cfg.PromptDirs, []string{filepath.Join(home, ".config", "notch", "global-prompt")}) ||
 		!reflect.DeepEqual(cfg.ThemeDirs, []string{filepath.Join(cwd, "project-theme")}) {
 		t.Fatalf("directory merge failed: %+v", cfg)
 	}
@@ -128,25 +118,39 @@ func TestLoadMissingAndMalformed(t *testing.T) {
 	}
 
 	home := t.TempDir()
-	writeJSON(t, filepath.Join(home, ".notch", "config.json"), `{bad`)
+	writeJSON(t, filepath.Join(home, ".config", "notch", "config.json"), `{bad`)
 	_, err := Load(home, t.TempDir())
-	if err == nil || !strings.Contains(err.Error(), filepath.Join(home, ".notch", "config.json")) {
+	if err == nil || !strings.Contains(err.Error(), filepath.Join(home, ".config", "notch", "config.json")) {
 		t.Fatalf("expected path-bearing parse error, got %v", err)
 	}
 }
 
-func TestLoadUsesNotchHomeForUserConfig(t *testing.T) {
+func TestLoadIgnoresNotchHomeAndHasNoLegacyFallback(t *testing.T) {
 	clearRuntimeConfigEnv(t)
 	home, cwd, custom := t.TempDir(), t.TempDir(), t.TempDir()
 	t.Setenv("NOTCH_HOME", custom)
-	writeJSON(t, filepath.Join(home, ".notch", "config.json"), `{"model":"wrong"}`)
-	writeJSON(t, filepath.Join(custom, "config.json"), `{"model":"right"}`)
+	writeJSON(t, filepath.Join(home, ".notch", "config.json"), `{"model":"legacy"}`)
+	writeJSON(t, filepath.Join(home, ".config", "notch", "config.json"), `{"model":"xdg"}`)
+	writeJSON(t, filepath.Join(custom, "config.json"), `{"model":"notch-home"}`)
 	cfg, err := Load(home, cwd)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Model != "right" {
-		t.Fatalf("model = %q, want config below NOTCH_HOME", cfg.Model)
+	if cfg.Model != "xdg" {
+		t.Fatalf("model = %q, want XDG config with legacy and NOTCH_HOME ignored", cfg.Model)
+	}
+}
+
+func TestLoadDoesNotFallbackToLegacyConfig(t *testing.T) {
+	clearRuntimeConfigEnv(t)
+	home := t.TempDir()
+	writeJSON(t, filepath.Join(home, ".notch", "config.json"), `{"model":"legacy"}`)
+	cfg, err := LoadGlobal(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Model == "legacy" {
+		t.Fatal("loaded legacy ~/.notch/config.json")
 	}
 }
 
@@ -183,14 +187,14 @@ func TestLoadWorkspaceUntrustedSkipsAllProjectInputs(t *testing.T) {
 	clearRuntimeConfigEnv(t)
 	home, root := t.TempDir(), t.TempDir()
 	t.Setenv("NOTCH_HOME", "")
-	writeJSON(t, filepath.Join(home, ".notch", "config.json"), `{"model":"global","extension_dirs":["global-ext"]}`)
+	writeJSON(t, filepath.Join(home, ".config", "notch", "config.json"), `{"model":"global","extension_dirs":["global-ext"]}`)
 	writeJSON(t, filepath.Join(root, ".notch", "config.json"), `{"model":"project","extension_dirs":["project-ext"]}`)
 
 	cfg, err := LoadWorkspace(home, root, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Model != "global" || !reflect.DeepEqual(cfg.ExtensionDirs, []string{"global-ext"}) {
+	if cfg.Model != "global" || !reflect.DeepEqual(cfg.ExtensionDirs, []string{filepath.Join(home, ".config", "notch", "global-ext")}) {
 		t.Fatalf("project config loaded without trust: %+v", cfg)
 	}
 	paths := append([]string{}, cfg.SkillDirs...)
@@ -227,11 +231,10 @@ func TestLoadWorkspaceUsesTrustedProjectMCP(t *testing.T) {
 	}
 }
 
-func TestLoadWorkspaceKeepsSensitiveFieldsGlobalOnly(t *testing.T) {
+func TestGlobalAndProjectJSONCannotConfigureFixedDataPaths(t *testing.T) {
 	clearRuntimeConfigEnv(t)
 	home, root := t.TempDir(), t.TempDir()
-	t.Setenv("NOTCH_HOME", "")
-	writeJSON(t, filepath.Join(home, ".notch", "config.json"), `{
+	writeJSON(t, filepath.Join(home, ".config", "notch", "config.json"), `{
 		"base_url":"https://global.test", "auth_file":"global-auth", "mcp_auth_file":"global-mcp-auth", "session_dir":"global-sessions", "model_cache":"global-models"
 	}`)
 	writeJSON(t, filepath.Join(root, ".notch", "config.json"), `{
@@ -245,7 +248,7 @@ func TestLoadWorkspaceKeepsSensitiveFieldsGlobalOnly(t *testing.T) {
 	if cfg.Model != "trusted-project" {
 		t.Fatalf("ordinary trusted project field not loaded: %+v", cfg)
 	}
-	if cfg.BaseURL != "https://global.test" || cfg.AuthFile != "global-auth" || cfg.MCPAuthFile != "global-mcp-auth" || cfg.SessionDir != "global-sessions" || cfg.ModelCache != "global-models" {
+	if cfg.BaseURL != "https://global.test" || cfg.AuthFile != filepath.Join(home, ".local", "share", "notch", "auth.json") || cfg.MCPAuthFile != filepath.Join(home, ".local", "share", "notch", "mcp-auth.json") || cfg.SessionDir != filepath.Join(home, ".local", "share", "notch", "sessions") || cfg.ModelCache != filepath.Join(home, ".local", "share", "notch", "models.json") {
 		t.Fatalf("project overrode sensitive global fields: %+v", cfg)
 	}
 }
@@ -254,7 +257,7 @@ func TestLoadWorkspaceClearsGlobalBaseURLWhenProjectChangesProvider(t *testing.T
 	clearRuntimeConfigEnv(t)
 	home, root := t.TempDir(), t.TempDir()
 	t.Setenv("NOTCH_HOME", "")
-	writeJSON(t, filepath.Join(home, ".notch", "config.json"), `{"provider":"openai","base_url":"https://global.test"}`)
+	writeJSON(t, filepath.Join(home, ".config", "notch", "config.json"), `{"provider":"openai","base_url":"https://global.test"}`)
 	writeJSON(t, filepath.Join(root, ".notch", "config.json"), `{"provider":"anthropic"}`)
 
 	cfg, err := LoadWorkspace(home, root, true)
@@ -270,12 +273,12 @@ func TestLoadGlobalUsesOnlyGlobalConfig(t *testing.T) {
 	clearRuntimeConfigEnv(t)
 	home := t.TempDir()
 	t.Setenv("NOTCH_HOME", "")
-	writeJSON(t, filepath.Join(home, ".notch", "config.json"), `{"auth_file":"global-auth"}`)
+	writeJSON(t, filepath.Join(home, ".config", "notch", "config.json"), `{"auth_file":"global-auth"}`)
 	cfg, err := LoadGlobal(home)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.AuthFile != "global-auth" {
+	if cfg.AuthFile != filepath.Join(home, ".local", "share", "notch", "auth.json") {
 		t.Fatalf("global auth file = %q", cfg.AuthFile)
 	}
 	if len(cfg.ExtensionDirs) != 1 || len(cfg.AgentSkillDirs) != 1 || len(cfg.AgentCommandDirs) != 1 {
@@ -308,6 +311,11 @@ func TestEnsureDirs(t *testing.T) {
 			t.Errorf("directory %q was not created: %v", dir, err)
 		}
 	}
+	if info, err := os.Stat(dirs[4]); err != nil {
+		t.Errorf("stat private session directory: %v", err)
+	} else if info.Mode().Perm() != 0o700 {
+		t.Errorf("private session directory mode = %v", info.Mode().Perm())
+	}
 }
 
 func TestEnsureGlobalDirsDoesNotCreateProjectOrArbitraryConfiguredPaths(t *testing.T) {
@@ -319,7 +327,8 @@ func TestEnsureGlobalDirsDoesNotCreateProjectOrArbitraryConfiguredPaths(t *testi
 		ExtensionDirs: []string{filepath.Join(global, "extensions"), project, outside},
 		AuthFile:      filepath.Join(global, "auth.json"),
 		SessionDir:    filepath.Join(global, "sessions"),
-		notchHome:     global,
+		configRoot:    global,
+		dataRoot:      global,
 	}
 	if err := cfg.EnsureGlobalDirs(); err != nil {
 		t.Fatal(err)
@@ -349,7 +358,7 @@ func TestEnsureDirsReportsFileConflict(t *testing.T) {
 
 func clearRuntimeConfigEnv(t *testing.T) {
 	t.Helper()
-	for _, name := range []string{"NOTCH_PROVIDER", "NOTCH_MODEL", "NOTCH_THINKING_LEVEL"} {
+	for _, name := range []string{"NOTCH_PROVIDER", "NOTCH_MODEL", "NOTCH_THINKING_LEVEL", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "NOTCH_HOME"} {
 		t.Setenv(name, "")
 	}
 }

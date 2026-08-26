@@ -26,7 +26,8 @@ func TestAuthenticationCommandsIgnoreProjectConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chdir(oldCWD) })
-	t.Setenv("NOTCH_HOME", filepath.Join(t.TempDir(), "notch-home"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "notch-home"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "notch-home"))
 	if err := os.MkdirAll(filepath.Join(cwd, ".notch"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +51,8 @@ func TestInitIgnoresProjectInputsAndAppliesModelFlags(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chdir(oldCWD) })
 
 	notchHome := filepath.Join(t.TempDir(), "notch-home")
-	t.Setenv("NOTCH_HOME", notchHome)
+	t.Setenv("XDG_CONFIG_HOME", notchHome)
+	t.Setenv("XDG_DATA_HOME", notchHome)
 	if err := os.WriteFile(filepath.Join(cwd, ".git"), []byte("malformed worktree marker"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +69,7 @@ func TestInitIgnoresProjectInputsAndAppliesModelFlags(t *testing.T) {
 	if err != nil {
 		t.Fatalf("init inspected project inputs: %v", err)
 	}
-	data, err := os.ReadFile(filepath.Join(notchHome, "config.json"))
+	data, err := os.ReadFile(filepath.Join(notchHome, "notch", "config.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +87,7 @@ func TestInitIgnoresProjectInputsAndAppliesModelFlags(t *testing.T) {
 	if !strings.Contains(output, filepath.Join(cwd, ".notch", "extensions")) {
 		t.Fatalf("init output did not retain workspace path: %q", output)
 	}
-	if _, err := os.Stat(filepath.Join(notchHome, "trusted-workspaces.json")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(notchHome, "notch", "trusted-workspaces.json")); !os.IsNotExist(err) {
 		t.Fatalf("init created workspace trust state: %v", err)
 	}
 }
@@ -117,7 +119,8 @@ func captureStdout(t *testing.T, fn func() error) (string, error) {
 func TestResolveWorkspaceTrustDoesNotCreateTrustStateWithoutInputs(t *testing.T) {
 	home, root := t.TempDir(), t.TempDir()
 	notchHome := filepath.Join(t.TempDir(), "absent-notch-home")
-	t.Setenv("NOTCH_HOME", notchHome)
+	t.Setenv("XDG_CONFIG_HOME", notchHome)
+	t.Setenv("XDG_DATA_HOME", notchHome)
 	trusted, err := resolveWorkspaceTrust(home, root, options{}, strings.NewReader("yes\n"), &bytes.Buffer{}, true)
 	if err != nil || trusted {
 		t.Fatalf("trusted=%v err=%v", trusted, err)
@@ -129,7 +132,8 @@ func TestResolveWorkspaceTrustDoesNotCreateTrustStateWithoutInputs(t *testing.T)
 
 func TestResolveWorkspaceTrustSafeAndNonInteractive(t *testing.T) {
 	home, root := t.TempDir(), t.TempDir()
-	t.Setenv("NOTCH_HOME", filepath.Join(t.TempDir(), "notch-home"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "notch-home"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "notch-home"))
 	if err := os.MkdirAll(filepath.Join(root, ".notch"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +154,8 @@ func TestResolveWorkspaceTrustSafeAndNonInteractive(t *testing.T) {
 func TestResolveWorkspaceTrustPromptsOnceAndPersists(t *testing.T) {
 	home, root := t.TempDir(), t.TempDir()
 	notchHome := filepath.Join(t.TempDir(), "notch-home")
-	t.Setenv("NOTCH_HOME", notchHome)
+	t.Setenv("XDG_CONFIG_HOME", notchHome)
+	t.Setenv("XDG_DATA_HOME", notchHome)
 	if err := os.MkdirAll(filepath.Join(root, ".agents", "skills"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -172,12 +177,13 @@ func TestResolveWorkspaceTrustPromptsOnceAndPersists(t *testing.T) {
 func TestResolveWorkspaceTrustExplicitFlagPersistsWithoutInputs(t *testing.T) {
 	home, root := t.TempDir(), t.TempDir()
 	notchHome := filepath.Join(t.TempDir(), "notch-home")
-	t.Setenv("NOTCH_HOME", notchHome)
+	t.Setenv("XDG_CONFIG_HOME", notchHome)
+	t.Setenv("XDG_DATA_HOME", notchHome)
 	trusted, err := resolveWorkspaceTrust(home, root, options{trustWorkspace: true}, strings.NewReader(""), &bytes.Buffer{}, false)
 	if err != nil || !trusted {
 		t.Fatalf("explicit trust: trusted=%v err=%v", trusted, err)
 	}
-	info, err := os.Stat(filepath.Join(notchHome, "trusted-workspaces.json"))
+	info, err := os.Stat(filepath.Join(notchHome, "notch", "trusted-workspaces.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +194,8 @@ func TestResolveWorkspaceTrustExplicitFlagPersistsWithoutInputs(t *testing.T) {
 
 func TestResolveWorkspaceTrustWritesPromptToDiagnosticWriter(t *testing.T) {
 	home, root := t.TempDir(), t.TempDir()
-	t.Setenv("NOTCH_HOME", filepath.Join(t.TempDir(), "notch-home"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "notch-home"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "notch-home"))
 	if err := os.MkdirAll(filepath.Join(root, ".notch"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -208,11 +215,12 @@ func TestResolveWorkspaceTrustWritesPromptToDiagnosticWriter(t *testing.T) {
 func TestResolveWorkspaceTrustExplicitFlagRepairsUnsafeMode(t *testing.T) {
 	home, root := t.TempDir(), t.TempDir()
 	notchHome := filepath.Join(t.TempDir(), "notch-home")
-	t.Setenv("NOTCH_HOME", notchHome)
-	if err := os.Mkdir(notchHome, 0o700); err != nil {
+	t.Setenv("XDG_CONFIG_HOME", notchHome)
+	t.Setenv("XDG_DATA_HOME", notchHome)
+	if err := os.MkdirAll(filepath.Join(notchHome, "notch"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(notchHome, "trusted-workspaces.json")
+	path := filepath.Join(notchHome, "notch", "trusted-workspaces.json")
 	if err := os.WriteFile(path, []byte(`{"version":1,"workspaces":[]}`), 0o644); err != nil {
 		t.Fatal(err)
 	}

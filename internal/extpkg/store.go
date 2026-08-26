@@ -42,7 +42,7 @@ type Store struct {
 	now        func() time.Time
 }
 
-// New creates a store rooted at NOTCH_HOME.
+// New creates a store rooted at the Notch XDG data directory.
 func New(root string) *Store { return NewWithOptions(Options{Root: root}) }
 
 // NewWithOptions creates a configurable store.
@@ -348,7 +348,7 @@ func (s *Store) prepare(ctx context.Context, source Source) (preparedPackage, fu
 	if err := validateSource(source); err != nil {
 		return preparedPackage{}, func() {}, fmt.Errorf("invalid package source: %w", err)
 	}
-	if err := os.MkdirAll(s.packages, 0o755); err != nil {
+	if err := secureDirectory(s.packages); err != nil {
 		return preparedPackage{}, func() {}, fmt.Errorf("create package directory: %w", err)
 	}
 	stageRoot, err := os.MkdirTemp(s.packages, ".stage-")
@@ -442,8 +442,15 @@ func (s *Store) loadState() (stateFile, error) {
 	return state, nil
 }
 
+func secureDirectory(path string) error {
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o700)
+}
+
 func (s *Store) saveState(state stateFile) error {
-	if err := os.MkdirAll(s.root, 0o700); err != nil {
+	if err := secureDirectory(s.root); err != nil {
 		return err
 	}
 	sortInstalled(state.Packages)
@@ -504,7 +511,7 @@ func (s *Store) saveState(state stateFile) error {
 }
 
 func (s *Store) lock() (func(), error) {
-	if err := os.MkdirAll(s.root, 0o700); err != nil {
+	if err := secureDirectory(s.root); err != nil {
 		return nil, err
 	}
 	for attempt := 0; attempt < 2; attempt++ {
@@ -541,7 +548,7 @@ func (s *Store) lock() (func(), error) {
 }
 
 func (s *Store) recoverTransactions(state stateFile) error {
-	if err := os.MkdirAll(s.packages, 0o755); err != nil {
+	if err := secureDirectory(s.packages); err != nil {
 		return err
 	}
 	tracked := make(map[string]Installed, len(state.Packages))

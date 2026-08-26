@@ -13,12 +13,12 @@ Notch identifies a workspace by its canonical Git root, falling back to the cano
 Notch resolves values in this order, with later layers winning:
 
 1. compiled defaults;
-2. `$NOTCH_HOME/config.json`, or `~/.notch/config.json` when `NOTCH_HOME` is unset;
+2. `$XDG_CONFIG_HOME/notch/config.json`, or `~/.config/notch/config.json` when unset;
 3. `<workspace-root>/.notch/config.json`, only when trusted;
 4. `NOTCH_PROVIDER`, `NOTCH_MODEL`, and `NOTCH_THINKING_LEVEL`;
 5. CLI flags such as `--provider` and `--model`.
 
-Use trusted project config for repository-specific behavior and user config for defaults shared by all projects. `base_url`, `auth_file`, `mcp_auth_file`, `session_dir`, and `model_cache` are global-only and ignored in project config even after trust. Standalone `notch login`, `logout`, `auth`, and `models` commands load global configuration only. Use environment variables for temporary shell or CI overrides. Provider and model overrides are independent.
+Use trusted project config for repository-specific behavior and user config for defaults shared by all projects. `base_url` is global-only. Auth, MCP-auth, session, and model-cache paths are fixed below `$XDG_DATA_HOME/notch` (default `~/.local/share/notch`) and JSON keys attempting to configure them are ignored. Standalone `notch login`, `logout`, `auth`, and `models` commands load global configuration only. Use environment variables for temporary shell or CI overrides. Provider and model overrides are independent.
 
 Before editing, read every existing applicable config file. Do not replace unrelated keys. Ask before changing user-global configuration when a project-local change would work.
 
@@ -34,7 +34,6 @@ Before editing, read every existing applicable config file. Do not replace unrel
   "thinking_level": "medium",
   "mouse": true,
   "context_window": 0,
-  "model_cache": "/home/me/.notch/models.json",
   "model_refresh_hours": 24,
   "compaction": {
     "enabled": true,
@@ -42,18 +41,17 @@ Before editing, read every existing applicable config file. Do not replace unrel
     "keepRecentTokens": 20000
   },
   "system_prompt": "You are a coding agent.",
-  "mcp_config": "/home/me/.notch/mcp.json",
-  "extension_dirs": ["/home/me/.notch/extensions", "/work/project/.notch/extensions"],
-  "skill_dirs": ["/home/me/.notch/skills", "/work/project/.notch/skills"],
-  "prompt_dirs": ["/home/me/.notch/prompts", "/work/project/.notch/prompts"],
-  "theme_dirs": ["/home/me/.notch/themes", "/work/project/.notch/themes"],
-  "session_dir": "/home/me/.notch/sessions"
+  "mcp_config": "/home/me/.config/notch/mcp.json",
+  "extension_dirs": ["/home/me/.config/notch/extensions", "/work/project/.notch/extensions"],
+  "skill_dirs": ["/home/me/.config/notch/skills", "/work/project/.notch/skills"],
+  "prompt_dirs": ["/home/me/.config/notch/prompts", "/work/project/.notch/prompts"],
+  "theme_dirs": ["/home/me/.config/notch/themes", "/work/project/.notch/themes"],
 }
 ```
 
 Empty scalar values in later files do not erase earlier values. A non-empty directory array replaces the complete earlier array; it is not appended. `context_window: 0` lets the provider/model default apply.
 
-The model registry ships with an offline fallback and refreshes stale selected-provider data from provider model-list APIs on startup or when `/model` is opened. `model_refresh_hours` controls staleness; no polling timer runs. Use `notch models [provider]` to list cached/discovered models, `notch models --refresh [provider]` to force discovery, and `/model refresh` to force it in the fullscreen selector. `model_cache` relocates the mode-0600 JSON cache.
+The model registry ships with an offline fallback and refreshes stale selected-provider data from provider model-list APIs on startup or when `/model` is opened. `model_refresh_hours` controls staleness; no polling timer runs. Use `notch models [provider]` to list cached/discovered models, `notch models --refresh [provider]` to force discovery, and `/model refresh` to force it in the fullscreen selector. The mode-0600 JSON cache has a fixed path below the XDG data root.
 
 Valid thinking levels are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh`. Built-in themes are `dark`, `dracula`, and `catppuccin-mocha`. `/thinking LEVEL` and `/theme NAME` change only the running process. `mouse` defaults to `true`; set it to `false` to disable TUI mouse capture and restore terminal-native selection/scrolling.
 
@@ -81,7 +79,7 @@ notch login openrouter
 notch logout PROVIDER
 ```
 
-API-key alternatives are `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and `OPENROUTER_API_KEY`. OAuth credentials are stored in `$NOTCH_HOME/auth.json` or `~/.notch/auth.json` with mode `0600`.
+API-key alternatives are `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and `OPENROUTER_API_KEY`. OAuth credentials are stored in `$XDG_DATA_HOME/notch/auth.json` or `~/.local/share/notch/auth.json` when unset with mode `0600`.
 
 Never put secrets in `config.json`, project files, examples, or version control. Do not print access or refresh tokens. Notch configures credentials separately from normal config.
 
@@ -108,7 +106,7 @@ Review the changes. Focus: $ARGUMENTS
 
 ## MCP
 
-The default MCP file is `$NOTCH_HOME/mcp.json` or `~/.notch/mcp.json`:
+The default MCP file is `$XDG_CONFIG_HOME/notch/mcp.json` or `~/.config/notch/mcp.json` when unset:
 
 ```json
 {
@@ -126,11 +124,11 @@ The default MCP file is `$NOTCH_HOME/mcp.json` or `~/.notch/mcp.json`:
 }
 ```
 
-Use the `env` object for every stdio-server secret or other non-baseline variable. Stdio MCP children receive only a minimal inherited environment (`PATH`, home/user, temporary-directory, locale, terminal, and SSH-agent basics, plus required Windows process variables); provider keys, token variables, and CI secrets are not inherited. Explicit `env` values are added to that baseline. Remote HTTP headers are literal and do not expand environment variables. Prefer `"auth": "oauth"` for compatible protected servers, then run `notch mcp login NAME`; status and logout are available through `notch mcp status` and `notch mcp logout NAME`. OAuth credentials are globally stored at mode `0600` and bound to the exact server URL. Notch supports stdio and Streamable HTTP tools, but not MCP resources, prompts, elicitation, sampling, or app UI.
+The MCP file is static configuration under the config root, so literal secrets in `env` or HTTP `headers` are not kept in the private data root. Prefer OAuth or a server-side/environment indirection; if a static secret is unavoidable, protect the MCP file appropriately. Use the `env` object for every stdio-server secret or other non-baseline variable. Stdio MCP children receive only a minimal inherited environment (`PATH`, home/user, temporary-directory, locale, terminal, and SSH-agent basics, plus required Windows process variables); provider keys, token variables, and CI secrets are not inherited. Explicit `env` values are added to that baseline. Remote HTTP headers are literal and do not expand environment variables. Prefer `"auth": "oauth"` for compatible protected servers, then run `notch mcp login NAME`; status and logout are available through `notch mcp status` and `notch mcp logout NAME`. OAuth credentials are globally stored at mode `0600` and bound to the exact server URL. Notch supports stdio and Streamable HTTP tools, but not MCP resources, prompts, elicitation, sampling, or app UI.
 
 ## Sessions
 
-Sessions default to `~/.notch/sessions` and are durable JSONL files. Use `--continue` for the latest valid session, `--resume ID` for a specific session, `/resume` for the fullscreen picker, and `--no-session` for no persistence. A malformed unterminated final record is treated as a torn write and truncated only when every preceding record is valid; damaged sessions are skipped by list/latest discovery instead of hiding healthy sessions. Changing the global-only `session_dir` isolates future session discovery.
+Sessions default to `~/.local/share/notch/sessions` and are durable JSONL files. Use `--continue` for the latest valid session, `--resume ID` for a specific session, `/resume` for the fullscreen picker, and `--no-session` for no persistence. A malformed unterminated final record is treated as a torn write and truncated only when every preceding record is valid; damaged sessions are skipped by list/latest discovery instead of hiding healthy sessions. The session path is fixed below the XDG data root; select a separate absolute `XDG_DATA_HOME` to isolate it.
 
 ## Validation
 

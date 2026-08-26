@@ -9,20 +9,20 @@ Notch uses native Go HTTP adapters rather than provider SDKs. Select an adapter 
 | `anthropic` | Native Anthropic Messages | `ANTHROPIC_API_KEY` or Claude Pro/Max OAuth |
 | `openai` | Native OpenAI Responses | `OPENAI_API_KEY`, or no key for a configured local server such as Ollama |
 
-For agent runs, `base_url`, `auth_file`, `model_cache`, and `session_dir` are global-only and ignored in project config, including trusted workspaces. This prevents a repository from redirecting provider traffic or credential/session/cache storage. Provider/model and ordinary behavioral settings may still come from trusted project config.
+For agent runs, `base_url` is global-only and ignored in project config. Auth, model-cache, and session paths are fixed below the XDG data root and cannot be configured in JSON. This prevents a repository from redirecting provider traffic or credential/session/cache storage. Provider/model and ordinary behavioral settings may still come from trusted project config.
 
 Model IDs are passed through to the selected service. Availability is determined by the account and provider; a documented example is not a guarantee that a model is enabled for every account.
 
 ## Model registry and selection
 
-Notch embeds a small offline model catalog and maintains a mode-0600 cache at `model_cache` (default `~/.notch/models.json`). Stale entries refresh on startup for the selected provider and when the model selector is opened. `model_refresh_hours` defaults to 24. Refresh is demand-driven: there is no timer or idle polling.
+Notch embeds a small offline model catalog and maintains a mode-0600 cache at `$XDG_DATA_HOME/notch/models.json` (default `~/.local/share/notch/models.json`). Stale entries refresh on startup for the selected provider and when the model selector is opened. `model_refresh_hours` defaults to 24. Refresh is demand-driven: there is no timer or idle polling.
 
 - Anthropic uses `GET /v1/models` with configured authentication.
 - OpenRouter uses its public `GET /models` catalog and records context/reasoning metadata.
 - OpenAI and compatible local servers use `GET /v1/models`.
 - ChatGPT Codex currently uses the embedded fallback because its subscription Responses endpoint does not expose a supported listing API.
 
-Use `notch models [provider]` for a terminal listing or `notch models --refresh [provider]` to force a refresh. `notch models --json [provider]` emits a versioned machine-readable catalog, and `--all` includes every supported provider. This standalone command loads global config only: project provider, model, `base_url`, and `model_cache` values do not affect it. In fullscreen mode `/model` opens searchable provider/model selectors; `/model refresh` bypasses a fresh cache. Runtime changes preserve context and affect later requests and newly created sessions, but do not modify user/project config.
+Use `notch models [provider]` for a terminal listing or `notch models --refresh [provider]` to force a refresh. `notch models --json [provider]` emits a versioned machine-readable catalog, and `--all` includes every supported provider. This standalone command loads global config only: project provider, model, and `base_url` values do not affect it; the model cache path is fixed below the XDG data root. In fullscreen mode `/model` opens searchable provider/model selectors; `/model refresh` bypasses a fresh cache. Runtime changes preserve context and affect later requests and newly created sessions, but do not modify user/project config.
 
 A provider discovery failure still returns stale cache data or the bundled fallback and reports a warning. Custom OpenAI-compatible `base_url` values receive separate cache scopes so local model catalogs do not overwrite hosted OpenAI data.
 
@@ -49,9 +49,9 @@ notch logout PROVIDER
 notch auth status
 ```
 
-`notch login`, `notch logout`, `notch auth status`, and `notch auth import-pi` load global configuration only. Project `auth_file` is ignored even in a trusted workspace. `notch login PROVIDER` opens a browser authorization flow and also prints the authorization URL. Login is supported for `openai-codex`, `anthropic`, and `openrouter`; the regular `openai` provider uses an API key instead. `logout` removes that provider's stored credential. `auth status` reports credentials in Notch's store (not API keys currently supplied through the environment).
+`notch login`, `notch logout`, `notch auth status`, and `notch auth import-pi` load global configuration only. Credential storage is fixed below the XDG data root; `auth_file` JSON keys are ignored. `notch login PROVIDER` opens a browser authorization flow and also prints the authorization URL. Login is supported for `openai-codex`, `anthropic`, and `openrouter`; the regular `openai` provider uses an API key instead. `logout` removes that provider's stored credential. `auth status` reports credentials in Notch's store (not API keys currently supplied through the environment).
 
-Notch stores credentials at `~/.notch/auth.json`, or `$NOTCH_HOME/auth.json` when `NOTCH_HOME` is set. The file is written with mode `0600`; when Notch must create its parent directory, it uses mode `0700`. Treat the file as a secret: it can contain access and refresh tokens. OAuth credentials that have a refresh token and are within five minutes of expiry are refreshed automatically before use, and the replacement is saved. OpenRouter's OAuth exchange produces a non-expiring API key rather than a refreshable token.
+Notch stores credentials at `~/.local/share/notch/auth.json`, or `$XDG_DATA_HOME/notch/auth.json` when set. The file is written with mode `0600`; when Notch must create its parent directory, it uses mode `0700`. Treat the file as a secret: it can contain access and refresh tokens. OAuth credentials that have a refresh token and are within five minutes of expiry are refreshed automatically before use, and the replacement is saved. OpenRouter's OAuth exchange produces a non-expiring API key rather than a refreshable token.
 
 ## Importing credentials from Pi
 

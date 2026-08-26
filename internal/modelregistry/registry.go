@@ -175,6 +175,9 @@ func (r *Registry) saveLocked() error {
 	if err := os.MkdirAll(filepath.Dir(r.path), 0o700); err != nil {
 		return fmt.Errorf("create model cache directory: %w", err)
 	}
+	if err := os.Chmod(filepath.Dir(r.path), 0o700); err != nil {
+		return fmt.Errorf("secure model cache directory: %w", err)
+	}
 	data, err := json.MarshalIndent(r.cache, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode model cache: %w", err)

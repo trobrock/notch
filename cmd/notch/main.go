@@ -117,7 +117,7 @@ func run(args []string) error {
 	flags.BoolVar(&opts.noResources, "no-resources", false, "disable skills and prompt templates")
 	flags.BoolVar(&opts.safe, "safe", false, "skip project configuration, extensions, and resources")
 	flags.BoolVar(&opts.trustWorkspace, "trust-workspace", false, "persist trust in this workspace")
-	flags.BoolVar(&opts.init, "init", false, "create ~/.notch and a starter config")
+	flags.BoolVar(&opts.init, "init", false, "create the XDG config directory and a starter config")
 	flags.BoolVar(&opts.showVersion, "version", false, "print version")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -224,7 +224,13 @@ func run(args []string) error {
 	}
 	var packageDirs []string
 	if !opts.noExtensions {
-		packageDirs, err = extpkg.DiscoveryDirs(config.HomeDir(home))
+		packageDirs, err = func() ([]string, error) {
+			dataRoot, rootErr := config.DataDir(home)
+			if rootErr != nil {
+				return nil, rootErr
+			}
+			return extpkg.DiscoveryDirs(dataRoot)
+		}()
 		if err != nil {
 			return fmt.Errorf("load installed extension packages: %w", err)
 		}
@@ -747,7 +753,11 @@ func resolveWorkspaceTrust(home, root string, opts options, in io.Reader, diagno
 	if opts.safe {
 		return false, nil
 	}
-	store := workspace.NewStore(config.HomeDir(home))
+	dataRoot, err := config.DataDir(home)
+	if err != nil {
+		return false, err
+	}
+	store := workspace.NewStore(dataRoot)
 	if opts.trustWorkspace {
 		if err := store.TrustRoot(root); err != nil {
 			return false, err
@@ -1192,7 +1202,10 @@ func initialize(home, cwd string, cfg config.Config) error {
 	if err := cfg.EnsureDirs(); err != nil {
 		return err
 	}
-	root := config.HomeDir(home)
+	root, err := config.ConfigDir(home)
+	if err != nil {
+		return err
+	}
 	path := filepath.Join(root, "config.json")
 	if _, err := os.Stat(path); err == nil {
 		fmt.Println(path, "already exists")

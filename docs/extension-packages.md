@@ -106,11 +106,11 @@ Local packages are copied into Notch's managed package directory. `update` recop
 Global package state lives under the effective Notch home:
 
 ```text
-~/.notch/packages.json
-~/.notch/packages/<package-name>/
+~/.local/share/notch/packages.json
+~/.local/share/notch/packages/<package-name>/
 ```
 
-`$NOTCH_HOME` relocates both paths. `packages.json` is mode `0600`, records source/ref/subdirectory, exact commit or local digest, installed version, timestamps, and a SHA-256 tree digest. `notch extensions list` reports `modified`, `missing`, or `unreadable` when installed content no longer matches its lock record.
+`XDG_DATA_HOME` relocates both paths and must be absolute when set. `packages.json` is mode `0600`, records source/ref/subdirectory, exact commit or local digest, installed version, timestamps, and a SHA-256 tree digest. `notch extensions list` reports `modified`, `missing`, or `unreadable` when installed content no longer matches its lock record.
 
 Install, update, and remove use a process lock, same-filesystem staging directories, atomic renames, and recovery markers. GitHub archives reject traversal paths, links, devices, duplicate paths, oversized downloads, and excessive expanded size. Local and Git copies reject symbolic links and special files. Updates reconcile modified or missing installed content with the locked source and refuse semantic-version downgrades unless `--force` is passed.
 
@@ -120,7 +120,7 @@ Installed package extension directories are appended after direct configured ext
 
 1. Run `notch extensions init` or add `notch-package.json` to an existing repository.
 2. Keep exported extension directories self-contained and ready to run.
-3. Run `notch extensions validate .`, then test by installing the local directory under a temporary `NOTCH_HOME`.
+3. Run `notch extensions validate .`, then test by installing the local directory under a temporary absolute `XDG_DATA_HOME`.
 4. Commit and push the repository.
 5. Tag semantic releases when consumers should pin stable versions.
 6. Share `github:owner/repository`, the raw repository URL, or the URL plus a recommended tag.

@@ -151,6 +151,9 @@ func (s *Store) write(all map[string]Credential) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create credential directory %q: %w", dir, err)
 	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return fmt.Errorf("secure credential directory %q: %w", dir, err)
+	}
 	data, err := json.MarshalIndent(all, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode credentials: %w", err)

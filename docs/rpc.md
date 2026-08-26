@@ -57,7 +57,7 @@ The response includes:
     "autoCompactionEnabled": true,
     "messageCount": 0,
     "pendingMessageCount": 0,
-    "sessionFile": "/home/me/.notch/sessions/example.jsonl",
+    "sessionFile": "/home/me/.local/share/notch/sessions/example.jsonl",
     "sessionId": "example",
     "tools": ["bash", "edit", "find", "grep", "ls", "read", "write"]
   }

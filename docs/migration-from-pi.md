@@ -30,7 +30,7 @@ go install github.com/trobrock/notch/cmd/notch@latest
 notch --init
 ```
 
-This creates `~/.notch` (or `$NOTCH_HOME`) and does not modify Pi's files. Run it in one project first and keep the two session stores separate.
+This creates the XDG config and data roots and does not modify Pi's files. Run it in one project first and keep the two session stores separate.
 
 ## Translate provider configuration
 
@@ -41,7 +41,7 @@ Notch supports four provider values:
 - `anthropic`, using the native Anthropic Messages API with `ANTHROPIC_API_KEY` or Claude Pro/Max OAuth;
 - `openai`, using the native OpenAI **Responses** API with `OPENAI_API_KEY`, or a configured local endpoint.
 
-Notch does not import Pi provider/model registries. It maintains its own embedded/provider-refreshed registry. Select a model in `~/.notch/config.json`, project `.notch/config.json`, with flags, or through fullscreen `/model`. See [providers and authentication](providers.md) for adapter details and current real-service verification status.
+Notch does not import Pi provider/model registries. It maintains its own embedded/provider-refreshed registry. Select a model in `~/.config/notch/config.json`, project `.notch/config.json`, with flags, or through fullscreen `/model`. See [providers and authentication](providers.md) for adapter details and current real-service verification status.
 
 ```json
 {
@@ -63,7 +63,7 @@ export ANTHROPIC_API_KEY=...
 notch -p anthropic -m claude-sonnet-4-5
 ```
 
-The built-in themes are `dark`, `dracula`, and `catppuccin-mocha`. Custom Pi-style JSON themes can be copied to `~/.notch/themes` or a trusted `<workspace-root>/.notch/themes`; Notch reads the semantic roles it renders and ignores known Pi-only roles. Add `"base": "dark"` when the file does not define every Notch role. Thinking levels are `off|minimal|low|medium|high|xhigh` and are transmitted by every provider adapter, although model support varies. In the fullscreen UI, `/theme`, `/thinking`, and `Shift-Tab` change runtime state only. See [themes](themes.md), [TUI controls](tui.md#commands-and-thinking-level), and [compaction](compaction.md).
+The built-in themes are `dark`, `dracula`, and `catppuccin-mocha`. Custom Pi-style JSON themes can be copied to `~/.config/notch/themes` or a trusted `<workspace-root>/.notch/themes`; Notch reads the semantic roles it renders and ignores known Pi-only roles. Add `"base": "dark"` when the file does not define every Notch role. Thinking levels are `off|minimal|low|medium|high|xhigh` and are transmitted by every provider adapter, although model support varies. In the fullscreen UI, `/theme`, `/thinking`, and `Shift-Tab` change runtime state only. See [themes](themes.md), [TUI controls](tui.md#commands-and-thinking-level), and [compaction](compaction.md).
 
 For OpenAI-compatible local service, set `provider` to `openai` and `base_url` to the API origin. Notch always calls `<base_url>/v1/responses`, not Chat Completions. The tested Ollama route is:
 
@@ -95,7 +95,7 @@ notch auth status
 notch auth import-pi [path]
 ```
 
-The import copies credentials into `~/.notch/auth.json` (or `$NOTCH_HOME/auth.json`), which is mode `0600`; it does not modify Pi's file or require a Node.js runtime. It is a one-time merge, not synchronization. Expiring OAuth credentials are refreshed automatically near expiry. Use `notch logout PROVIDER` to remove a stored credential.
+The import copies credentials into `~/.local/share/notch/auth.json` (or `$XDG_DATA_HOME/notch/auth.json`), which is mode `0600`; it does not modify Pi's file or require a Node.js runtime. It is a one-time merge, not synchronization. Expiring OAuth credentials are refreshed automatically near expiry. Use `notch logout PROVIDER` to remove a stored credential.
 
 ## Move skills
 
@@ -104,7 +104,7 @@ Notch always provides `/skill:notch-config` and `/skill:notch-extension` from th
 Notch reads shared Agent Skills directly from `~/.agents/skills` and `<project>/.agents/skills`, alongside its native locations:
 
 ```text
-~/.notch/skills
+~/.config/notch/skills
 <project>/.notch/skills
 ```
 
@@ -134,7 +134,7 @@ Notch reads top-level command/template `.md` files from both shared and native l
 ```text
 ~/.agents/commands
 <project>/.agents/commands
-~/.notch/prompts
+~/.config/notch/prompts
 <project>/.notch/prompts
 ```
 
@@ -201,7 +201,7 @@ Avoid registering names already used by built-ins. Notch rejects collisions inst
 
 ## Move MCP servers
 
-Notch has a native MCP client, so MCP integrations generally belong in `~/.notch/mcp.json` rather than in an extension:
+Notch has a native MCP client, so MCP integrations generally belong in `~/.config/notch/mcp.json` rather than in an extension:
 
 ```json
 {
@@ -229,7 +229,7 @@ Use `--mcp-config path/to/file.json` to test a project-specific file before maki
 
 ## Sessions do not migrate
 
-Pi session files cannot be resumed by Notch. Notch's own files are append-only version-1 JSONL under `~/.notch/sessions` by default. Start a fresh Notch conversation and, if context is needed, paste or generate a summary from the Pi session.
+Pi session files cannot be resumed by Notch. Notch's own files are append-only version-1 JSONL under `~/.local/share/notch/sessions` by default. Start a fresh Notch conversation and, if context is needed, paste or generate a summary from the Pi session.
 
 ```sh
 notch                 # create a new session
@@ -240,7 +240,7 @@ notch --no-session    # save nothing
 
 In the fullscreen UI, `/new` creates and switches to a distinct durable session and clears conversation context, transcript, and submitted-input history. `/resume` selects an older session and restores its effective context, transcript, and submitted-input history. With `--no-session`, `/new` performs the reset only in memory. `/compact [instructions]` persists a summary and retained recent context in Notch sessions; automatic compaction is enabled by default. See [compaction](compaction.md).
 
-`--continue` means the most recently modified valid file in the configured global session directory, regardless of project. `--resume` and fullscreen `/resume` select existing valid sessions, but there is still no branching or session-tree navigation beyond the flat selectors. `session_dir` is global-only; use separate global configs or `NOTCH_HOME` values when automation needs isolated session stores.
+`--continue` means the most recently modified valid file in the configured global session directory, regardless of project. `--resume` and fullscreen `/resume` select existing valid sessions, but there is still no branching or session-tree navigation beyond the flat selectors. The session directory is fixed below the XDG data root; use a separate absolute `XDG_DATA_HOME` when automation needs an isolated session store.
 
 ## Suggested migration checklist
 

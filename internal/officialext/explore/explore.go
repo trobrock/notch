@@ -103,10 +103,8 @@ func schema() map[string]any {
 			"model": map[string]any{"type": "string", "description": "Default model override."},
 			"cwd":   map[string]any{"type": "string", "description": "Default working directory override."},
 		},
-		"oneOf": []any{
-			map[string]any{"required": []string{"task"}, "not": map[string]any{"required": []string{"tasks"}}},
-			map[string]any{"required": []string{"tasks"}, "not": map[string]any{"required": []string{"task"}}},
-		},
+		// Anthropic rejects oneOf/anyOf/allOf at an input schema's top level.
+		// decode enforces that exactly one of task or tasks is provided.
 		"additionalProperties": false,
 	}
 }
