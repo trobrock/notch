@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/trobrock/notch/internal/model"
 )
@@ -600,15 +601,29 @@ func httpStatusError(service string, response *http.Response) error {
 	if message == "" {
 		message = http.StatusText(response.StatusCode)
 	}
-	return fmt.Errorf("%s: HTTP %s: %s", service, response.Status, message)
+	return &model.ProviderError{
+		Message:    fmt.Sprintf("%s: HTTP %s: %s", service, response.Status, message),
+		StatusCode: response.StatusCode, Code: firstNonEmpty(envelope.Error.Type, envelope.Error.Code),
+		RetryAfter: model.ParseRetryAfter(response.Header.Get("Retry-After"), time.Now()),
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func apiError(service, kind, message string) error {
 	if message == "" {
 		message = "streaming API error"
 	}
+	text := service + ": " + message
 	if kind != "" {
-		return fmt.Errorf("%s: %s: %s", service, kind, message)
+		text = fmt.Sprintf("%s: %s: %s", service, kind, message)
 	}
-	return errors.New(service + ": " + message)
+	return &model.ProviderError{Message: text, Code: kind}
 }

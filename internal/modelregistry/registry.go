@@ -66,7 +66,9 @@ func New(path string, ttl time.Duration) *Registry {
 }
 
 // Providers returns the supported providers in stable display order.
-func Providers() []string { return []string{"openai-codex", "anthropic", "openrouter", "openai"} }
+func Providers() []string {
+	return []string{"openai-codex", "anthropic-claude-code", "anthropic", "openrouter", "openai"}
+}
 
 // Scope returns a cache key which separates custom provider endpoints without
 // storing the endpoint itself in the cache key.

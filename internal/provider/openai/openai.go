@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/trobrock/notch/internal/model"
 )
@@ -656,15 +657,20 @@ func httpStatusError(response *http.Response) error {
 	if message == "" {
 		message = http.StatusText(response.StatusCode)
 	}
-	return fmt.Errorf("openai: HTTP %s: %s", response.Status, message)
+	return &model.ProviderError{
+		Message:    fmt.Sprintf("openai: HTTP %s: %s", response.Status, message),
+		StatusCode: response.StatusCode, Code: envelope.Error.Code,
+		RetryAfter: model.ParseRetryAfter(response.Header.Get("Retry-After"), time.Now()),
+	}
 }
 
 func apiError(code, message string) error {
 	if message == "" {
 		message = "streaming API error"
 	}
+	text := "openai: " + message
 	if code != "" {
-		return fmt.Errorf("openai: %s: %s", code, message)
+		text = fmt.Sprintf("openai: %s: %s", code, message)
 	}
-	return errors.New("openai: " + message)
+	return &model.ProviderError{Message: text, Code: code}
 }

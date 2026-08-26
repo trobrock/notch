@@ -18,6 +18,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/trobrock/notch/internal/delegation"
 	"github.com/trobrock/notch/internal/extension"
 	"github.com/trobrock/notch/internal/model"
 )
@@ -25,6 +26,7 @@ import (
 const (
 	Source                = "official:subagent"
 	ToolName              = "run_subagent"
+	DefaultThinking       = "low"
 	defaultTools          = "read,grep,find,ls"
 	defaultTimeoutSeconds = 300
 	defaultMaxOutputChars = 12000
@@ -51,6 +53,7 @@ type Usage struct {
 	Turns  int    `json:"turns"`
 	Input  int    `json:"input"`
 	Output int    `json:"output"`
+	WallMS int64  `json:"wall_ms"`
 	Model  string `json:"model"`
 }
 
@@ -120,10 +123,12 @@ func RegisterWithRunner(registry *extension.Registry, runner Runner) error {
 			if result.ExitCode != 0 {
 				content = fmt.Sprintf("Subagent failed with exit %d.\n\n%s", result.ExitCode, result.Output)
 			}
+			delegated := delegatedUsage(result.Usage)
 			details := map[string]any{
 				"output": result.Output, "stderr": result.Stderr, "exitCode": result.ExitCode,
 				"timedOut": result.TimedOut, "usage": result.Usage,
-				"usageLine": fmt.Sprintf("subagent usage: %s, in %d, out %d", result.Usage.Model, result.Usage.Input, result.Usage.Output),
+				"usageLine":       fmt.Sprintf("subagent usage: %s, in %d, out %d, %d ms", result.Usage.Model, result.Usage.Input, result.Usage.Output, result.Usage.WallMS),
+				"delegated_usage": delegated,
 			}
 			return extension.ToolResult{Content: content, IsError: result.ExitCode != 0, Details: details}, nil
 		},
@@ -196,7 +201,7 @@ func decodeInput(raw json.RawMessage) (Input, error) {
 	}
 	input.Tools = strings.Join(tools, ",")
 	if input.Thinking == "" {
-		input.Thinking = "minimal"
+		input.Thinking = DefaultThinking
 	}
 	switch input.Thinking {
 	case "off", "minimal", "low", "medium", "high", "xhigh":
@@ -258,6 +263,7 @@ func (r *processRunner) Run(ctx context.Context, input Input, update func(string
 		update("starting subagent with " + modelName)
 	}
 
+	start := time.Now()
 	runCtx, cancel := context.WithTimeout(ctx, time.Duration(input.TimeoutSeconds)*time.Second)
 	defer cancel()
 	cmd := exec.Command(r.executable, args...)
@@ -294,6 +300,7 @@ func (r *processRunner) Run(ctx context.Context, input Input, update func(string
 			exitCode = 1
 		}
 	}
+	wallMS := time.Since(start).Milliseconds()
 	timedOut := errors.Is(runCtx.Err(), context.DeadlineExceeded)
 	if errors.Is(runCtx.Err(), context.Canceled) && errors.Is(ctx.Err(), context.Canceled) {
 		return Result{}, ctx.Err()
@@ -311,7 +318,17 @@ func (r *processRunner) Run(ctx context.Context, input Input, update func(string
 		output = fmt.Sprintf("Subagent timed out after %d seconds.\n\n%s", input.TimeoutSeconds, output)
 	}
 	return Result{Output: output, Stderr: stderrText, ExitCode: exitCode, TimedOut: timedOut,
-		Usage: Usage{Turns: parsed.turns, Input: parsed.input, Output: parsed.outputTokens, Model: input.Model}}, nil
+		Usage: Usage{Turns: parsed.turns, Input: parsed.input, Output: parsed.outputTokens, WallMS: wallMS, Model: input.Model}}, nil
+}
+
+func delegatedUsage(usage Usage) delegation.Usage {
+	return delegation.Usage{
+		Turns:        usage.Turns,
+		InputTokens:  usage.Input,
+		OutputTokens: usage.Output,
+		WallMS:       usage.WallMS,
+		Calls:        1,
+	}
 }
 
 func baseSystemPrompt(extra string) string {

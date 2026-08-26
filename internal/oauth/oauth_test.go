@@ -81,7 +81,7 @@ func TestAnthropicRefreshUsesJSONAndPreservesRefresh(t *testing.T) {
 	defer server.Close()
 	client := NewClient()
 	client.AnthropicTokenURL = server.URL
-	got, err := client.Refresh(context.Background(), Anthropic, credentials.Credential{Type: "oauth", Access: "old", Refresh: "old-refresh"})
+	got, err := client.Refresh(context.Background(), AnthropicClaudeCode, credentials.Credential{Type: "oauth", Access: "old", Refresh: "old-refresh"})
 	if err != nil {
 		t.Fatal(err)
 	}

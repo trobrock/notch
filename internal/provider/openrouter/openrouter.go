@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/trobrock/notch/internal/model"
 )
@@ -499,7 +500,18 @@ func httpStatusError(response *http.Response) error {
 	if message == "" {
 		message = http.StatusText(response.StatusCode)
 	}
-	return fmt.Errorf("openrouter: HTTP %s: %s", response.Status, message)
+	code := ""
+	if envelope.Error != nil {
+		code = strings.Trim(strings.TrimSpace(string(envelope.Error.Code)), `"`)
+		if code == "" || code == "null" {
+			code = envelope.Error.Type
+		}
+	}
+	return &model.ProviderError{
+		Message:    fmt.Sprintf("openrouter: HTTP %s: %s", response.Status, message),
+		StatusCode: response.StatusCode, Code: code,
+		RetryAfter: model.ParseRetryAfter(response.Header.Get("Retry-After"), time.Now()),
+	}
 }
 
 func apiError(err *wireError) error {
@@ -507,7 +519,14 @@ func apiError(err *wireError) error {
 	if message == "" {
 		message = "streaming API error"
 	}
-	return errors.New("openrouter: " + message)
+	code := ""
+	if err != nil {
+		code = strings.Trim(strings.TrimSpace(string(err.Code)), `"`)
+		if code == "" || code == "null" {
+			code = err.Type
+		}
+	}
+	return &model.ProviderError{Message: "openrouter: " + message, Code: code}
 }
 
 func formatAPIError(err *wireError) string {

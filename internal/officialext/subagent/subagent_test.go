@@ -3,11 +3,13 @@ package subagent
 import (
 	"context"
 	"encoding/json"
-	"errors"
+	"os"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/trobrock/notch/internal/delegation"
 	"github.com/trobrock/notch/internal/extension"
 )
 
@@ -27,7 +29,7 @@ func (r *fakeRunner) Run(_ context.Context, input Input, update func(string)) (R
 
 func TestRunSubagentDefaultsAndReturnsDetails(t *testing.T) {
 	registry := extension.NewRegistry()
-	runner := &fakeRunner{result: Result{Output: "report", ExitCode: 0, Usage: Usage{Turns: 1, Input: 20, Output: 4, Model: "test"}}}
+	runner := &fakeRunner{result: Result{Output: "report", ExitCode: 0, Usage: Usage{Turns: 1, Input: 20, Output: 4, WallMS: 17, Model: "test"}}}
 	if err := RegisterWithRunner(registry, runner); err != nil {
 		t.Fatal(err)
 	}
@@ -40,8 +42,15 @@ func TestRunSubagentDefaultsAndReturnsDetails(t *testing.T) {
 	if result.Content != "report" || result.IsError || result.Details["exitCode"] != 0 {
 		t.Fatalf("result = %#v", result)
 	}
-	if runner.input.Prompt != "inspect this" || runner.input.Tools != "find,grep,ls,read" || runner.input.Thinking != "minimal" || runner.input.TimeoutSeconds != 300 || runner.input.MaxOutputChars != 12000 {
+	if runner.input.Prompt != "inspect this" || runner.input.Tools != "find,grep,ls,read" || runner.input.Thinking != "low" || runner.input.TimeoutSeconds != 300 || runner.input.MaxOutputChars != 12000 {
 		t.Fatalf("input = %#v", runner.input)
+	}
+	delegatedValue, ok := result.Details["delegated_usage"].(delegation.Usage)
+	if !ok || delegatedValue != (delegation.Usage{Turns: 1, InputTokens: 20, OutputTokens: 4, WallMS: 17, Calls: 1}) {
+		t.Fatalf("delegated usage = %#v", result.Details["delegated_usage"])
+	}
+	if usageLine, _ := result.Details["usageLine"].(string); !strings.Contains(usageLine, "17 ms") {
+		t.Fatalf("usageLine = %#v", result.Details["usageLine"])
 	}
 	if !reflect.DeepEqual(updates, []string{"running"}) {
 		t.Fatalf("updates = %#v", updates)
@@ -50,7 +59,7 @@ func TestRunSubagentDefaultsAndReturnsDetails(t *testing.T) {
 
 func TestRunSubagentMarksFailedExitAsToolError(t *testing.T) {
 	registry := extension.NewRegistry()
-	runner := &fakeRunner{result: Result{Output: "failed", ExitCode: 7, TimedOut: true}}
+	runner := &fakeRunner{result: Result{Output: "failed", ExitCode: 7, TimedOut: true, Usage: Usage{WallMS: 9}}}
 	if err := RegisterWithRunner(registry, runner); err != nil {
 		t.Fatal(err)
 	}
@@ -61,6 +70,9 @@ func TestRunSubagentMarksFailedExitAsToolError(t *testing.T) {
 	}
 	if !result.IsError || !strings.Contains(result.Content, "exit 7") || result.Details["timedOut"] != true {
 		t.Fatalf("result = %#v", result)
+	}
+	if delegatedValue, ok := result.Details["delegated_usage"].(delegation.Usage); !ok || delegatedValue.WallMS != 9 {
+		t.Fatalf("delegated usage = %#v", result.Details["delegated_usage"])
 	}
 }
 
@@ -108,14 +120,45 @@ func TestModelArgsAndSystemPrompt(t *testing.T) {
 	}
 }
 
-func TestRunnerErrorPropagates(t *testing.T) {
-	registry := extension.NewRegistry()
-	want := errors.New("start failed")
-	if err := RegisterWithRunner(registry, &fakeRunner{err: want}); err != nil {
+func TestProcessRunnerMeasuresWallTime(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script test")
+	}
+	path := t.TempDir() + "/fake-subagent.sh"
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nprintf '{\"type\":\"turn_end\",\"usage\":{\"input_tokens\":1,\"output_tokens\":2},\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}\\n'\nsleep 0.02\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	tool, _ := registry.Tool(ToolName)
-	if _, err := tool.Execute(context.Background(), json.RawMessage(`{"prompt":"work"}`), nil); !errors.Is(err, want) {
-		t.Fatalf("error = %v", err)
+	runner := &processRunner{executable: path, defaultCWD: t.TempDir()}
+	result, err := runner.Run(context.Background(), Input{Prompt: "go", Tools: "read,grep,find,ls", Thinking: DefaultThinking, TimeoutSeconds: 1, MaxOutputChars: 2000}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Usage.WallMS <= 0 {
+		t.Fatalf("wall_ms = %d", result.Usage.WallMS)
+	}
+}
+
+func TestProcessRunnerDurationIncludedWhenTimedOut(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script test")
+	}
+	path := t.TempDir() + "/slow-subagent.sh"
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nsleep 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runner := &processRunner{executable: path, defaultCWD: t.TempDir()}
+	result, err := runner.Run(context.Background(), Input{Prompt: "go", Tools: "read,grep,find,ls", Thinking: DefaultThinking, TimeoutSeconds: 1, MaxOutputChars: 2000}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.TimedOut || result.Usage.WallMS <= 0 || result.ExitCode != 124 {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestDelegatedUsageShape(t *testing.T) {
+	usage := delegatedUsage(Usage{Turns: 2, Input: 3, Output: 4, WallMS: 5})
+	if usage != (delegation.Usage{Turns: 2, InputTokens: 3, OutputTokens: 4, WallMS: 5, Calls: 1}) {
+		t.Fatalf("usage = %#v", usage)
 	}
 }

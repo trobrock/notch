@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/trobrock/notch/internal/delegation"
 	"github.com/trobrock/notch/internal/extension"
 	"github.com/trobrock/notch/internal/model"
 	"github.com/trobrock/notch/internal/officialext/subagent"
@@ -43,6 +45,11 @@ type taskResult struct {
 	Usage    subagent.Usage `json:"usage"`
 }
 
+type runResult struct {
+	Results        []taskResult
+	DelegatedUsage delegation.Usage
+}
+
 // Register registers explore_codebase with the shared subagent runner.
 func Register(registry *extension.Registry, host extension.Host) error {
 	runner, err := subagent.NewRunner(host)
@@ -60,7 +67,7 @@ func RegisterWithRunner(registry *extension.Registry, runner subagent.Runner) er
 		Source: Source,
 		Definition: model.ToolDefinition{
 			Name:        ToolName,
-			Description: "Proactively delegate broad codebase discovery, architecture tracing, and multi-file flow analysis to isolated read-only Notch subagents. Prefer this over many direct grep/read calls when the answer requires understanding several files; use direct tools for a narrow symbol or single-file lookup. Provide exactly one of task (one focused question) or tasks (independent questions run in parallel).",
+			Description: "Delegate broad or multi-file codebase discovery to isolated read-only Notch subagents when doing so is likely to save parent context or parallelize independent work. Prefer direct read/grep/find/ls calls for focused lookups, and avoid delegation when startup and duplicated context would likely cost more than a few direct tool calls. Provide exactly one of task (one focused question) or tasks (independent questions run in parallel).",
 			InputSchema: schema(),
 		},
 		Execute: func(ctx context.Context, raw json.RawMessage, update func(string)) (extension.ToolResult, error) {
@@ -68,15 +75,15 @@ func RegisterWithRunner(registry *extension.Registry, runner subagent.Runner) er
 			if err != nil {
 				return extension.ToolResult{}, err
 			}
-			results, err := run(ctx, runner, input, update)
+			batch, err := run(ctx, runner, input, update)
 			if err != nil {
 				return extension.ToolResult{}, err
 			}
 			failed := false
-			for _, result := range results {
+			for _, result := range batch.Results {
 				failed = failed || result.ExitCode != 0
 			}
-			return extension.ToolResult{Content: render(results), IsError: failed, Details: map[string]any{"results": results, "count": len(results)}}, nil
+			return extension.ToolResult{Content: render(batch.Results), IsError: failed, Details: map[string]any{"results": batch.Results, "count": len(batch.Results), "delegated_usage": batch.DelegatedUsage}}, nil
 		},
 	}
 	if err := registry.RegisterTool(tool); err != nil {
@@ -141,7 +148,8 @@ func decode(raw json.RawMessage) (Input, error) {
 	return input, nil
 }
 
-func run(ctx context.Context, runner subagent.Runner, input Input, update func(string)) ([]taskResult, error) {
+func run(ctx context.Context, runner subagent.Runner, input Input, update func(string)) (runResult, error) {
+	started := time.Now()
 	results := make([]taskResult, len(input.Tasks))
 	jobs := make(chan int)
 	var wg sync.WaitGroup
@@ -165,7 +173,7 @@ func run(ctx context.Context, runner subagent.Runner, input Input, update func(s
 				}
 				result, err := runner.Run(ctx, subagent.Input{
 					Prompt: "Explore task: " + task.Task, Model: modelName, CWD: cwd,
-					Tools: "read,grep,find,ls", Thinking: "minimal", TimeoutSeconds: 300,
+					Tools: "read,grep,find,ls", Thinking: subagent.DefaultThinking, TimeoutSeconds: 300,
 					MaxOutputChars: 8000, SystemPrompt: systemPrompt(),
 				}, nil)
 				if err != nil {
@@ -192,15 +200,22 @@ func run(ctx context.Context, runner subagent.Runner, input Input, update func(s
 		case <-ctx.Done():
 			close(jobs)
 			wg.Wait()
-			return nil, ctx.Err()
+			return runResult{}, ctx.Err()
 		}
 	}
 	close(jobs)
 	wg.Wait()
 	if firstErr != nil {
-		return nil, firstErr
+		return runResult{}, firstErr
 	}
-	return results, nil
+	aggregate := delegation.Usage{WallMS: time.Since(started).Milliseconds()}
+	for _, result := range results {
+		aggregate.Turns += result.Usage.Turns
+		aggregate.InputTokens += result.Usage.Input
+		aggregate.OutputTokens += result.Usage.Output
+		aggregate.Calls++
+	}
+	return runResult{Results: results, DelegatedUsage: aggregate}, nil
 }
 
 func systemPrompt() string {

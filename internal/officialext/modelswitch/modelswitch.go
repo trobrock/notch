@@ -30,7 +30,7 @@ func Register(registry *extension.Registry, host extension.Host) error {
 func switchTool(host extension.Host) extension.Tool {
 	return extension.Tool{Source: Source, Definition: model.ToolDefinition{Name: "switch_model", Description: "Change the model and optionally provider used by subsequent Notch turns while preserving the current conversation.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 		"model":    map[string]any{"type": "string", "minLength": 1, "description": "Model ID to use for subsequent turns."},
-		"provider": map[string]any{"type": "string", "enum": []string{"openai-codex", "anthropic", "openrouter", "openai"}, "description": "Provider to use. Omit to keep the current provider."},
+		"provider": map[string]any{"type": "string", "enum": []string{"openai-codex", "anthropic-claude-code", "anthropic", "openrouter", "openai"}, "description": "Provider to use. Omit to keep the current provider."},
 	}, "required": []string{"model"}, "additionalProperties": false}}, Execute: func(ctx context.Context, raw json.RawMessage, _ func(string)) (extension.ToolResult, error) {
 		var input struct {
 			Model    string `json:"model"`
@@ -55,7 +55,7 @@ func switchTool(host extension.Host) extension.Tool {
 
 func listTool(host extension.Host) extension.Tool {
 	return extension.Tool{Source: Source, Definition: model.ToolDefinition{Name: "list_models", Description: "List models available from a provider before choosing one with switch_model.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-		"provider": map[string]any{"type": "string", "enum": []string{"openai-codex", "anthropic", "openrouter", "openai"}, "description": "Provider to list. Omit for the current provider."},
+		"provider": map[string]any{"type": "string", "enum": []string{"openai-codex", "anthropic-claude-code", "anthropic", "openrouter", "openai"}, "description": "Provider to list. Omit for the current provider."},
 		"refresh":  map[string]any{"type": "boolean", "description": "Refresh provider model discovery instead of using the cache."},
 	}, "additionalProperties": false}}, Execute: func(ctx context.Context, raw json.RawMessage, _ func(string)) (extension.ToolResult, error) {
 		var input struct {

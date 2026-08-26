@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/trobrock/notch/internal/agent"
+	"github.com/trobrock/notch/internal/delegation"
 	"github.com/trobrock/notch/internal/extension"
 	"github.com/trobrock/notch/internal/model"
 	"github.com/trobrock/notch/internal/modelregistry"
@@ -453,6 +454,10 @@ func TestAppAgentEventsBuildTranscriptAndUsage(t *testing.T) {
 	}
 	if got := a.state.layout.Usage; got != "12 in / 3 out" {
 		t.Fatalf("usage = %q", got)
+	}
+	a.handleAgentEvent(agent.Event{Type: "delegation_usage", DelegationUsage: &delegation.Usage{InputTokens: 7, OutputTokens: 5, WallMS: 1250, Calls: 1, Turns: 2}})
+	if got := a.state.layout.Usage; got != "12 in / 3 out / 12 delegated / 1.2s" {
+		t.Fatalf("delegated usage = %q", got)
 	}
 }
 
@@ -1020,5 +1025,20 @@ func TestFreeformPromptExplainsControls(t *testing.T) {
 	rendered := request.render()
 	if !strings.Contains(rendered, "? What should we call it?") || !strings.Contains(rendered, "Placeholder: Project name") || !strings.Contains(rendered, "Enter submit") {
 		t.Fatalf("rendered input:\n%s", rendered)
+	}
+}
+
+func TestAppDisplaysProviderRetryWithoutMarkingPromptFailed(t *testing.T) {
+	a := NewApp(AppConfig{})
+	a.handleAgentEvent(agent.Event{Type: "turn_start"})
+	if !a.handleAgentEvent(agent.Event{Type: "provider_retry", Text: "overloaded", Attempt: 2, MaxAttempts: 3, DelayMS: 1500}) {
+		t.Fatal("provider retry event was not handled")
+	}
+	if a.state.promptErrored || a.state.layout.Status != "retrying" {
+		t.Fatalf("promptErrored=%v status=%q", a.state.promptErrored, a.state.layout.Status)
+	}
+	last := a.state.layout.Transcript[len(a.state.layout.Transcript)-1]
+	if last.Kind != KindNotice || !strings.Contains(last.Text, "attempt 2/3") || !strings.Contains(last.Text, "1.5s") {
+		t.Fatalf("retry notice = %#v", last)
 	}
 }

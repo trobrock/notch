@@ -255,6 +255,9 @@ data: {"type":"error","error":{"type":"overloaded_error","message":"busy"}}
 	if err == nil || !strings.Contains(err.Error(), "overloaded_error: busy") {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	if retryable, _ := model.RetryInfo(err); !retryable {
+		t.Fatalf("overloaded stream error is not retryable: %v", err)
+	}
 }
 
 func TestStreamAbruptEOF(t *testing.T) {
@@ -300,5 +303,19 @@ func TestStreamCancellation(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("Stream did not return after cancellation")
+	}
+}
+
+func TestHTTPRetryableErrorPreservesRetryAfter(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "2")
+		w.WriteHeader(http.StatusTooManyRequests)
+		fmt.Fprint(w, `{"error":{"type":"rate_limit_error","message":"slow down"}}`)
+	}))
+	defer server.Close()
+	_, err := New(Config{BaseURL: server.URL, HTTPClient: server.Client()}).Stream(context.Background(), model.Request{}, nil)
+	retryable, delay := model.RetryInfo(err)
+	if !retryable || delay != 2*time.Second {
+		t.Fatalf("error=%v retryable=%v delay=%v", err, retryable, delay)
 	}
 }

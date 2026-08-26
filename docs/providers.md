@@ -6,7 +6,8 @@ Notch uses native Go HTTP adapters rather than provider SDKs. Select an adapter 
 | --- | --- | --- |
 | `openai-codex` | ChatGPT backend's native Codex Responses endpoint | ChatGPT Plus/Pro OAuth |
 | `openrouter` | OpenRouter OpenAI-compatible Chat Completions | `OPENROUTER_API_KEY` or OpenRouter OAuth |
-| `anthropic` | Native Anthropic Messages | `ANTHROPIC_API_KEY` or Claude Pro/Max OAuth |
+| `anthropic` | Native Anthropic Messages | `ANTHROPIC_API_KEY` |
+| `anthropic-claude-code` | Native Anthropic Messages | Claude Pro/Max OAuth (or `ANTHROPIC_OAUTH_TOKEN`) |
 | `openai` | Native OpenAI Responses | `OPENAI_API_KEY`, or no key for a configured local server such as Ollama |
 
 For agent runs, `base_url` is global-only and ignored in project config. Auth, model-cache, and session paths are fixed below the XDG data root and cannot be configured in JSON. This prevents a repository from redirecting provider traffic or credential/session/cache storage. Provider/model and ordinary behavioral settings may still come from trusted project config.
@@ -17,7 +18,7 @@ Model IDs are passed through to the selected service. Availability is determined
 
 Notch embeds a small offline model catalog and maintains a mode-0600 cache at `$XDG_DATA_HOME/notch/models.json` (default `~/.local/share/notch/models.json`). Stale entries refresh on startup for the selected provider and when the model selector is opened. `model_refresh_hours` defaults to 24. Refresh is demand-driven: there is no timer or idle polling.
 
-- Anthropic uses `GET /v1/models` with configured authentication.
+- `anthropic` and `anthropic-claude-code` both use `GET /v1/models` with configured authentication.
 - OpenRouter uses its public `GET /models` catalog and records context/reasoning metadata.
 - OpenAI and compatible local servers use `GET /v1/models`.
 - ChatGPT Codex currently uses the embedded fallback because its subscription Responses endpoint does not expose a supported listing API.
@@ -42,14 +43,14 @@ See the [TUI thinking controls](tui.md#commands-and-thinking-level).
 
 ```sh
 notch login openai-codex
-notch login anthropic
+notch login anthropic-claude-code
 notch login openrouter
 
 notch logout PROVIDER
 notch auth status
 ```
 
-`notch login`, `notch logout`, `notch auth status`, and `notch auth import-pi` load global configuration only. Credential storage is fixed below the XDG data root; `auth_file` JSON keys are ignored. `notch login PROVIDER` opens a browser authorization flow and also prints the authorization URL. Login is supported for `openai-codex`, `anthropic`, and `openrouter`; the regular `openai` provider uses an API key instead. `logout` removes that provider's stored credential. `auth status` reports credentials in Notch's store (not API keys currently supplied through the environment).
+`notch login`, `notch logout`, `notch auth status`, and `notch auth import-pi` load global configuration only. Credential storage is fixed below the XDG data root; `auth_file` JSON keys are ignored. `notch login PROVIDER` opens a browser authorization flow and also prints the authorization URL. Login is supported for `openai-codex`, `anthropic-claude-code`, and `openrouter`; the `openai` and `anthropic` providers use API keys instead. `logout` removes that provider's stored credential. `auth status` reports credentials in Notch's store (not API keys currently supplied through the environment).
 
 Notch stores credentials at `~/.local/share/notch/auth.json`, or `$XDG_DATA_HOME/notch/auth.json` when set. The file is written with mode `0600`; when Notch must create its parent directory, it uses mode `0700`. Treat the file as a secret: it can contain access and refresh tokens. OAuth credentials that have a refresh token and are within five minutes of expiry are refreshed automatically before use, and the replacement is saved. OpenRouter's OAuth exchange produces a non-expiring API key rather than a refreshable token.
 
@@ -97,18 +98,25 @@ notch --provider openrouter --model anthropic/claude-sonnet-4.5
 
 ### `anthropic`
 
-Use an API key or Claude subscription OAuth:
+Use an API key for direct access to the Anthropic Messages API:
 
 ```sh
 export ANTHROPIC_API_KEY=sk-ant-...
 notch --provider anthropic --model claude-sonnet-4-5
-
-# Alternative for Claude Pro/Max:
-notch login anthropic
-notch --provider anthropic --model claude-sonnet-4-5
 ```
 
-The adapter sends native streaming Messages requests and supports Anthropic tool-use blocks. When a stored Anthropic OAuth credential exists, Notch uses it in preference to `ANTHROPIC_API_KEY`; remove it with `notch logout anthropic` to return to the environment key.
+The adapter sends native streaming Messages requests and supports Anthropic tool-use blocks. `ANTHROPIC_API_KEY` is the only authentication method for this provider; there is no stored OAuth credential path for `anthropic`.
+
+### `anthropic-claude-code`
+
+Use this provider for a Claude Pro or Max subscription via OAuth:
+
+```sh
+notch login anthropic-claude-code
+notch --provider anthropic-claude-code --model claude-sonnet-4-5
+```
+
+Alternatively, supply an OAuth access token through `ANTHROPIC_OAUTH_TOKEN` without running `notch login`. The adapter uses the same native Anthropic Messages API as `anthropic`. Legacy stored `anthropic` OAuth credentials are migrated automatically to `anthropic-claude-code` on first use. Remove a stored credential with `notch logout anthropic-claude-code`.
 
 Anthropic OAuth login, refresh, request headers, and provider behavior have implementation and automated tests. A locally imported Anthropic token was stale, however, so a real Claude Pro/Max subscription call has **not yet been verified**. Do not interpret the automated coverage as a successful production subscription test.
 

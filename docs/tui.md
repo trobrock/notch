@@ -19,7 +19,7 @@ Exactly one normal blank row separates transcript entries, independent of the in
 
 New activity returns the viewport to the bottom. A multiline composer is pinned below the transcript, grows to eight visible rows, and keeps the cursor in view when input is longer. Full-width rules above and below the editor use the current thinking level's color.
 
-The footer has two lines. The first shows the abbreviated working directory and Git branch. The second combines activity/session and last-turn token usage with a context indicator on the left, and provider/model/thinking level on the right. The context indicator is a percentage and context-window size, with `(auto)` when automatic compaction is enabled; for example `18.2%/272k (auto)`.
+The footer has two lines. The first shows the abbreviated working directory and Git branch. The second combines activity/session and last-turn provider token usage with a context indicator on the left, and provider/model/thinking level on the right. After `run_subagent` or `explore_codebase`, it adds the separate delegated token total and elapsed time; parallel exploration reports batch elapsed time rather than summed child durations. The context indicator is a percentage and context-window size, with `(auto)` when automatic compaction is enabled; for example `18.2%/272k (auto)`.
 
 The UI redraws itself for terminal resizes (`SIGWINCH`), rewrapping content to the new width and preserving a valid composer cursor. See [themes](themes.md) and [compaction](compaction.md) for the associated settings.
 

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/trobrock/notch/internal/config"
+	"github.com/trobrock/notch/internal/credentials"
 	"github.com/trobrock/notch/internal/extension"
 	"github.com/trobrock/notch/internal/model"
 	"github.com/trobrock/notch/internal/modelregistry"
@@ -336,8 +338,55 @@ func TestValidThinkingLevel(t *testing.T) {
 	}
 }
 
+func TestAnthropicProviderAuthenticationIsSeparated(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("ANTHROPIC_OAUTH_TOKEN", "legacy-oauth-token")
+	store := credentials.New(filepath.Join(t.TempDir(), "auth.json"))
+	if err := store.Put(credentials.LegacyAnthropicProvider, credentials.Credential{Type: "oauth", Access: "stored-oauth-token"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := makeProvider(context.Background(), config.Config{Provider: "anthropic"}, store); err == nil || !strings.Contains(err.Error(), "ANTHROPIC_API_KEY") {
+		t.Fatalf("direct Anthropic provider accepted OAuth credentials: %v", err)
+	}
+	if _, err := makeProvider(context.Background(), config.Config{Provider: "anthropic-claude-code"}, store); err != nil {
+		t.Fatalf("Claude Code subscription provider rejected OAuth credential: %v", err)
+	}
+}
+
+func TestLogoutAnthropicClaudeCodeRemovesLegacyCredential(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "config"))
+	dataHome := filepath.Join(t.TempDir(), "data")
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	store := credentials.New(filepath.Join(dataHome, "notch", "auth.json"))
+	credential := credentials.Credential{Type: "oauth", Access: "legacy-token"}
+	if err := store.Put(credentials.LegacyAnthropicProvider, credential); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.GetWithLegacyFallback(credentials.AnthropicClaudeCodeProvider, credentials.LegacyAnthropicProvider); err != nil {
+		t.Fatal(err)
+	}
+	if err := runAuth([]string{"logout", "anthropic-claude-code"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, provider := range []string{credentials.AnthropicClaudeCodeProvider, credentials.LegacyAnthropicProvider} {
+		if _, ok, err := store.Get(provider); err != nil || ok {
+			t.Fatalf("credential %q remains after logout: ok=%v err=%v", provider, ok, err)
+		}
+	}
+}
+
+func TestNormalizeProviderClaudeSelectsSubscription(t *testing.T) {
+	if got := normalizeProvider("Claude"); got != "anthropic-claude-code" {
+		t.Fatalf("normalizeProvider(Claude) = %q", got)
+	}
+	if got := normalizeProvider("anthropic"); got != "anthropic" {
+		t.Fatalf("normalizeProvider(anthropic) = %q", got)
+	}
+}
+
 func TestRPCAPIForProvider(t *testing.T) {
-	want := map[string]string{"anthropic": "anthropic-messages", "openrouter": "openai-completions", "openai-codex": "openai-codex-responses", "openai": "openai-responses"}
+	want := map[string]string{"anthropic": "anthropic-messages", "anthropic-claude-code": "anthropic-messages", "openrouter": "openai-completions", "openai-codex": "openai-codex-responses", "openai": "openai-responses"}
 	for provider, api := range want {
 		if got := rpcAPIForProvider(provider); got != api {
 			t.Errorf("%s API = %q", provider, got)

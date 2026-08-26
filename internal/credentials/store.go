@@ -10,6 +10,11 @@ import (
 	"sync"
 )
 
+const (
+	LegacyAnthropicProvider     = "anthropic"
+	AnthropicClaudeCodeProvider = "anthropic-claude-code"
+)
+
 // Credential is the on-disk credential representation shared by all providers.
 // Expires is a Unix timestamp in milliseconds. It is zero for credentials that
 // do not expire.
@@ -80,6 +85,25 @@ func (s *Store) Delete(provider string) error {
 	return s.write(all)
 }
 
+// GetWithLegacyFallback returns provider's credential or migrates it from a
+// legacy provider key when available. The legacy entry is retained for
+// downgrade safety.
+func (s *Store) GetWithLegacyFallback(provider, legacyProvider string) (Credential, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	all, err := s.read()
+	if err != nil {
+		return Credential{}, false, err
+	}
+	credential, ok, changed := credentialWithLegacyFallback(all, provider, legacyProvider)
+	if changed {
+		if err := s.write(all); err != nil {
+			return Credential{}, false, err
+		}
+	}
+	return credential, ok, nil
+}
+
 // ImportPi merges credentials from a Pi auth file. Pi's file is expected to
 // have the same provider-to-credential JSON shape as this store. Errors contain
 // paths and structural information only; credential values are never included.
@@ -125,7 +149,23 @@ func (s *Store) ImportPi(path string) error {
 		}
 		all[provider] = credential
 	}
+	_, _, _ = credentialWithLegacyFallback(all, AnthropicClaudeCodeProvider, LegacyAnthropicProvider)
 	return s.write(all)
+}
+
+func credentialWithLegacyFallback(all map[string]Credential, provider, legacyProvider string) (Credential, bool, bool) {
+	if credential, ok := all[provider]; ok {
+		return credential, true, false
+	}
+	if provider == "" || legacyProvider == "" || provider == legacyProvider {
+		return Credential{}, false, false
+	}
+	legacy, ok := all[legacyProvider]
+	if !ok {
+		return Credential{}, false, false
+	}
+	all[provider] = legacy
+	return legacy, true, true
 }
 
 func (s *Store) read() (map[string]Credential, error) {

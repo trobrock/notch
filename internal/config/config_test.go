@@ -13,7 +13,7 @@ func TestDefaultSystemPromptGuidesCodebaseExploration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, text := range []string{"use explore_codebase proactively", "direct grep", "exactly one of task", "never provide both"} {
+	for _, text := range []string{"likely to save parent context", "Prefer direct grep", "avoid delegation", "exactly one of task", "never provide both"} {
 		if !strings.Contains(cfg.SystemPrompt, text) {
 			t.Fatalf("default system prompt missing %q: %q", text, cfg.SystemPrompt)
 		}

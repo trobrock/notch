@@ -350,3 +350,30 @@ func TestUserTranscriptPreservesTypedNewlines(t *testing.T) {
 		t.Fatalf("rendered lines did not preserve newlines: %#v", lines)
 	}
 }
+
+func TestPromptTranscriptWrapsLongQuestionsAndOptions(t *testing.T) {
+	const width = 28
+	state := &LayoutState{Transcript: []TranscriptEntry{{Kind: KindPrompt, Text: strings.Join([]string{
+		"? This is a long question that must remain visible instead of being truncated",
+		"",
+		"❯ ● A selected option with a long label that wraps",
+		"    A long description that should also wrap onto another display row",
+	}, "\n")}}}
+	lines := renderTranscript(state, width, completeTheme(Theme{}, "dark"))
+	plain := make([]string, len(lines))
+	for i, line := range lines {
+		if got := visibleWidth(line); got != width {
+			t.Fatalf("line %d width = %d, want %d: %q", i, got, width, plainANSI(line))
+		}
+		plain[i] = strings.TrimRight(plainANSI(line), " ")
+	}
+	joined := strings.Join(plain, "\n")
+	for _, want := range []string{"? This is a long question", "instead of being", "truncated", "❯ ● A selected option", "label that wraps", "A long description", "another display row"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("wrapped prompt missing %q:\n%s", want, joined)
+		}
+	}
+	if strings.Count(joined, "? ") != 1 || strings.Count(joined, "❯ ") != 1 {
+		t.Fatalf("continuation lines repeated prompt markers:\n%s", joined)
+	}
+}

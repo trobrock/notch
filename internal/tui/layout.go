@@ -504,15 +504,26 @@ func renderTranscript(state *LayoutState, width int, theme Theme) []string {
 			lines := strings.Split(entry.Text, "\n")
 			for _, line := range lines {
 				line = sanitiseTerminalText(line)
+				lineStyle, prefix, continuation := style, "", ""
 				switch {
 				case strings.HasPrefix(line, "? "):
-					result = append(result, styleFull(style+"\x1b[1m", " "+line, width, theme.Reset))
+					lineStyle, prefix, continuation = style+"\x1b[1m", "? ", "  "
 				case strings.HasPrefix(line, "❯ "):
-					result = append(result, styleFull(theme.Accent+"\x1b[1m", " "+line, width, theme.Reset))
+					lineStyle, prefix, continuation = theme.Accent+"\x1b[1m", "❯ ", "  "
+				case strings.HasPrefix(line, "    "):
+					lineStyle, prefix, continuation = theme.Muted, "    ", "    "
 				case strings.HasPrefix(line, "  "):
-					result = append(result, styleFull(theme.Muted, " "+line, width, theme.Reset))
-				default:
-					result = append(result, styleFull(style, " "+line, width, theme.Reset))
+					lineStyle, prefix, continuation = theme.Muted, "  ", "  "
+				}
+				content := strings.TrimPrefix(line, prefix)
+				available := max(1, width-1-visibleWidth(prefix))
+				wrapped := wrapWords(content, available)
+				for i, part := range wrapped {
+					linePrefix := prefix
+					if i > 0 {
+						linePrefix = continuation
+					}
+					result = append(result, styleFull(lineStyle, " "+linePrefix+part, width, theme.Reset))
 				}
 			}
 

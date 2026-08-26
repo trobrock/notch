@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/trobrock/notch/internal/agent"
+	"github.com/trobrock/notch/internal/delegation"
 	"github.com/trobrock/notch/internal/extension"
 	"github.com/trobrock/notch/internal/model"
 	"github.com/trobrock/notch/internal/session"
@@ -47,6 +48,17 @@ func (p *rpcTestProvider) Stream(ctx context.Context, _ model.Request, emit func
 		Content: []model.Block{{Type: "text", Text: text}}, StopReason: "end_turn",
 		InputTokens: 10 * call, OutputTokens: 2,
 	}, nil
+}
+
+func TestRPCUsageKeepsProviderAndDelegationMetricsSeparate(t *testing.T) {
+	usage := rpcUsage(&agent.Usage{InputTokens: 12, OutputTokens: 3})
+	if usage["providerTokens"] != 15 || usage["totalTokens"] != 15 {
+		t.Fatalf("usage = %#v", usage)
+	}
+	delegatedUsage := rpcDelegationUsage(&delegation.Usage{Turns: 2, InputTokens: 7, OutputTokens: 5, WallMS: 40, Calls: 1})
+	if delegatedUsage["wallMs"] != int64(40) || delegatedUsage["totalTokens"] != 12 {
+		t.Fatalf("delegated = %#v", delegatedUsage)
+	}
 }
 
 func TestServerStatePromptStreamingAndSteering(t *testing.T) {

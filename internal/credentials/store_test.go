@@ -57,6 +57,27 @@ func TestPutAtomicallyReplacesAndRepairsMode(t *testing.T) {
 	}
 }
 
+func TestGetWithLegacyFallbackCopiesAnthropicCredential(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "credentials.json")
+	store := New(path)
+	legacy := Credential{Type: "oauth", Access: "a", Refresh: "r", Expires: 99, AccountID: "id"}
+	if err := store.Put(LegacyAnthropicProvider, legacy); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := store.GetWithLegacyFallback(AnthropicClaudeCodeProvider, LegacyAnthropicProvider)
+	if err != nil || !ok || got != legacy {
+		t.Fatalf("GetWithLegacyFallback() = %+v, %v, %v; want %+v, true, nil", got, ok, err, legacy)
+	}
+	copied, ok, err := store.Get(AnthropicClaudeCodeProvider)
+	if err != nil || !ok || copied != legacy {
+		t.Fatalf("copied credential = %+v, %v, %v", copied, ok, err)
+	}
+	preserved, ok, err := store.Get(LegacyAnthropicProvider)
+	if err != nil || !ok || preserved != legacy {
+		t.Fatalf("legacy credential = %+v, %v, %v", preserved, ok, err)
+	}
+}
+
 func TestImportPiAcceptsCamelCaseAccountID(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "auth.json")
 	piPath := filepath.Join(t.TempDir(), "pi-auth.json")
@@ -91,6 +112,9 @@ func TestImportPiMergesWithoutSecretInErrors(t *testing.T) {
 	}
 	if got, ok, _ := store.Get("anthropic"); !ok || got.Access != "a" || got.AccountID != "id" {
 		t.Fatalf("imported credential = %+v, ok=%v", got, ok)
+	}
+	if got, ok, _ := store.Get(AnthropicClaudeCodeProvider); !ok || got.Access != "a" || got.AccountID != "id" {
+		t.Fatalf("migrated credential = %+v, ok=%v", got, ok)
 	}
 	if _, ok, _ := store.Get("existing"); !ok {
 		t.Fatal("import discarded existing provider")

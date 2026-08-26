@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/trobrock/notch/internal/delegation"
 	"github.com/trobrock/notch/internal/extension"
 	"github.com/trobrock/notch/internal/officialext/subagent"
 )
@@ -17,6 +18,7 @@ type fakeRunner struct {
 	mu                sync.Mutex
 	inputs            []subagent.Input
 	active, maxActive int
+	usageWallMS       int64
 }
 
 func (r *fakeRunner) Run(_ context.Context, input subagent.Input, _ func(string)) (subagent.Result, error) {
@@ -31,7 +33,11 @@ func (r *fakeRunner) Run(_ context.Context, input subagent.Input, _ func(string)
 	r.mu.Lock()
 	r.active--
 	r.mu.Unlock()
-	return subagent.Result{Output: "found " + input.Prompt, Usage: subagent.Usage{Input: 10, Output: 2, Model: input.Model}}, nil
+	wallMS := r.usageWallMS
+	if wallMS == 0 {
+		wallMS = 7
+	}
+	return subagent.Result{Output: "found " + input.Prompt, Usage: subagent.Usage{Input: 10, Output: 2, WallMS: wallMS, Model: input.Model}}, nil
 }
 
 func TestExploreSchemaAndDescriptionGuideCorrectUse(t *testing.T) {
@@ -40,7 +46,7 @@ func TestExploreSchemaAndDescriptionGuideCorrectUse(t *testing.T) {
 		t.Fatal(err)
 	}
 	tool, _ := registry.Tool(ToolName)
-	if !strings.Contains(tool.Definition.Description, "Proactively") || !strings.Contains(tool.Definition.Description, "exactly one") || !strings.Contains(tool.Definition.Description, "direct tools") {
+	if !strings.Contains(tool.Definition.Description, "save parent context") || !strings.Contains(tool.Definition.Description, "exactly one") || !strings.Contains(tool.Definition.Description, "avoid delegation") {
 		t.Fatalf("description = %q", tool.Definition.Description)
 	}
 	schema := tool.Definition.InputSchema
@@ -69,7 +75,7 @@ func TestExploreSingleTaskUsesReadOnlyRunner(t *testing.T) {
 		t.Fatalf("result = %#v", result)
 	}
 	input := runner.inputs[0]
-	if input.Tools != "read,grep,find,ls" || input.Thinking != "minimal" || input.Model != "test/model" || input.CWD != "/work" || !strings.Contains(input.SystemPrompt, "read-only") {
+	if input.Tools != "read,grep,find,ls" || input.Thinking != subagent.DefaultThinking || input.Model != "test/model" || input.CWD != "/work" || !strings.Contains(input.SystemPrompt, "read-only") {
 		t.Fatalf("input = %#v", input)
 	}
 }
@@ -92,6 +98,27 @@ func TestExploreParallelPreservesOrderAndLimitsConcurrency(t *testing.T) {
 	}
 	if len(updates) != 5 || result.Details["count"] != 5 {
 		t.Fatalf("updates=%#v details=%#v", updates, result.Details)
+	}
+	usage, ok := result.Details["delegated_usage"].(delegation.Usage)
+	if !ok || usage.Calls != 5 || usage.InputTokens != 50 || usage.OutputTokens != 10 || usage.Turns != 0 || usage.WallMS <= 0 {
+		t.Fatalf("delegated usage = %#v", result.Details["delegated_usage"])
+	}
+}
+
+func TestExploreParallelWallTimeUsesBatchElapsed(t *testing.T) {
+	registry := extension.NewRegistry()
+	runner := &fakeRunner{usageWallMS: 1000}
+	if err := RegisterWithRunner(registry, runner); err != nil {
+		t.Fatal(err)
+	}
+	tool, _ := registry.Tool(ToolName)
+	result, err := tool.Execute(context.Background(), json.RawMessage(`{"tasks":[{"task":"one"},{"task":"two"}]}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	usage := result.Details["delegated_usage"].(delegation.Usage)
+	if usage.WallMS >= 1000 {
+		t.Fatalf("wall_ms should be batch elapsed rather than summed child duration, got %#v", usage)
 	}
 }
 

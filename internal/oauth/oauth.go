@@ -22,9 +22,9 @@ import (
 )
 
 const (
-	OpenAICodex = "openai-codex"
-	Anthropic   = "anthropic"
-	OpenRouter  = "openrouter"
+	OpenAICodex         = "openai-codex"
+	AnthropicClaudeCode = "anthropic-claude-code"
+	OpenRouter          = "openrouter"
 
 	codexClientID     = "app_EMoamEEZ73f0CkXaXp7hrann"
 	anthropicClientID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
@@ -90,7 +90,7 @@ func (c *Client) Login(ctx context.Context, provider string, out io.Writer) (cre
 	switch provider {
 	case OpenAICodex:
 		return c.loginCodex(ctx, out)
-	case Anthropic:
+	case AnthropicClaudeCode:
 		return c.loginAnthropic(ctx, out)
 	case OpenRouter:
 		return c.loginOpenRouter(ctx, out)
@@ -120,7 +120,7 @@ func (c *Client) Refresh(ctx context.Context, provider string, credential creden
 			"client_id":     {codexClientID},
 		}
 		err = c.postForm(ctx, c.value(c.CodexTokenURL, "https://auth.openai.com/oauth/token"), values, &token)
-	case Anthropic:
+	case AnthropicClaudeCode:
 		body := map[string]string{
 			"grant_type":    "refresh_token",
 			"refresh_token": credential.Refresh,
@@ -230,7 +230,7 @@ func (c *Client) loginAnthropic(ctx context.Context, out io.Writer) (credentials
 	if err := c.postJSON(ctx, c.value(c.AnthropicTokenURL, "https://platform.claude.com/v1/oauth/token"), body, &token); err != nil {
 		return credentials.Credential{}, fmt.Errorf("anthropic token exchange: %w", err)
 	}
-	return credentialFromToken(Anthropic, token)
+	return credentialFromToken(AnthropicClaudeCode, token)
 }
 
 func (c *Client) loginOpenRouter(ctx context.Context, out io.Writer) (credentials.Credential, error) {

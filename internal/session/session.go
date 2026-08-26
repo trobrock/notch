@@ -87,14 +87,23 @@ type TokenUsage struct {
 	OutputTokens int `json:"output_tokens"`
 }
 
+type DelegatedUsage struct {
+	Turns        int   `json:"turns"`
+	InputTokens  int   `json:"input_tokens"`
+	OutputTokens int   `json:"output_tokens"`
+	WallMS       int64 `json:"wall_ms"`
+	Calls        int   `json:"calls"`
+}
+
 // UsageEntry records provider usage for one completed model turn.
 type UsageEntry struct {
-	Type       string     `json:"type"`
-	Timestamp  time.Time  `json:"timestamp"`
-	Provider   string     `json:"provider,omitempty"`
-	Model      string     `json:"model"`
-	Usage      TokenUsage `json:"usage"`
-	StopReason string     `json:"stop_reason,omitempty"`
+	Type       string          `json:"type"`
+	Timestamp  time.Time       `json:"timestamp"`
+	Provider   string          `json:"provider,omitempty"`
+	Model      string          `json:"model"`
+	Usage      TokenUsage      `json:"usage"`
+	Delegated  *DelegatedUsage `json:"delegated,omitempty"`
+	StopReason string          `json:"stop_reason,omitempty"`
 }
 
 type sessionFile interface {
@@ -482,7 +491,7 @@ func (s *Session) AppendReset() error {
 }
 
 // AppendUsage durably records provider-reported token usage for one model turn.
-func (s *Session) AppendUsage(provider, modelName string, usage TokenUsage, stopReason string) error {
+func (s *Session) AppendUsage(provider, modelName string, usage TokenUsage, stopReason string, delegated ...DelegatedUsage) error {
 	if strings.TrimSpace(modelName) == "" {
 		return errors.New("append session usage: model is empty")
 	}
@@ -492,6 +501,13 @@ func (s *Session) AppendUsage(provider, modelName string, usage TokenUsage, stop
 	entry := UsageEntry{
 		Type: "usage", Timestamp: time.Now().UTC(), Provider: provider, Model: modelName,
 		Usage: usage, StopReason: stopReason,
+	}
+	if len(delegated) != 0 {
+		value := delegated[0]
+		if value.Turns < 0 || value.InputTokens < 0 || value.OutputTokens < 0 || value.WallMS < 0 || value.Calls < 0 {
+			return errors.New("append session usage: delegated usage cannot be negative")
+		}
+		entry.Delegated = &value
 	}
 	line, err := marshalLine(entry)
 	if err != nil {
@@ -760,6 +776,11 @@ func (s *Session) decode(r io.Reader) error {
 					}
 					if entry.Model == "" || entry.Usage.InputTokens < 0 || entry.Usage.OutputTokens < 0 {
 						return fmt.Errorf("line %d: invalid usage entry values", lineNumber)
+					}
+					if entry.Delegated != nil {
+						if entry.Delegated.Turns < 0 || entry.Delegated.InputTokens < 0 || entry.Delegated.OutputTokens < 0 || entry.Delegated.WallMS < 0 || entry.Delegated.Calls < 0 {
+							return fmt.Errorf("line %d: invalid delegated usage values", lineNumber)
+						}
 					}
 					s.UsageEntries = append(s.UsageEntries, entry)
 				}

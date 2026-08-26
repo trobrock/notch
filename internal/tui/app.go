@@ -98,6 +98,7 @@ type appState struct {
 	tools               map[string]int
 	queuedText          map[string]string
 	promptErrored       bool
+	providerUsage       *agent.Usage
 	commandHelp         bool
 	completionDismissed string
 	exit                bool
@@ -1333,12 +1334,23 @@ func (a *App) handleAgentEvent(event agent.Event) bool {
 			}
 		}
 		if event.Usage != nil {
-			a.state.layout.Usage = fmt.Sprintf("%d in / %d out", event.Usage.InputTokens, event.Usage.OutputTokens)
+			usage := *event.Usage
+			a.state.providerUsage = &usage
+			a.state.layout.Usage = fmt.Sprintf("%d in / %d out", usage.InputTokens, usage.OutputTokens)
 		}
 		if event.ContextUsage != nil {
 			a.applyContextUsage(*event.ContextUsage)
 		}
 		a.state.layout.Status = "working"
+	case "delegation_usage":
+		if event.DelegationUsage != nil {
+			prefix := ""
+			if usage := a.state.providerUsage; usage != nil {
+				prefix = fmt.Sprintf("%d in / %d out / ", usage.InputTokens, usage.OutputTokens)
+			}
+			delegated := event.DelegationUsage
+			a.state.layout.Usage = fmt.Sprintf("%s%d delegated / %.1fs", prefix, delegated.TotalTokens(), float64(delegated.WallMS)/1000)
+		}
 	case "compaction_start":
 		mode := "manually"
 		if event.Auto {
@@ -1398,6 +1410,11 @@ func (a *App) handleAgentEvent(event agent.Event) bool {
 			entry.Text = "done"
 		}
 		a.state.layout.Status = "working"
+	case "provider_retry":
+		a.finishThinking(true)
+		delay := time.Duration(event.DelayMS) * time.Millisecond
+		a.addNotice(fmt.Sprintf("provider busy; retrying attempt %d/%d in %s", event.Attempt, event.MaxAttempts, delay.Round(time.Millisecond)), "notice")
+		a.state.layout.Status = "retrying"
 	case "error":
 		a.addNotice(event.Text, "error")
 		a.state.promptErrored = true
@@ -1950,6 +1967,7 @@ func (a *App) resetConversationState() {
 	a.state.layout.Transcript = nil
 	a.state.layout.ScrollOffset = 0
 	a.state.layout.Usage = ""
+	a.state.providerUsage = nil
 	a.state.layout.ContextTokens = 0
 	a.state.layout.ContextWindow = 0
 	a.state.layout.AutoCompact = false

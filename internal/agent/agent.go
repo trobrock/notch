@@ -6,10 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
+	"github.com/trobrock/notch/internal/delegation"
 	"github.com/trobrock/notch/internal/extension"
 	"github.com/trobrock/notch/internal/model"
 	"github.com/trobrock/notch/internal/session"
@@ -22,19 +25,23 @@ type QueuedMessage struct {
 }
 
 type Event struct {
-	Type         string                `json:"type"`
-	Text         string                `json:"text,omitempty"`
-	ToolName     string                `json:"tool_name,omitempty"`
-	ToolCallID   string                `json:"tool_call_id,omitempty"`
-	Arguments    json.RawMessage       `json:"arguments,omitempty"`
-	Result       *extension.ToolResult `json:"result,omitempty"`
-	Usage        *Usage                `json:"usage,omitempty"`
-	ContextUsage *ContextUsage         `json:"context_usage,omitempty"`
-	Auto         bool                  `json:"auto,omitempty"`
-	Queue        []QueuedMessage       `json:"queue,omitempty"`
-	Queued       *QueuedMessage        `json:"queued,omitempty"`
-	Message      *model.Message        `json:"message,omitempty"`
-	StopReason   string                `json:"stop_reason,omitempty"`
+	Type            string                `json:"type"`
+	Text            string                `json:"text,omitempty"`
+	ToolName        string                `json:"tool_name,omitempty"`
+	ToolCallID      string                `json:"tool_call_id,omitempty"`
+	Arguments       json.RawMessage       `json:"arguments,omitempty"`
+	Result          *extension.ToolResult `json:"result,omitempty"`
+	Usage           *Usage                `json:"usage,omitempty"`
+	ContextUsage    *ContextUsage         `json:"context_usage,omitempty"`
+	Auto            bool                  `json:"auto,omitempty"`
+	Queue           []QueuedMessage       `json:"queue,omitempty"`
+	Queued          *QueuedMessage        `json:"queued,omitempty"`
+	Message         *model.Message        `json:"message,omitempty"`
+	StopReason      string                `json:"stop_reason,omitempty"`
+	DelegationUsage *delegation.Usage     `json:"delegation_usage,omitempty"`
+	Attempt         int                   `json:"attempt,omitempty"`
+	MaxAttempts     int                   `json:"max_attempts,omitempty"`
+	DelayMS         int64                 `json:"delay_ms,omitempty"`
 }
 
 type Usage struct {
@@ -49,6 +56,12 @@ type CompactionConfig struct {
 	KeepRecentTokens int
 }
 
+type RetryConfig struct {
+	MaxAttempts int
+	BaseDelay   time.Duration
+	MaxDelay    time.Duration
+}
+
 type Config struct {
 	Provider      model.Provider
 	ProviderName  string
@@ -59,6 +72,7 @@ type Config struct {
 	MaxTokens     int
 	ThinkingLevel string
 	Compaction    CompactionConfig
+	Retry         RetryConfig
 }
 
 type providerSwitch struct {
@@ -77,6 +91,7 @@ type Agent struct {
 	system       string
 	maxTokens    int
 	compaction   CompactionConfig
+	retry        RetryConfig
 
 	// mu serializes operations which mutate conversation or session state.
 	mu                  sync.Mutex
@@ -119,6 +134,18 @@ func New(cfg Config) (*Agent, error) {
 		return nil, fmt.Errorf("invalid thinking level %q", cfg.ThinkingLevel)
 	}
 	cfg.Compaction = defaultCompactionConfig(cfg.Compaction)
+	if cfg.Retry.MaxAttempts <= 0 {
+		cfg.Retry.MaxAttempts = 3
+	}
+	if cfg.Retry.BaseDelay <= 0 {
+		cfg.Retry.BaseDelay = time.Second
+	}
+	if cfg.Retry.MaxDelay <= 0 {
+		cfg.Retry.MaxDelay = 30 * time.Second
+	}
+	if cfg.Retry.MaxDelay < cfg.Retry.BaseDelay {
+		cfg.Retry.MaxDelay = cfg.Retry.BaseDelay
+	}
 	providerName := strings.TrimSpace(cfg.ProviderName)
 	if providerName == "" && cfg.Session != nil {
 		providerName = cfg.Session.Header.Provider
@@ -126,7 +153,7 @@ func New(cfg Config) (*Agent, error) {
 	a := &Agent{
 		provider: cfg.Provider, providerName: providerName, registry: cfg.Registry, session: cfg.Session,
 		model: cfg.Model, system: cfg.SystemPrompt, maxTokens: cfg.MaxTokens,
-		thinkingLevel: cfg.ThinkingLevel, compaction: cfg.Compaction,
+		thinkingLevel: cfg.ThinkingLevel, compaction: cfg.Compaction, retry: cfg.Retry,
 	}
 	if cfg.Session != nil {
 		a.messages = cloneMessages(cfg.Session.Messages)
@@ -163,13 +190,21 @@ func (a *Agent) appendMessage(message model.Message) error {
 	return nil
 }
 
-func (a *Agent) appendUsage(response model.Response) error {
+func (a *Agent) appendUsage(response model.Response, delegated delegation.Usage) error {
 	if a.session == nil {
 		return nil
 	}
-	return a.session.AppendUsage(a.providerName, a.model, session.TokenUsage{
-		InputTokens: response.InputTokens, OutputTokens: response.OutputTokens,
-	}, response.StopReason)
+	entry := session.TokenUsage{InputTokens: response.InputTokens, OutputTokens: response.OutputTokens}
+	if delegated.Empty() {
+		return a.session.AppendUsage(a.providerName, a.model, entry, response.StopReason)
+	}
+	return a.session.AppendUsage(a.providerName, a.model, entry, response.StopReason, session.DelegatedUsage{
+		Turns:        delegated.Turns,
+		InputTokens:  delegated.InputTokens,
+		OutputTokens: delegated.OutputTokens,
+		WallMS:       delegated.WallMS,
+		Calls:        delegated.Calls,
+	})
 }
 
 // Prompt runs until the model produces a final response without tool calls.
@@ -332,16 +367,12 @@ func (a *Agent) PromptWithStart(ctx context.Context, text string, emit func(Even
 		emit(Event{Type: "turn_start"})
 		_, _ = a.registry.RunHooks(ctx, "agent_start", map[string]any{"model": a.model, "turn": turn})
 		requestEstimate := a.estimatedContextTokensLocked()
-		response, err := a.provider.Stream(ctx, model.Request{
+		request := model.Request{
 			Model: a.model, SystemPrompt: system, Messages: requestMessages,
 			Tools: a.registry.Definitions(), MaxTokens: a.maxTokens,
 			ReasoningLevel: a.ThinkingLevel(),
-		}, func(event model.StreamEvent) {
-			switch event.Type {
-			case "text_delta", "thinking_delta":
-				emit(Event{Type: event.Type, Text: event.Text})
-			}
-		})
+		}
+		response, err := a.streamWithRetry(ctx, request, emit)
 		if err != nil {
 			_, _ = a.registry.RunHooks(ctx, "agent_error", map[string]any{"message": err.Error(), "model": a.model, "turn": turn})
 			emit(Event{Type: "error", Text: err.Error()})
@@ -360,24 +391,36 @@ func (a *Agent) PromptWithStart(ctx context.Context, text string, emit func(Even
 		}
 
 		usage := &Usage{InputTokens: response.InputTokens, OutputTokens: response.OutputTokens}
-		if err := a.appendUsage(response); err != nil {
-			return err
-		}
 		contextUsage := a.contextUsageLocked()
 		emit(Event{Type: "turn_end", Usage: usage, ContextUsage: &contextUsage, Message: &assistant, StopReason: response.StopReason})
+		var delegatedTotals delegation.Usage
 		calls := toolCalls(response.Content)
 		if len(calls) != 0 {
 			results := make([]model.Block, 0, len(calls))
 			for _, call := range calls {
 				result := a.executeTool(ctx, call, emit)
+				if delegated, ok := delegation.FromDetails(result.Details); ok {
+					delegatedTotals = delegatedTotals.Add(delegated)
+					running := delegatedTotals
+					emit(Event{Type: "delegation_usage", DelegationUsage: &running})
+				}
 				results = append(results, model.Block{Type: "tool_result", ToolUseID: call.ID, Text: result.Content, IsError: result.IsError})
 			}
 			if err := a.appendMessage(model.Message{Role: "user", Content: results}); err != nil {
+				if appendErr := a.appendUsage(response, delegatedTotals); appendErr != nil {
+					return appendErr
+				}
 				return err
 			}
 			if err := a.applyPendingSwitchLocked(); err != nil {
+				if appendErr := a.appendUsage(response, delegatedTotals); appendErr != nil {
+					return appendErr
+				}
 				return err
 			}
+		}
+		if err := a.appendUsage(response, delegatedTotals); err != nil {
+			return err
 		}
 
 		// Steering interrupts the normal tool-call chain at the next safe turn
@@ -415,6 +458,66 @@ func (a *Agent) PromptWithStart(ctx context.Context, text string, emit func(Even
 		}
 		return nil
 	}
+}
+
+func (a *Agent) streamWithRetry(ctx context.Context, request model.Request, emit func(Event)) (model.Response, error) {
+	for attempt := 1; ; attempt++ {
+		emitted := false
+		response, err := a.provider.Stream(ctx, request, func(event model.StreamEvent) {
+			switch event.Type {
+			case "text_delta", "thinking_delta":
+				emitted = true
+				emit(Event{Type: event.Type, Text: event.Text})
+			}
+		})
+		if err == nil {
+			return response, nil
+		}
+		retryable, retryAfter := model.RetryInfo(err)
+		// Retrying after visible output would duplicate content because provider
+		// streams cannot be rolled back safely.
+		if !retryable || emitted || attempt >= a.retry.MaxAttempts {
+			return model.Response{}, err
+		}
+		delay := a.retryDelay(attempt, retryAfter)
+		emit(Event{Type: "provider_retry", Text: err.Error(), Attempt: attempt + 1, MaxAttempts: a.retry.MaxAttempts, DelayMS: delay.Milliseconds()})
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return model.Response{}, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func (a *Agent) retryDelay(failedAttempt int, retryAfter time.Duration) time.Duration {
+	delay := a.retry.BaseDelay
+	for i := 1; i < failedAttempt && delay < a.retry.MaxDelay; i++ {
+		if delay > a.retry.MaxDelay/2 {
+			delay = a.retry.MaxDelay
+			break
+		}
+		delay *= 2
+	}
+	if retryAfter > delay {
+		delay = retryAfter
+	}
+	if delay > a.retry.MaxDelay {
+		delay = a.retry.MaxDelay
+	}
+	// Full jitter avoids synchronized retries while retaining the configured
+	// exponential ceiling. Server Retry-After remains a lower bound.
+	floor := retryAfter
+	if floor > delay {
+		floor = delay
+	}
+	if delay > floor {
+		delay = floor + time.Duration(rand.Int64N(int64(delay-floor)+1))
+	}
+	return delay
 }
 
 func decodeHookMessages(value any) ([]model.Message, bool) {

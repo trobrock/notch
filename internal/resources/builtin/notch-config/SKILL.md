@@ -64,7 +64,8 @@ Custom themes are direct JSON files in `theme_dirs`, defaulting to user and proj
 Supported provider names are:
 
 - `openai-codex` for a ChatGPT subscription;
-- `anthropic` for Anthropic API keys or Claude Pro/Max OAuth;
+- `anthropic` for Anthropic API keys (`ANTHROPIC_API_KEY`);
+- `anthropic-claude-code` for a Claude Pro/Max OAuth subscription;
 - `openrouter`;
 - `openai` for OpenAI Responses-compatible APIs, including local Ollama setups.
 
@@ -74,7 +75,7 @@ Use:
 
 ```sh
 notch login openai-codex
-notch login anthropic
+notch login anthropic-claude-code
 notch login openrouter
 notch logout PROVIDER
 ```

@@ -11,7 +11,7 @@ Stay on Pi, or run both during migration, if you depend on features outside Notc
 - no Markdown tables/images, general mouse interaction beyond text selection, configurable keybindings, inline mode, or tool-output expand/collapse;
 - no branching/session-tree navigation;
 - only the core Pi RPC state/prompt/event subset, not the full command surface;
-- provider OAuth is limited to `openai-codex`, `anthropic`, and `openrouter`;
+- provider OAuth is limited to `openai-codex`, `anthropic-claude-code`, and `openrouter`;
 - MCP supports tools plus authorization-code OAuth for standards-compliant Streamable HTTP servers, but not resources, prompts, elicitation, sampling, or app UI;
 - no runtime for Pi TypeScript extensions;
 - a smaller hook, command, and extension-host API;
@@ -38,7 +38,8 @@ Notch supports four provider values:
 
 - `openai-codex`, using ChatGPT Plus/Pro OAuth and the native Codex Responses endpoint;
 - `openrouter`, using `OPENROUTER_API_KEY` or OAuth and OpenRouter Chat Completions;
-- `anthropic`, using the native Anthropic Messages API with `ANTHROPIC_API_KEY` or Claude Pro/Max OAuth;
+- `anthropic`, using the native Anthropic Messages API with `ANTHROPIC_API_KEY`;
+- `anthropic-claude-code`, using Claude Pro/Max OAuth (or `ANTHROPIC_OAUTH_TOKEN`) and the native Anthropic Messages API;
 - `openai`, using the native OpenAI **Responses** API with `OPENAI_API_KEY`, or a configured local endpoint.
 
 Notch does not import Pi provider/model registries. It maintains its own embedded/provider-refreshed registry. Select a model in `~/.config/notch/config.json`, project `.notch/config.json`, with flags, or through fullscreen `/model`. See [providers and authentication](providers.md) for adapter details and current real-service verification status.
@@ -86,8 +87,8 @@ No `OPENAI_API_KEY` is required when `base_url` is non-empty. Model names and to
 For supported subscription/OAuth credentials, log in directly or perform a one-time import from Pi:
 
 ```sh
-notch login openai-codex       # ChatGPT Plus/Pro
-notch login anthropic          # Claude Pro/Max
+notch login openai-codex              # ChatGPT Plus/Pro
+notch login anthropic-claude-code     # Claude Pro/Max
 notch login openrouter
 notch auth status
 
@@ -95,7 +96,7 @@ notch auth status
 notch auth import-pi [path]
 ```
 
-The import copies credentials into `~/.local/share/notch/auth.json` (or `$XDG_DATA_HOME/notch/auth.json`), which is mode `0600`; it does not modify Pi's file or require a Node.js runtime. It is a one-time merge, not synchronization. Expiring OAuth credentials are refreshed automatically near expiry. Use `notch logout PROVIDER` to remove a stored credential.
+The import copies credentials into `~/.local/share/notch/auth.json` (or `$XDG_DATA_HOME/notch/auth.json`), which is mode `0600`; it does not modify Pi's file or require a Node.js runtime. Any `anthropic` OAuth credential found in Pi's file is mapped to the `anthropic-claude-code` provider key. It is a one-time merge, not synchronization. Expiring OAuth credentials are refreshed automatically near expiry. Use `notch logout PROVIDER` to remove a stored credential.
 
 ## Move skills
 

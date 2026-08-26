@@ -8,6 +8,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/trobrock/notch/internal/delegation"
 	"github.com/trobrock/notch/internal/model"
 	"github.com/trobrock/notch/internal/session"
 )
@@ -268,7 +269,7 @@ Preserve exact paths, identifiers, commands, errors, user decisions, current imp
 	if err != nil {
 		return fmt.Errorf("compact conversation: summarize: %w", err)
 	}
-	if err := a.appendUsage(response); err != nil {
+	if err := a.appendUsage(response, delegation.Usage{}); err != nil {
 		return fmt.Errorf("compact conversation: persist usage: %w", err)
 	}
 	summary := responseText(response.Content)

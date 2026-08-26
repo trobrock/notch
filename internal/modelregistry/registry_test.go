@@ -50,9 +50,20 @@ func TestRegistryRefreshCacheAndFallback(t *testing.T) {
 
 func TestRegistryBuiltinAndEndpointScopes(t *testing.T) {
 	registry := New("", time.Hour)
-	models, err := registry.List(context.Background(), "openai-codex", "openai-codex", false, nil)
-	if err != nil || len(models) < 3 || models[0].Source != "bundled" {
-		t.Fatalf("builtin = %#v, %v", models, err)
+	for _, provider := range []string{"openai-codex", "anthropic", "anthropic-claude-code"} {
+		models, err := registry.List(context.Background(), provider, provider, false, nil)
+		if err != nil || len(models) < 3 || models[0].Source != "bundled" {
+			t.Fatalf("builtin %s = %#v, %v", provider, models, err)
+		}
+	}
+	apiModels := Builtin("anthropic")
+	oauthModels := Builtin("anthropic-claude-code")
+	if len(apiModels) != len(oauthModels) {
+		t.Fatalf("anthropic catalogs differ in length: %d vs %d", len(apiModels), len(oauthModels))
+	}
+	apiModels[0].Name = "mutated"
+	if oauthModels[0].Name == "mutated" {
+		t.Fatal("anthropic bundled catalogs alias each other")
 	}
 	if Scope("openai", "https://one.test/") == Scope("openai", "https://two.test") || Scope("openai", "") != "openai" {
 		t.Fatal("cache scopes do not separate endpoints")

@@ -88,7 +88,7 @@ func run(args []string) error {
 	var opts options
 	flags := flag.NewFlagSet("notch", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
-	flags.StringVar(&opts.provider, "provider", "", "provider: openai-codex, openrouter, anthropic, or openai")
+	flags.StringVar(&opts.provider, "provider", "", "provider: openai-codex, anthropic-claude-code, openrouter, anthropic, or openai")
 	flags.StringVar(&opts.provider, "p", "", "model provider (shorthand)")
 	flags.StringVar(&opts.modelName, "model", "", "model ID")
 	flags.StringVar(&opts.modelName, "m", "", "model ID (shorthand)")
@@ -878,22 +878,19 @@ func makeProvider(ctx context.Context, cfg config.Config, store *credentials.Sto
 	provider := normalizeProvider(cfg.Provider)
 	switch provider {
 	case "anthropic":
-		if token := os.Getenv("ANTHROPIC_OAUTH_TOKEN"); token != "" {
-			return anthropic.New(anthropic.Config{OAuthToken: token, OAuthMode: true, BaseURL: cfg.BaseURL}), nil
-		}
-		if _, ok, getErr := store.Get(provider); getErr != nil {
-			return nil, getErr
-		} else if ok {
-			credential, err := resolveCredential(ctx, store, provider)
-			if err != nil {
-				return nil, err
-			}
-			return anthropic.New(anthropic.Config{OAuthToken: credential.Access, OAuthMode: true, BaseURL: cfg.BaseURL}), nil
-		}
 		if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
 			return anthropic.New(anthropic.Config{APIKey: key, BaseURL: cfg.BaseURL}), nil
 		}
-		return nil, errors.New("no Anthropic credential; run: notch login anthropic, or set ANTHROPIC_API_KEY")
+		return nil, errors.New("ANTHROPIC_API_KEY is not set")
+	case "anthropic-claude-code":
+		if token := os.Getenv("ANTHROPIC_OAUTH_TOKEN"); token != "" {
+			return anthropic.New(anthropic.Config{OAuthToken: token, OAuthMode: true, BaseURL: cfg.BaseURL}), nil
+		}
+		credential, err := resolveCredential(ctx, store, provider)
+		if err != nil {
+			return nil, err
+		}
+		return anthropic.New(anthropic.Config{OAuthToken: credential.Access, OAuthMode: true, BaseURL: cfg.BaseURL}), nil
 	case "openai-codex":
 		credential, err := resolveCredential(ctx, store, provider)
 		if err != nil {
@@ -917,7 +914,7 @@ func makeProvider(ctx context.Context, cfg config.Config, store *credentials.Sto
 		}
 		return openai.New(openai.Config{APIKey: key, BaseURL: cfg.BaseURL}), nil
 	default:
-		return nil, fmt.Errorf("unsupported provider %q (use openai-codex, openrouter, anthropic, or openai)", cfg.Provider)
+		return nil, fmt.Errorf("unsupported provider %q (use openai-codex, anthropic-claude-code, openrouter, anthropic, or openai)", cfg.Provider)
 	}
 }
 
@@ -966,7 +963,7 @@ func parseToolNames(value string) ([]string, error) {
 
 func rpcAPIForProvider(provider string) string {
 	switch normalizeProvider(provider) {
-	case "anthropic":
+	case "anthropic", "anthropic-claude-code":
 		return "anthropic-messages"
 	case "openrouter":
 		return "openai-completions"
@@ -991,7 +988,7 @@ func normalizeProvider(provider string) string {
 	case "codex", "chatgpt":
 		return "openai-codex"
 	case "claude":
-		return "anthropic"
+		return "anthropic-claude-code"
 	default:
 		return strings.ToLower(provider)
 	}
@@ -1003,7 +1000,7 @@ func defaultModelFor(provider string) string {
 		return "gpt-5.6-terra"
 	case "openrouter":
 		return "anthropic/claude-sonnet-4.5"
-	case "anthropic":
+	case "anthropic", "anthropic-claude-code":
 		return "claude-sonnet-4-5"
 	default:
 		return "gpt-5"
@@ -1015,7 +1012,7 @@ func contextWindowFor(provider, modelName string) int {
 	switch provider {
 	case "openai-codex":
 		return 272000
-	case "anthropic":
+	case "anthropic", "anthropic-claude-code":
 		if strings.Contains(modelName, "claude-") {
 			return 1000000
 		}
@@ -1037,7 +1034,16 @@ func currentGitBranch(cwd string) string {
 }
 
 func resolveCredential(ctx context.Context, store *credentials.Store, provider string) (credentials.Credential, error) {
-	credential, ok, err := store.Get(provider)
+	var (
+		credential credentials.Credential
+		ok         bool
+		err        error
+	)
+	if provider == credentials.AnthropicClaudeCodeProvider {
+		credential, ok, err = store.GetWithLegacyFallback(provider, credentials.LegacyAnthropicProvider)
+	} else {
+		credential, ok, err = store.Get(provider)
+	}
 	if err != nil {
 		return credentials.Credential{}, err
 	}
@@ -1074,7 +1080,7 @@ func runAuth(args []string) error {
 	switch args[0] {
 	case "login":
 		if len(args) != 2 {
-			return errors.New("usage: notch login <openai-codex|anthropic|openrouter>")
+			return errors.New("usage: notch login <openai-codex|anthropic-claude-code|openrouter>")
 		}
 		provider := normalizeProvider(args[1])
 		credential, err := oauth.Login(ctx, provider, os.Stderr)
@@ -1094,6 +1100,13 @@ func runAuth(args []string) error {
 		if err := store.Delete(provider); err != nil {
 			return err
 		}
+		if provider == credentials.AnthropicClaudeCodeProvider {
+			// Remove the retained legacy credential too, otherwise the next use
+			// would migrate it back and effectively undo logout.
+			if err := store.Delete(credentials.LegacyAnthropicProvider); err != nil {
+				return err
+			}
+		}
 		fmt.Println("removed", provider, "credential")
 		return nil
 	case "auth":
@@ -1112,8 +1125,11 @@ func runAuth(args []string) error {
 			fmt.Printf("imported Pi credentials into %s\n", store.Path())
 			return nil
 		case "status":
-			for _, provider := range []string{"openai-codex", "anthropic", "openrouter"} {
+			for _, provider := range []string{"openai-codex", "anthropic-claude-code", "openrouter"} {
 				credential, ok, getErr := store.Get(provider)
+				if provider == credentials.AnthropicClaudeCodeProvider {
+					credential, ok, getErr = store.GetWithLegacyFallback(provider, credentials.LegacyAnthropicProvider)
+				}
 				if getErr != nil {
 					return getErr
 				}

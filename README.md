@@ -11,7 +11,7 @@ Notch is an MVP, not a drop-in reimplementation of [Pi](https://github.com/badlo
 ## What is included
 
 - Native Anthropic Messages, OpenAI and Codex Responses, and OpenRouter Chat Completions providers (no provider SDKs)
-- Provider OAuth for ChatGPT Plus/Pro (`openai-codex`), Claude Pro/Max (`anthropic`), and OpenRouter
+- Provider OAuth for ChatGPT Plus/Pro (`openai-codex`), Claude Pro/Max (`anthropic-claude-code`), and OpenRouter
 - API-key access for Anthropic, OpenAI, and OpenRouter, plus local Ollama through OpenAI Responses
 - Built-in `read`, `write`, `edit`, `bash`, `grep`, `find`, and `ls` tools with strict allow/exclude controls
 - Pi-style fullscreen TUI with searchable provider/model selection, themed Markdown, tool cards, streamed thinking summaries or a fallback thinking indicator, and a multiline composer, plus a line-oriented fallback for pipes
@@ -106,7 +106,7 @@ notch login openrouter
 notch --provider openrouter --model anthropic/claude-sonnet-4.5
 ```
 
-Claude Pro/Max OAuth is available with `notch login anthropic`; API-key authentication remains available as shown above. See [providers and authentication](docs/providers.md) for authentication precedence, credential storage, test status, and the Pi import command.
+Claude Pro/Max OAuth is available with `notch login anthropic-claude-code` (provider `anthropic-claude-code`); direct `ANTHROPIC_API_KEY` authentication uses the `anthropic` provider as shown above. See [providers and authentication](docs/providers.md) for authentication precedence, credential storage, test status, and the Pi import command.
 
 A tested local setup uses Ollama's OpenAI-compatible Responses endpoint. Start Ollama, install a model that supports the Responses/tool-calling behavior you need, and point Notch at the server:
 
@@ -132,7 +132,7 @@ When `base_url` is set, Notch does not require `OPENAI_API_KEY`. It sends reques
 ```text
 notch [flags] [prompt words...]
 
-  --provider, -p string   openai-codex, openrouter, anthropic, or openai
+  --provider, -p string   openai-codex, anthropic-claude-code, openrouter, anthropic, or openai
   --model, -m string      model ID
   --thinking string       off, minimal, low, medium, high, or xhigh
   --print string          run one prompt and exit
@@ -184,7 +184,7 @@ notch extensions update [--force] [NAME...]
 notch extensions remove NAME
 ```
 
-`login` supports `openai-codex`, `anthropic`, and `openrouter`. Positional words become a one-shot prompt when `--print` is absent:
+`login` supports `openai-codex`, `anthropic-claude-code`, and `openrouter`. Positional words become a one-shot prompt when `--print` is absent:
 
 ```sh
 notch --print "Explain internal/agent"
@@ -278,7 +278,8 @@ Provider credentials:
 
 - `openai-codex`: ChatGPT Plus/Pro OAuth from `notch login openai-codex`.
 - `openrouter`: `OPENROUTER_API_KEY` or `notch login openrouter`.
-- `anthropic`: `ANTHROPIC_API_KEY` or Claude Pro/Max OAuth from `notch login anthropic`.
+- `anthropic`: `ANTHROPIC_API_KEY`.
+- `anthropic-claude-code`: Claude Pro/Max OAuth from `notch login anthropic-claude-code` (or `ANTHROPIC_OAUTH_TOKEN`).
 - `openai`: `OPENAI_API_KEY`, unless `base_url` points to a local service such as Ollama.
 
 OAuth credentials are stored in `~/.local/share/notch/auth.json` (or `$XDG_DATA_HOME/notch/auth.json`) with mode `0600` and refreshed when close to expiry. Full details and current real-service verification notes are in [docs/providers.md](docs/providers.md).
@@ -341,7 +342,7 @@ Remote tools are exposed as `mcp__<server>__<tool>`. Notch performs the MCP 2025
 
 Unless `--no-session` is used, every new invocation creates a mode-0600 JSONL file under the configured session directory. The first record is metadata (format version, ID, time, CWD, provider, model); subsequent records contain messages, per-turn provider usage, and durable compaction records. Each append is synced before continuing. In the fullscreen UI, `/new` creates a distinct durable session and clears transcript context and input history; under `--no-session` it performs the same reset in memory. `/resume` switches to a selected saved session and restores its effective transcript, context, and submitted-input history.
 
-`--json` emits one JSON object per line. Current event types include `turn_start`, `text_delta`, `thinking_delta`, `turn_end` (with token usage), `tool_start`, `tool_update`, `tool_end`, `queue_update`, `queue_delivered`, compaction events, and `error`. The `--json` stream is a one-way event interface, not the on-disk session format. Use `--mode rpc` for bidirectional state, prompt, queue, and abort commands.
+`--json` emits one JSON object per line. Current event types include `turn_start`, `text_delta`, `thinking_delta`, `turn_end` (with provider token usage), `provider_retry` (attempt, maximum attempts, delay, and the transient error), `tool_start`, `tool_update`, `tool_end`, `delegation_usage` (separate child input/output tokens, calls, turns, and elapsed `wall_ms`), `queue_update`, `queue_delivered`, compaction events, and `error`. For parallel `explore_codebase` calls, delegated token counts are summed while `wall_ms` is batch elapsed time rather than the sum of child durations. This lets evaluations compare direct and delegated runs without mixing provider and subagent tokens. The `--json` stream is a one-way event interface, not the on-disk session format. Use `--mode rpc` for bidirectional state, prompt, queue, and abort commands.
 
 ## Extensions
 

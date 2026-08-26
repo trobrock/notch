@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/trobrock/notch/internal/delegation"
 	"github.com/trobrock/notch/internal/extension"
 	"github.com/trobrock/notch/internal/model"
 	"github.com/trobrock/notch/internal/session"
@@ -139,6 +140,74 @@ func TestPromptPersistsProviderUsage(t *testing.T) {
 	entry := loaded.UsageEntries[0]
 	if entry.Provider != "anthropic" || entry.Model != "model-a" || entry.Usage.InputTokens != 123 || entry.Usage.OutputTokens != 45 || entry.StopReason != "end_turn" {
 		t.Fatalf("usage entry = %#v", entry)
+	}
+	if entry.Delegated != nil {
+		t.Fatalf("delegated usage unexpectedly present: %#v", entry.Delegated)
+	}
+}
+
+type delegatedToolProvider struct{ calls int }
+
+func (p *delegatedToolProvider) Stream(_ context.Context, req model.Request, _ func(model.StreamEvent)) (model.Response, error) {
+	p.calls++
+	if p.calls == 1 {
+		return model.Response{Content: []model.Block{{Type: "tool_use", ID: "d1", Name: "delegate", Arguments: json.RawMessage(`{}`)}}, StopReason: "tool_use", InputTokens: 11, OutputTokens: 2}, nil
+	}
+	return model.Response{Content: []model.Block{{Type: "text", Text: "done"}}, StopReason: "end_turn", InputTokens: 7, OutputTokens: 3}, nil
+}
+
+func TestPromptAggregatesDelegatedUsageAndPersistsAfterTools(t *testing.T) {
+	store, err := session.New(t.TempDir(), "/work", "anthropic", "model-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := store.Path()
+	reg := extension.NewRegistry()
+	if err := reg.RegisterTool(extension.Tool{
+		Definition: model.ToolDefinition{Name: "delegate", InputSchema: map[string]any{"type": "object"}},
+		Source:     "test",
+		Execute: func(context.Context, json.RawMessage, func(string)) (extension.ToolResult, error) {
+			return extension.ToolResult{Content: "ok", Details: map[string]any{"delegated_usage": map[string]any{"turns": 2, "input_tokens": 9, "output_tokens": 4, "wall_ms": 33, "calls": 1}}}, nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	provider := &delegatedToolProvider{}
+	a, err := New(Config{Provider: provider, ProviderName: "anthropic", Registry: reg, Session: store, Model: "model-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var turnEnds []Usage
+	var delegationEvents []delegation.Usage
+	if err := a.Prompt(context.Background(), "go", func(event Event) {
+		if event.Type == "turn_end" && event.Usage != nil {
+			turnEnds = append(turnEnds, *event.Usage)
+		}
+		if event.Type == "delegation_usage" && event.DelegationUsage != nil {
+			delegationEvents = append(delegationEvents, *event.DelegationUsage)
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(turnEnds) != 2 {
+		t.Fatalf("turn ends = %#v", turnEnds)
+	}
+	if len(delegationEvents) != 1 || delegationEvents[0] != (delegation.Usage{Turns: 2, InputTokens: 9, OutputTokens: 4, WallMS: 33, Calls: 1}) {
+		t.Fatalf("delegation events = %#v", delegationEvents)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := session.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer loaded.Close()
+	if len(loaded.UsageEntries) != 2 || loaded.UsageEntries[0].Delegated == nil || loaded.UsageEntries[1].Delegated != nil {
+		t.Fatalf("usage entries = %#v", loaded.UsageEntries)
+	}
+	if loaded.UsageEntries[0].Delegated.WallMS != 33 || loaded.UsageEntries[0].Delegated.InputTokens != 9 {
+		t.Fatalf("delegated persisted = %#v", loaded.UsageEntries[0].Delegated)
 	}
 }
 
@@ -602,4 +671,72 @@ func (p *switchToolProvider) Stream(_ context.Context, request model.Request, _ 
 		return model.Response{Content: []model.Block{{Type: "tool_use", ID: "1", Name: "switch", Arguments: json.RawMessage(`{}`)}}}, nil
 	}
 	return model.Response{Content: []model.Block{{Type: "text", Text: "done"}}}, nil
+}
+
+type retryProvider struct {
+	calls       int
+	failures    int
+	emitOnError bool
+}
+
+func (p *retryProvider) Stream(_ context.Context, _ model.Request, emit func(model.StreamEvent)) (model.Response, error) {
+	p.calls++
+	if p.calls <= p.failures {
+		if p.emitOnError {
+			emit(model.StreamEvent{Type: "text_delta", Text: "partial"})
+		}
+		return model.Response{}, &model.ProviderError{Message: "overloaded", StatusCode: 529, Code: "overloaded_error"}
+	}
+	return model.Response{Content: []model.Block{{Type: "text", Text: "ok"}}, StopReason: "end_turn"}, nil
+}
+
+func TestPromptRetriesTransientProviderErrors(t *testing.T) {
+	provider := &retryProvider{failures: 2}
+	a, err := New(Config{Provider: provider, Registry: extension.NewRegistry(), Model: "m", Retry: RetryConfig{MaxAttempts: 3, BaseDelay: time.Nanosecond, MaxDelay: time.Nanosecond}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var retries []Event
+	if err := a.Prompt(context.Background(), "go", func(event Event) {
+		if event.Type == "provider_retry" {
+			retries = append(retries, event)
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if provider.calls != 3 || len(retries) != 2 {
+		t.Fatalf("calls=%d retries=%#v", provider.calls, retries)
+	}
+	if retries[0].Attempt != 2 || retries[1].Attempt != 3 || retries[0].MaxAttempts != 3 {
+		t.Fatalf("retries=%#v", retries)
+	}
+}
+
+func TestPromptDoesNotRetryAfterStreamOutput(t *testing.T) {
+	provider := &retryProvider{failures: 1, emitOnError: true}
+	a, err := New(Config{Provider: provider, Registry: extension.NewRegistry(), Model: "m", Retry: RetryConfig{MaxAttempts: 3, BaseDelay: time.Nanosecond, MaxDelay: time.Nanosecond}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = a.Prompt(context.Background(), "go", func(Event) {})
+	if err == nil || provider.calls != 1 {
+		t.Fatalf("err=%v calls=%d", err, provider.calls)
+	}
+}
+
+func TestPromptRetryBackoffHonorsCancellation(t *testing.T) {
+	provider := &retryProvider{failures: 10}
+	a, err := New(Config{Provider: provider, Registry: extension.NewRegistry(), Model: "m", Retry: RetryConfig{MaxAttempts: 3, BaseDelay: time.Hour, MaxDelay: time.Hour}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	err = a.Prompt(ctx, "go", func(event Event) {
+		if event.Type == "provider_retry" {
+			cancel()
+		}
+	})
+	if !errors.Is(err, context.Canceled) || provider.calls != 1 {
+		t.Fatalf("err=%v calls=%d", err, provider.calls)
+	}
 }

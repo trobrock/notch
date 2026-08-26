@@ -1,5 +1,16 @@
 package modelregistry
 
+var anthropicCatalog = []Entry{
+	{ID: "claude-haiku-4-5", Name: "Claude Haiku 4.5", ContextWindow: 200000, Reasoning: true},
+	{ID: "claude-opus-4-6", Name: "Claude Opus 4.6", ContextWindow: 1000000, Reasoning: true},
+	{ID: "claude-opus-4-7", Name: "Claude Opus 4.7", ContextWindow: 1000000, Reasoning: true},
+	{ID: "claude-opus-4-8", Name: "Claude Opus 4.8", ContextWindow: 1000000, Reasoning: true},
+	{ID: "claude-opus-5", Name: "Claude Opus 5", ContextWindow: 1000000, Reasoning: true},
+	{ID: "claude-sonnet-4-5", Name: "Claude Sonnet 4.5", ContextWindow: 1000000, Reasoning: true},
+	{ID: "claude-sonnet-4-6", Name: "Claude Sonnet 4.6", ContextWindow: 1000000, Reasoning: true},
+	{ID: "claude-sonnet-5", Name: "Claude Sonnet 5", ContextWindow: 1000000, Reasoning: true},
+}
+
 // Builtin returns the small offline fallback shipped with Notch. Provider APIs
 // replace this list once a successful discovery has been cached.
 func Builtin(provider string) []Entry {
@@ -13,16 +24,8 @@ func Builtin(provider string) []Entry {
 			{ID: "gpt-5.6-sol", Name: "GPT-5.6 Sol", ContextWindow: 272000, Reasoning: true},
 			{ID: "gpt-5.6-terra", Name: "GPT-5.6 Terra", ContextWindow: 272000, Reasoning: true},
 		},
-		"anthropic": {
-			{ID: "claude-haiku-4-5", Name: "Claude Haiku 4.5", ContextWindow: 200000, Reasoning: true},
-			{ID: "claude-opus-4-6", Name: "Claude Opus 4.6", ContextWindow: 1000000, Reasoning: true},
-			{ID: "claude-opus-4-7", Name: "Claude Opus 4.7", ContextWindow: 1000000, Reasoning: true},
-			{ID: "claude-opus-4-8", Name: "Claude Opus 4.8", ContextWindow: 1000000, Reasoning: true},
-			{ID: "claude-opus-5", Name: "Claude Opus 5", ContextWindow: 1000000, Reasoning: true},
-			{ID: "claude-sonnet-4-5", Name: "Claude Sonnet 4.5", ContextWindow: 1000000, Reasoning: true},
-			{ID: "claude-sonnet-4-6", Name: "Claude Sonnet 4.6", ContextWindow: 1000000, Reasoning: true},
-			{ID: "claude-sonnet-5", Name: "Claude Sonnet 5", ContextWindow: 1000000, Reasoning: true},
-		},
+		"anthropic":             cloneEntries(anthropicCatalog),
+		"anthropic-claude-code": cloneEntries(anthropicCatalog),
 		"openrouter": {
 			{ID: "anthropic/claude-sonnet-4.5", Name: "Claude Sonnet 4.5", ContextWindow: 1000000, Reasoning: true},
 			{ID: "openai/gpt-5", Name: "OpenAI GPT-5", ContextWindow: 400000, Reasoning: true},

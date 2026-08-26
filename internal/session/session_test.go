@@ -91,7 +91,7 @@ func TestNewAppendLoad(t *testing.T) {
 	if err := s.AppendEntry(map[string]any{"type": "note", "text": "remember"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AppendUsage("anthropic", "test-model", TokenUsage{InputTokens: 12, OutputTokens: 7}, "end_turn"); err != nil {
+	if err := s.AppendUsage("anthropic", "test-model", TokenUsage{InputTokens: 12, OutputTokens: 7}, "end_turn", DelegatedUsage{Turns: 3, InputTokens: 9, OutputTokens: 5, WallMS: 42, Calls: 2}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Close(); err != nil {
@@ -121,12 +121,26 @@ func TestNewAppendLoad(t *testing.T) {
 	if len(loaded.UsageEntries) != 1 || loaded.UsageEntries[0].Provider != "anthropic" || loaded.UsageEntries[0].Model != "test-model" || loaded.UsageEntries[0].Usage.InputTokens != 12 || loaded.UsageEntries[0].Usage.OutputTokens != 7 || loaded.UsageEntries[0].StopReason != "end_turn" {
 		t.Fatalf("bad usage entries: %+v", loaded.UsageEntries)
 	}
+	if loaded.UsageEntries[0].Delegated == nil || loaded.UsageEntries[0].Delegated.WallMS != 42 || loaded.UsageEntries[0].Delegated.Calls != 2 {
+		t.Fatalf("bad delegated usage: %+v", loaded.UsageEntries[0].Delegated)
+	}
 	var custom CustomEntry
 	if err := json.Unmarshal(loaded.Entries[1], &custom); err != nil {
 		t.Fatal(err)
 	}
 	if custom.Type != "bookmark" {
 		t.Fatalf("bad custom entry: %+v", custom)
+	}
+}
+
+func TestAppendUsageRejectsNegativeDelegatedUsage(t *testing.T) {
+	s, err := New(t.TempDir(), "/work", "anthropic", "test-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.AppendUsage("anthropic", "test-model", TokenUsage{InputTokens: 1, OutputTokens: 2}, "end_turn", DelegatedUsage{WallMS: -1}); err == nil || !strings.Contains(err.Error(), "delegated usage") {
+		t.Fatalf("AppendUsage error = %v", err)
 	}
 }
 

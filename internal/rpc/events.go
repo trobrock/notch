@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/trobrock/notch/internal/agent"
+	"github.com/trobrock/notch/internal/delegation"
 	"github.com/trobrock/notch/internal/model"
 )
 
@@ -84,6 +85,10 @@ func (a *eventAdapter) Handle(event agent.Event) {
 			reason = "threshold"
 		}
 		_ = a.server.write(map[string]any{"type": "compaction_end", "reason": reason, "aborted": false, "willRetry": false})
+	case "delegation_usage":
+		_ = a.server.write(map[string]any{"type": "delegation_usage", "usage": rpcDelegationUsage(event.DelegationUsage)})
+	case "provider_retry":
+		_ = a.server.write(map[string]any{"type": "provider_retry", "attempt": event.Attempt, "maxAttempts": event.MaxAttempts, "delayMs": event.DelayMS, "error": event.Text})
 	case "error":
 		_ = a.server.write(map[string]any{"type": "error", "error": event.Text})
 	}
@@ -229,14 +234,26 @@ func (a *eventAdapter) assistantMessage(message *model.Message, usage *agent.Usa
 }
 
 func rpcUsage(usage *agent.Usage) map[string]any {
-	input, output := 0, 0
+	providerInput, providerOutput := 0, 0
 	if usage != nil {
-		input, output = usage.InputTokens, usage.OutputTokens
+		providerInput, providerOutput = usage.InputTokens, usage.OutputTokens
+	}
+	providerTokens := providerInput + providerOutput
+	return map[string]any{
+		"input": providerInput, "output": providerOutput, "cacheRead": 0, "cacheWrite": 0,
+		"providerTokens": providerTokens,
+		"totalTokens":    providerTokens,
+		"cost":           map[string]float64{"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0},
+	}
+}
+
+func rpcDelegationUsage(usage *delegation.Usage) map[string]any {
+	if usage == nil {
+		return map[string]any{"turns": 0, "input": 0, "output": 0, "wallMs": 0, "calls": 0, "totalTokens": 0}
 	}
 	return map[string]any{
-		"input": input, "output": output, "cacheRead": 0, "cacheWrite": 0,
-		"totalTokens": input + output,
-		"cost":        map[string]float64{"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0},
+		"turns": usage.Turns, "input": usage.InputTokens, "output": usage.OutputTokens,
+		"wallMs": usage.WallMS, "calls": usage.Calls, "totalTokens": usage.TotalTokens(),
 	}
 }
 
