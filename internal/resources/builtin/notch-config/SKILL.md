@@ -115,7 +115,7 @@ The default MCP file is `$XDG_CONFIG_HOME/notch/mcp.json` or `~/.config/notch/mc
     "local": {
       "command": "/absolute/path/to/server",
       "args": ["--root", "/work"],
-      "env": {"LOG_LEVEL": "warn"}
+      "env": {"LOG_LEVEL": "warn", "TOKEN": "${LOCAL_MCP_TOKEN}"}
     },
     "remote": {
       "url": "https://example.test/mcp",
@@ -125,7 +125,7 @@ The default MCP file is `$XDG_CONFIG_HOME/notch/mcp.json` or `~/.config/notch/mc
 }
 ```
 
-The MCP file is static configuration under the config root, so literal secrets in `env` or HTTP `headers` are not kept in the private data root. Prefer OAuth or a server-side/environment indirection; if a static secret is unavoidable, protect the MCP file appropriately. Use the `env` object for every stdio-server secret or other non-baseline variable. Stdio MCP children receive only a minimal inherited environment (`PATH`, home/user, temporary-directory, locale, terminal, and SSH-agent basics, plus required Windows process variables); provider keys, token variables, and CI secrets are not inherited. Explicit `env` values are added to that baseline. Remote HTTP headers are literal and do not expand environment variables. Prefer `"auth": "oauth"` for compatible protected servers, then run `notch mcp login NAME`; status and logout are available through `notch mcp status` and `notch mcp logout NAME`. OAuth credentials are globally stored at mode `0600` and bound to the exact server URL. Notch supports stdio and Streamable HTTP tools, but not MCP resources, prompts, elicitation, sampling, or app UI.
+The MCP file is static configuration under the config root, so do not store literal secrets in `env` or HTTP `headers`. Both objects support `${NAME}` references that resolve from Notch's environment when the file loads; an unset or malformed reference is an error, and `$$` produces a literal `$`. Use the `env` object to explicitly select every stdio-server secret or other non-baseline variable. Stdio MCP children receive only a minimal inherited environment (`PATH`, home/user, temporary-directory, locale, terminal, and SSH-agent basics, plus required Windows process variables); provider keys, token variables, and CI secrets are not inherited. Resolved `env` values are added to that baseline. Remote HTTP headers support the same strict interpolation. Prefer `"auth": "oauth"` for compatible protected servers, then run `notch mcp login NAME`; status and logout are available through `notch mcp status` and `notch mcp logout NAME`. OAuth credentials are globally stored at mode `0600` and bound to the exact server URL. Notch supports stdio and Streamable HTTP tools, but not MCP resources, prompts, elicitation, sampling, or app UI.
 
 ## Sessions
 

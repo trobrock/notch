@@ -210,7 +210,7 @@ Notch has a native MCP client, so MCP integrations generally belong in `~/.confi
     "local": {
       "command": "my-mcp-server",
       "args": ["--stdio"],
-      "env": {"TOKEN": "..."}
+      "env": {"TOKEN": "${MY_MCP_TOKEN}"}
     },
     "remote": {
       "url": "https://example.test/mcp",
@@ -224,7 +224,7 @@ Notch supports stdio and Streamable HTTP with JSON or SSE responses. It performs
 
 For a remote server that advertises standards-compliant OAuth metadata, set `"auth": "oauth"` and run `notch mcp login remote`. Notch performs metadata discovery, dynamic client registration, S256 PKCE through a loopback browser callback, resource binding, and token refresh; `notch mcp status` reports login state. OAuth credentials stay in Notch's separate global mode-0600 store and are bound to the exact configured URL. Static `headers` remain available for API-key servers.
 
-For stdio servers, pass secrets explicitly in each server's `env` object because Notch supplies only a minimal child environment and does not inherit provider credentials or typical CI secrets. Notch does not currently consume MCP resources or prompts.
+For stdio servers, select secrets explicitly in each server's `env` object because Notch supplies only a minimal child environment and does not inherit provider credentials or typical CI secrets. Values in `env` and remote HTTP `headers` support strict `${NAME}` interpolation from Notch's environment; loading fails for unset or malformed references, and `$$` produces a literal `$`. This lets the MCP file remain shareable without embedding secrets. Notch does not currently consume MCP resources or prompts.
 
 Use `--mcp-config path/to/file.json` to test a project-specific file before making it the default.
 

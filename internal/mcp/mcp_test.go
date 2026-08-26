@@ -266,3 +266,71 @@ func TestLoadConfigEnabled(t *testing.T) {
 		t.Fatalf("URL = %q", got)
 	}
 }
+
+func TestLoadConfigExpandsEnvironment(t *testing.T) {
+	t.Setenv("MCP_TEST_TOKEN", "secret-value")
+	t.Setenv("MCP_TEST_HOST", "example.test")
+	path := t.TempDir() + "/mcp.json"
+	data := `{"mcpServers":{"stdio":{"command":"server","env":{"TOKEN":"${MCP_TEST_TOKEN}","LABEL":"prefix-${MCP_TEST_HOST}-suffix","LITERAL":"$${MCP_TEST_TOKEN}"}},"http":{"url":"https://example.test","headers":{"Authorization":"Bearer ${MCP_TEST_TOKEN}"}}}}`
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.MCPServers["stdio"].Env["TOKEN"]; got != "secret-value" {
+		t.Fatalf("TOKEN = %q", got)
+	}
+	if got := cfg.MCPServers["stdio"].Env["LABEL"]; got != "prefix-example.test-suffix" {
+		t.Fatalf("LABEL = %q", got)
+	}
+	if got := cfg.MCPServers["stdio"].Env["LITERAL"]; got != "${MCP_TEST_TOKEN}" {
+		t.Fatalf("LITERAL = %q", got)
+	}
+	if got := cfg.MCPServers["http"].Headers["Authorization"]; got != "Bearer secret-value" {
+		t.Fatalf("Authorization = %q", got)
+	}
+}
+
+func TestLoadConfigSkipsEnvironmentExpansionForDisabledServer(t *testing.T) {
+	const name = "NOTCH_MCP_TEST_DISABLED_MISSING"
+	_ = os.Unsetenv(name)
+	path := t.TempDir() + "/mcp.json"
+	data := `{"mcpServers":{"off":{"command":"server","enabled":false,"env":{"TOKEN":"${` + name + `}"}}}}`
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(path); err != nil {
+		t.Fatalf("LoadConfig rejected a disabled server: %v", err)
+	}
+}
+
+func TestLoadConfigRejectsMissingEnvironment(t *testing.T) {
+	const name = "NOTCH_MCP_TEST_MISSING"
+	_ = os.Unsetenv(name)
+	path := t.TempDir() + "/mcp.json"
+	data := `{"mcpServers":{"grafana":{"command":"server","env":{"TOKEN":"${` + name + `}"}}}}`
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("LoadConfig succeeded with an unset environment variable")
+	}
+	if got := err.Error(); !strings.Contains(got, `server "grafana" env: "TOKEN": environment variable "`+name+`" is not set`) {
+		t.Fatalf("unexpected error: %s", got)
+	}
+}
+
+func TestExpandEnvironmentRejectsInvalidReferences(t *testing.T) {
+	for _, value := range []string{"${}", "${1TOKEN}", "${TOKEN-NAME}", "${TOKEN"} {
+		t.Run(value, func(t *testing.T) {
+			if _, err := expandEnvironment(value, os.LookupEnv); err == nil {
+				t.Fatalf("expandEnvironment(%q) succeeded", value)
+			}
+		})
+	}
+}

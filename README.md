@@ -308,7 +308,7 @@ Put that file at `.notch/prompts/review.md` or `.agents/commands/review.md` and 
 ## MCP
 
 The default MCP file is `$XDG_CONFIG_HOME/notch/mcp.json` (or `~/.config/notch/mcp.json` when unset). It is only loaded if the file exists.
-Because `mcp.json` is configuration rather than a private credential store, static secrets placed in MCP `headers` or `env` are stored in the config root. Prefer MCP OAuth (stored privately under the data root), environment indirection supported by your server, or otherwise protect the file appropriately.
+Because `mcp.json` is configuration rather than a private credential store, do not put literal secrets in MCP `headers` or `env`. Values in those objects support strict `${NAME}` environment-variable interpolation; loading fails if a referenced variable is unset or malformed. Use `$$` for a literal `$`. Prefer MCP OAuth when available; OAuth credentials are stored privately under the data root.
 
 ```json
 {
@@ -316,11 +316,11 @@ Because `mcp.json` is configuration rather than a private credential store, stat
     "files": {
       "command": "/absolute/path/to/server",
       "args": ["--root", "/work"],
-      "env": {"LOG_LEVEL": "warn"}
+      "env": {"LOG_LEVEL": "warn", "TOKEN": "${FILES_TOKEN}"}
     },
     "remote": {
       "url": "https://mcp.example.test/mcp",
-      "headers": {"X-API-Key": "static-token"}
+      "headers": {"X-API-Key": "${REMOTE_API_KEY}"}
     },
     "oauth-remote": {
       "url": "https://mcp.example.test/mcp",
@@ -334,7 +334,7 @@ Because `mcp.json` is configuration rather than a private credential store, stat
 }
 ```
 
-A server must specify exactly one of `command` or `url`. `enabled` defaults to true. Stdio children receive only a minimal inherited process environment plus variables explicitly supplied in that server's `env` object; provider credentials and typical CI secrets are not inherited automatically. For OAuth-protected Streamable HTTP servers, set `"auth": "oauth"`, then run `notch mcp login NAME`; `notch mcp status` and `notch mcp logout NAME` inspect or remove the login. Existing Linux `pi-mcp-adapter` keyring entries can be copied with `notch mcp import-pi [PATH]` after the same server names and URLs are present in Notch's global MCP config. OAuth uses protected-resource and authorization-server metadata discovery, dynamic client registration, S256 PKCE, loopback browser callbacks, RFC 8707 resource binding, refresh tokens, and a separate mode-0600 credential store at `~/.local/share/notch/mcp-auth.json`. An optional `"oauth": {"scope": "scope1 scope2"}` object can request explicit scopes instead of the server-advertised defaults. Project MCP configurations may use only a global credential already bound to the exact configured URL; they cannot redirect it to another server.
+A server must specify exactly one of `command` or `url`. `enabled` defaults to true. `${NAME}` references are expanded only in `env` values and HTTP `headers` values when the config loads; unset or malformed references are errors, and `$$` produces a literal `$`. Stdio children receive only a minimal inherited process environment plus the resolved variables explicitly supplied in that server's `env` object; provider credentials and typical CI secrets are not inherited automatically. For OAuth-protected Streamable HTTP servers, set `"auth": "oauth"`, then run `notch mcp login NAME`; `notch mcp status` and `notch mcp logout NAME` inspect or remove the login. Existing Linux `pi-mcp-adapter` keyring entries can be copied with `notch mcp import-pi [PATH]` after the same server names and URLs are present in Notch's global MCP config. OAuth uses protected-resource and authorization-server metadata discovery, dynamic client registration, S256 PKCE, loopback browser callbacks, RFC 8707 resource binding, refresh tokens, and a separate mode-0600 credential store at `~/.local/share/notch/mcp-auth.json`. An optional `"oauth": {"scope": "scope1 scope2"}` object can request explicit scopes instead of the server-advertised defaults. Project MCP configurations may use only a global credential already bound to the exact configured URL; they cannot redirect it to another server.
 
 Remote tools are exposed as `mcp__<server>__<tool>`. Notch performs the MCP 2025-06-18 handshake, follows paginated `tools/list`, and calls tools over stdio or HTTP responses in JSON or SSE form. Resource/prompt MCP capabilities are not implemented yet.
 
