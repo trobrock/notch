@@ -27,7 +27,7 @@ See the [fullscreen TUI guide](docs/tui.md), [RPC mode](docs/rpc.md), [themes](d
 
 ## Status and deliberate gaps
 
-Notch has a Pi-style fullscreen terminal UI with a multiline composer, transcript scrolling, Markdown-aware rendering, themes, thinking controls, context compaction, and extension prompts, plus a line-oriented fallback for redirection and automation. It does **not** yet have session branching/tree navigation or MCP OAuth. The TUI supports app-owned mouse-wheel scrollback and drag selection with `Ctrl-Y` copy (including tmux when mouse forwarding is enabled), and mouse capture can be disabled to restore terminal-native selection. It does not yet provide configurable keybindings, inline (non-alternate-screen) mode, or tool-output expand/collapse. Its Markdown support covers common prose and code constructs, but not terminal table layout, image display, or extensions such as task lists and strikethrough. Themes can be built in or loaded from simple semantic JSON files. MCP HTTP credentials can only be supplied as static headers. Provider OAuth is implemented for `openai-codex`, `anthropic`, and `openrouter`, but sessions and configuration are not automatically imported from Pi; credentials have an explicit one-time import command. Existing Pi TypeScript extensions do not run in Notch and must be ported to Lua or the executable JSON-RPC protocol.
+Notch has a Pi-style fullscreen terminal UI with a multiline composer, transcript scrolling, Markdown-aware rendering, themes, thinking controls, context compaction, and extension prompts, plus a line-oriented fallback for redirection and automation. It does **not** yet have session branching/tree navigation. The TUI supports app-owned mouse-wheel scrollback and drag selection with `Ctrl-Y` copy (including tmux when mouse forwarding is enabled), and mouse capture can be disabled to restore terminal-native selection. It does not yet provide configurable keybindings, inline (non-alternate-screen) mode, or tool-output expand/collapse. Its Markdown support covers common prose and code constructs, but not terminal table layout, image display, or extensions such as task lists and strikethrough. Themes can be built in or loaded from simple semantic JSON files. MCP HTTP supports static headers and OAuth authorization-code login for standards-compliant protected resources. Provider OAuth is implemented for `openai-codex`, `anthropic`, and `openrouter`, but sessions and configuration are not automatically imported from Pi; credentials have an explicit one-time import command. Existing Pi TypeScript extensions do not run in Notch and must be ported to Lua or the executable JSON-RPC protocol.
 
 Tools, extensions, plugins, and MCP servers run with the user's privileges. Notch has no sandbox or per-command approval prompts: once a workspace is trusted, enabled project code and model-requested tools execute automatically. See [Workspace trust](#workspace-trust) and [SECURITY.md](SECURITY.md).
 
@@ -222,7 +222,7 @@ Configuration is JSON. For trusted workspaces, Notch starts with defaults, then 
 3. `NOTCH_PROVIDER`, `NOTCH_MODEL`, and `NOTCH_THINKING_LEVEL`
 4. CLI overrides such as `--provider`, `--model`, and `--thinking`
 
-Later non-empty values replace earlier ones, so CLI flags take precedence over environment variables and environment variables take precedence over project and user config. Empty or whitespace-only values for the three runtime environment variables are ignored and fall back to the merged config files. Non-empty directory arrays replace the complete earlier array; they are not appended. `base_url`, `auth_file`, `session_dir`, and `model_cache` are security-sensitive global-only settings and are ignored in project config. API keys can come from environment variables; OAuth credentials are kept separately from config in the protected auth store. Standalone `notch login`, `logout`, `auth`, and `models` commands also load global configuration only.
+Later non-empty values replace earlier ones, so CLI flags take precedence over environment variables and environment variables take precedence over project and user config. Empty or whitespace-only values for the three runtime environment variables are ignored and fall back to the merged config files. Non-empty directory arrays replace the complete earlier array; they are not appended. `base_url`, `auth_file`, `mcp_auth_file`, `session_dir`, and `model_cache` are security-sensitive global-only settings and are ignored in project config. API keys can come from environment variables; OAuth credentials are kept separately from config in the protected auth store. Standalone `notch login`, `logout`, `auth`, and `models` commands also load global configuration only.
 
 ```json
 {
@@ -242,6 +242,7 @@ Later non-empty values replace earlier ones, so CLI flags take precedence over e
   },
   "system_prompt": "You are a coding agent. Help the user understand and modify their codebase.",
   "mcp_config": "/home/me/.notch/mcp.json",
+  "mcp_auth_file": "/home/me/.notch/mcp-auth.json",
   "extension_dirs": [
     "/home/me/.notch/extensions",
     "/work/project/.notch/extensions"
@@ -314,7 +315,11 @@ The default MCP file is `~/.notch/mcp.json` (or `$NOTCH_HOME/mcp.json`). It is o
     },
     "remote": {
       "url": "https://mcp.example.test/mcp",
-      "headers": {"Authorization": "Bearer static-token"}
+      "headers": {"X-API-Key": "static-token"}
+    },
+    "oauth-remote": {
+      "url": "https://mcp.example.test/mcp",
+      "auth": "oauth"
     },
     "off": {
       "command": "some-server",
@@ -324,7 +329,9 @@ The default MCP file is `~/.notch/mcp.json` (or `$NOTCH_HOME/mcp.json`). It is o
 }
 ```
 
-A server must specify exactly one of `command` or `url`. `enabled` defaults to true. Stdio children receive only a minimal inherited process environment plus variables explicitly supplied in that server's `env` object; provider credentials and typical CI secrets are not inherited automatically. Remote tools are exposed as `mcp__<server>__<tool>`. Notch performs the MCP 2025-06-18 handshake, follows paginated `tools/list`, and calls tools over stdio or HTTP responses in JSON or SSE form. Resource/prompt MCP capabilities and OAuth are not implemented yet.
+A server must specify exactly one of `command` or `url`. `enabled` defaults to true. Stdio children receive only a minimal inherited process environment plus variables explicitly supplied in that server's `env` object; provider credentials and typical CI secrets are not inherited automatically. For OAuth-protected Streamable HTTP servers, set `"auth": "oauth"`, then run `notch mcp login NAME`; `notch mcp status` and `notch mcp logout NAME` inspect or remove the login. Existing Linux `pi-mcp-adapter` keyring entries can be copied with `notch mcp import-pi [PATH]` after the same server names and URLs are present in Notch's global MCP config. OAuth uses protected-resource and authorization-server metadata discovery, dynamic client registration, S256 PKCE, loopback browser callbacks, RFC 8707 resource binding, refresh tokens, and a separate mode-0600 credential store at `~/.notch/mcp-auth.json`. An optional `"oauth": {"scope": "scope1 scope2"}` object can request explicit scopes instead of the server-advertised defaults. Project MCP configurations may use only a global credential already bound to the exact configured URL; they cannot redirect it to another server.
+
+Remote tools are exposed as `mcp__<server>__<tool>`. Notch performs the MCP 2025-06-18 handshake, follows paginated `tools/list`, and calls tools over stdio or HTTP responses in JSON or SSE form. Resource/prompt MCP capabilities are not implemented yet.
 
 ## Sessions and JSON output
 

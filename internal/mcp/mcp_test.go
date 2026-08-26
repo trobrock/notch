@@ -188,6 +188,52 @@ func TestSecondServerFailureLeavesNoRegistrations(t *testing.T) {
 	}
 }
 
+func TestHTTPOAuthRefreshesAndRetriesUnauthorized(t *testing.T) {
+	var mu sync.Mutex
+	var tokens []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		tokens = append(tokens, r.Header.Get("Authorization"))
+		count := len(tokens)
+		mu.Unlock()
+		if count == 1 {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		var request struct {
+			ID     int64  `json:"id"`
+			Method string `json:"method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+			return
+		}
+		writeRPCResult(t, w, request.ID, map[string]any{"protocolVersion": protocolVersion, "capabilities": map[string]any{}})
+	}))
+	defer server.Close()
+	var calls []bool
+	currentToken := "old-token"
+	client := newHTTPClient(ServerConfig{URL: server.URL}, func(_ context.Context, refresh bool) (string, error) {
+		calls = append(calls, refresh)
+		if refresh {
+			currentToken = "new-token"
+		}
+		return currentToken, nil
+	})
+	if err := initialize(context.Background(), client); err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(calls) != "[false true false]" {
+		t.Fatalf("authorization calls = %v", calls)
+	}
+	mu.Lock()
+	gotTokens := strings.Join(tokens, ",")
+	mu.Unlock()
+	if gotTokens != "Bearer old-token,Bearer new-token,Bearer new-token" {
+		t.Fatalf("tokens = %s", gotTokens)
+	}
+}
+
 func TestReadSSEResponse(t *testing.T) {
 	stream := strings.NewReader("event: message\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\"}\n\n" +
 		"data: {\"jsonrpc\":\"2.0\",\"id\":7,\ndata: \"result\":{\"answer\":42}}\n\n")

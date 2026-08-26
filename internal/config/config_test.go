@@ -30,7 +30,7 @@ func TestDefaultsAndNotchHome(t *testing.T) {
 	if cfg.Theme != "dark" || cfg.ThinkingLevel != "medium" || cfg.MouseCapture == nil || !*cfg.MouseCapture || cfg.Compaction == nil || cfg.Compaction.Enabled == nil || !*cfg.Compaction.Enabled {
 		t.Fatalf("interactive defaults are incomplete: %+v", cfg)
 	}
-	if cfg.MCPConfig != filepath.Join(root, "mcp.json") || cfg.SessionDir != filepath.Join(root, "sessions") || cfg.ModelCache != filepath.Join(root, "models.json") || cfg.ModelRefreshHours != 24 {
+	if cfg.MCPConfig != filepath.Join(root, "mcp.json") || cfg.MCPAuthFile != filepath.Join(root, "mcp-auth.json") || cfg.SessionDir != filepath.Join(root, "sessions") || cfg.ModelCache != filepath.Join(root, "models.json") || cfg.ModelRefreshHours != 24 {
 		t.Fatalf("defaults use wrong home: %+v", cfg)
 	}
 	wantExtensions := []string{filepath.Join(root, "extensions"), filepath.Join(cwd, ".notch", "extensions")}
@@ -54,7 +54,7 @@ func TestDefaultsAndNotchHome(t *testing.T) {
 	custom := filepath.Join(t.TempDir(), "custom-notch")
 	t.Setenv("NOTCH_HOME", custom)
 	cfg = Defaults(home, cwd)
-	if cfg.SessionDir != filepath.Join(custom, "sessions") || cfg.MCPConfig != filepath.Join(custom, "mcp.json") {
+	if cfg.SessionDir != filepath.Join(custom, "sessions") || cfg.MCPConfig != filepath.Join(custom, "mcp.json") || cfg.MCPAuthFile != filepath.Join(custom, "mcp-auth.json") {
 		t.Fatalf("NOTCH_HOME not respected: %+v", cfg)
 	}
 }
@@ -232,10 +232,10 @@ func TestLoadWorkspaceKeepsSensitiveFieldsGlobalOnly(t *testing.T) {
 	home, root := t.TempDir(), t.TempDir()
 	t.Setenv("NOTCH_HOME", "")
 	writeJSON(t, filepath.Join(home, ".notch", "config.json"), `{
-		"base_url":"https://global.test", "auth_file":"global-auth", "session_dir":"global-sessions", "model_cache":"global-models"
+		"base_url":"https://global.test", "auth_file":"global-auth", "mcp_auth_file":"global-mcp-auth", "session_dir":"global-sessions", "model_cache":"global-models"
 	}`)
 	writeJSON(t, filepath.Join(root, ".notch", "config.json"), `{
-		"model":"trusted-project", "base_url":"https://evil.test", "auth_file":"evil-auth", "session_dir":"evil-sessions", "model_cache":"evil-models"
+		"model":"trusted-project", "base_url":"https://evil.test", "auth_file":"evil-auth", "mcp_auth_file":"evil-mcp-auth", "session_dir":"evil-sessions", "model_cache":"evil-models"
 	}`)
 
 	cfg, err := LoadWorkspace(home, root, true)
@@ -245,7 +245,7 @@ func TestLoadWorkspaceKeepsSensitiveFieldsGlobalOnly(t *testing.T) {
 	if cfg.Model != "trusted-project" {
 		t.Fatalf("ordinary trusted project field not loaded: %+v", cfg)
 	}
-	if cfg.BaseURL != "https://global.test" || cfg.AuthFile != "global-auth" || cfg.SessionDir != "global-sessions" || cfg.ModelCache != "global-models" {
+	if cfg.BaseURL != "https://global.test" || cfg.AuthFile != "global-auth" || cfg.MCPAuthFile != "global-mcp-auth" || cfg.SessionDir != "global-sessions" || cfg.ModelCache != "global-models" {
 		t.Fatalf("project overrode sensitive global fields: %+v", cfg)
 	}
 }

@@ -123,7 +123,7 @@ func TestOpenRouterLoginEphemeralCallback(t *testing.T) {
 	}
 }
 
-func TestCallbackRejectsWrongState(t *testing.T) {
+func TestCallbackIgnoresWrongStateAndWaitsForValidCallback(t *testing.T) {
 	client := NewClient()
 	client.CodexRedirectURL = "http://localhost:0/auth/callback"
 	client.CodexAuthorizeURL = "https://authorize.test/"
@@ -131,19 +131,28 @@ func TestCallbackRejectsWrongState(t *testing.T) {
 		u, _ := url.Parse(target)
 		callback, _ := url.Parse(u.Query().Get("redirect_uri"))
 		q := callback.Query()
-		q.Set("code", "code")
+		q.Set("code", "wrong-code")
 		q.Set("state", "wrong")
 		callback.RawQuery = q.Encode()
 		response, err := http.Get(strings.Replace(callback.String(), "localhost", "127.0.0.1", 1))
+		if err != nil {
+			return err
+		}
+		response.Body.Close()
+		if response.StatusCode != http.StatusBadRequest {
+			t.Errorf("wrong-state status = %d", response.StatusCode)
+		}
+		q.Set("code", "valid-code")
+		q.Set("state", u.Query().Get("state"))
+		callback.RawQuery = q.Encode()
+		response, err = http.Get(strings.Replace(callback.String(), "localhost", "127.0.0.1", 1))
 		if err == nil {
 			response.Body.Close()
 		}
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	_, err := client.Login(ctx, OpenAICodex, &bytes.Buffer{})
-	if err == nil || !strings.Contains(err.Error(), "state mismatch") {
+	_, err := client.Login(context.Background(), OpenAICodex, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "token exchange") {
 		t.Fatalf("error = %v", err)
 	}
 }

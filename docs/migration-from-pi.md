@@ -12,7 +12,7 @@ Stay on Pi, or run both during migration, if you depend on features outside Notc
 - no branching/session-tree navigation;
 - only the core Pi RPC state/prompt/event subset, not the full command surface;
 - provider OAuth is limited to `openai-codex`, `anthropic`, and `openrouter`;
-- no MCP OAuth (only static HTTP headers);
+- MCP supports tools plus authorization-code OAuth for standards-compliant Streamable HTTP servers, but not resources, prompts, elicitation, sampling, or app UI;
 - no runtime for Pi TypeScript extensions;
 - a smaller hook, command, and extension-host API;
 - MCP tools only, rather than the broader MCP capability surface.
@@ -213,7 +213,7 @@ Notch has a native MCP client, so MCP integrations generally belong in `~/.notch
     },
     "remote": {
       "url": "https://example.test/mcp",
-      "headers": {"Authorization": "Bearer ..."}
+      "auth": "oauth"
     }
   }
 }
@@ -221,7 +221,9 @@ Notch has a native MCP client, so MCP integrations generally belong in `~/.notch
 
 Notch supports stdio and Streamable HTTP with JSON or SSE responses. It performs the MCP handshake and imports advertised tools as `mcp__local__tool_name`. `enabled` defaults to true; set it to false to skip a server.
 
-Do not migrate OAuth metadata or expect an interactive authorization flow. For stdio servers, pass secrets explicitly in each server's `env` object because Notch supplies only a minimal child environment and does not inherit provider credentials or typical CI secrets. For HTTP, pass static headers and protect these config files appropriately. Notch does not currently consume MCP resources or prompts.
+For a remote server that advertises standards-compliant OAuth metadata, set `"auth": "oauth"` and run `notch mcp login remote`. Notch performs metadata discovery, dynamic client registration, S256 PKCE through a loopback browser callback, resource binding, and token refresh; `notch mcp status` reports login state. OAuth credentials stay in Notch's separate global mode-0600 store and are bound to the exact configured URL. Static `headers` remain available for API-key servers.
+
+For stdio servers, pass secrets explicitly in each server's `env` object because Notch supplies only a minimal child environment and does not inherit provider credentials or typical CI secrets. Notch does not currently consume MCP resources or prompts.
 
 Use `--mcp-config path/to/file.json` to test a project-specific file before making it the default.
 
@@ -246,7 +248,7 @@ In the fullscreen UI, `/new` creates and switches to a distinct durable session 
 2. Configure one provider login/API key or the tested local Ollama Responses route.
 3. Run `go test ./...` in a disposable project through a one-shot prompt and review tool behavior.
 4. Copy one skill/template at a time and verify slash expansion.
-5. Reconfigure MCP stdio/HTTP servers, excluding OAuth-dependent servers.
+5. Reconfigure MCP stdio/HTTP servers and authorize OAuth servers with `notch mcp login NAME`.
 6. Inventory Pi TypeScript extensions and classify each as Lua, executable plugin, or currently unsupported.
 7. Test hooks and tool safety with `notch --no-session`.
 8. Keep Pi available for old sessions, branches/session trees, custom themes, and richer Markdown UI workflows until Notch's limits are acceptable.

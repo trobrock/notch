@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/trobrock/notch/internal/extension"
+	"github.com/trobrock/notch/internal/mcpoauth"
 	"github.com/trobrock/notch/internal/model"
 )
 
@@ -27,11 +28,15 @@ type Manager struct {
 // ConnectConfigured connects enabled servers, performs the MCP handshake, and
 // registers each advertised tool in registry. Tool names use the conventional
 // mcp__<server>__<tool> namespace.
-func ConnectConfigured(ctx context.Context, cfg Config, registry *extension.Registry) (*Manager, error) {
+func ConnectConfigured(ctx context.Context, cfg Config, registry *extension.Registry, authorizers ...*mcpoauth.Authorizer) (*Manager, error) {
 	if registry == nil {
 		return nil, errors.New("MCP registry is nil")
 	}
 	manager := &Manager{}
+	var authorizer *mcpoauth.Authorizer
+	if len(authorizers) != 0 {
+		authorizer = authorizers[0]
+	}
 	names := make([]string, 0, len(cfg.MCPServers))
 	for name := range cfg.MCPServers {
 		names = append(names, name)
@@ -47,7 +52,7 @@ func ConnectConfigured(ctx context.Context, cfg Config, registry *extension.Regi
 			_ = manager.Close()
 			return nil, errors.New("MCP server name is empty")
 		}
-		client, err := connectServer(ctx, server)
+		client, err := connectServer(ctx, name, server, authorizer)
 		if err != nil {
 			_ = manager.Close()
 			return nil, fmt.Errorf("connect MCP server %q: %w", name, err)
@@ -113,14 +118,27 @@ func ConnectConfigured(ctx context.Context, cfg Config, registry *extension.Regi
 	return manager, nil
 }
 
-func connectServer(ctx context.Context, cfg ServerConfig) (rpcClient, error) {
+func connectServer(ctx context.Context, name string, cfg ServerConfig, authorizer *mcpoauth.Authorizer) (rpcClient, error) {
+	if cfg.Auth != "" && cfg.Auth != "oauth" {
+		return nil, fmt.Errorf("MCP server %q has unsupported auth mode %q", name, cfg.Auth)
+	}
 	switch {
 	case cfg.Command != "" && cfg.URL != "":
 		return nil, errors.New("configuration has both command and url")
+	case cfg.OAuthEnabled() && cfg.Command != "":
+		return nil, errors.New("OAuth is only supported for HTTP servers")
 	case cfg.Command != "":
 		return newStdioClient(ctx, cfg)
 	case cfg.URL != "":
-		return newHTTPClient(cfg), nil
+		if !cfg.OAuthEnabled() {
+			return newHTTPClient(cfg, nil), nil
+		}
+		if authorizer == nil {
+			return nil, errors.New("MCP OAuth is configured but no credential store is available")
+		}
+		return newHTTPClient(cfg, func(ctx context.Context, forceRefresh bool) (string, error) {
+			return authorizer.Token(ctx, name, cfg.URL, forceRefresh)
+		}), nil
 	default:
 		return nil, errors.New("configuration requires command or url")
 	}

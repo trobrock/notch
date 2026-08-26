@@ -68,6 +68,7 @@ type Config struct {
 	AgentCommandDirs  []string          `json:"-"`
 	SessionDir        string            `json:"session_dir,omitempty"`
 	AuthFile          string            `json:"auth_file,omitempty"`
+	MCPAuthFile       string            `json:"mcp_auth_file,omitempty"`
 	Theme             string            `json:"theme,omitempty"`
 	ThinkingLevel     string            `json:"thinking_level,omitempty"`
 	MouseCapture      *bool             `json:"mouse,omitempty"`
@@ -118,6 +119,7 @@ func defaults(home, cwd string, includeProject bool) Config {
 		AgentCommandDirs:  agentCommandDirs,
 		SessionDir:        filepath.Join(root, "sessions"),
 		AuthFile:          filepath.Join(root, "auth.json"),
+		MCPAuthFile:       filepath.Join(root, "mcp-auth.json"),
 		Theme:             defaultTheme,
 		ThinkingLevel:     defaultThinking,
 		MouseCapture:      &mouseEnabled,
@@ -243,6 +245,7 @@ func mergeProject(dst *Config, src Config) {
 	providerChanged := src.Provider != "" && src.Provider != dst.Provider
 	src.BaseURL = ""
 	src.AuthFile = ""
+	src.MCPAuthFile = ""
 	src.SessionDir = ""
 	src.ModelCache = ""
 	if providerChanged {
@@ -290,6 +293,9 @@ func merge(dst *Config, src Config) {
 	}
 	if src.AuthFile != "" {
 		dst.AuthFile = src.AuthFile
+	}
+	if src.MCPAuthFile != "" {
+		dst.MCPAuthFile = src.MCPAuthFile
 	}
 	if src.Theme != "" {
 		dst.Theme = src.Theme

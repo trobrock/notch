@@ -10,13 +10,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
 
@@ -349,93 +347,14 @@ func randomURLString(size int) (string, error) {
 }
 
 // browserCode starts a dedicated loopback server, emits and opens the URL, and
-// waits for one callback. redirect may contain port zero for an ephemeral port.
+// waits for a valid callback. redirect may contain port zero for an ephemeral
+// port.
 func (c *Client) browserCode(ctx context.Context, redirect, expectedState string, out io.Writer, authorizationURL func(string) (string, error)) (string, string, error) {
-	parsed, err := url.Parse(redirect)
-	if err != nil || parsed.Scheme != "http" || parsed.Host == "" {
-		return "", "", fmt.Errorf("invalid loopback redirect %q", redirect)
-	}
-	hostname := parsed.Hostname()
-	if hostname != "localhost" && hostname != "127.0.0.1" && hostname != "::1" {
-		return "", "", fmt.Errorf("redirect host %q is not loopback", hostname)
-	}
-	port := parsed.Port()
-	if port == "" {
-		port = "80"
-	}
-	listener, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", port))
+	callback, err := c.Authorize(ctx, redirect, expectedState, out, authorizationURL)
 	if err != nil {
-		return "", "", fmt.Errorf("listen for OAuth callback: %w", err)
+		return "", "", err
 	}
-	defer listener.Close()
-	actualPort := listener.Addr().(*net.TCPAddr).Port
-	if parsed.Port() == "0" {
-		parsed.Host = net.JoinHostPort("localhost", strconv.Itoa(actualPort))
-	}
-	actualRedirect := parsed.String()
-
-	type callbackResult struct {
-		code string
-		err  error
-	}
-	result := make(chan callbackResult, 1)
-	handler := http.NewServeMux()
-	handler.HandleFunc(parsed.Path, func(w http.ResponseWriter, r *http.Request) {
-		q := r.URL.Query()
-		var callbackErr error
-		code := q.Get("code")
-		if oauthErr := q.Get("error"); oauthErr != "" {
-			callbackErr = fmt.Errorf("authorization denied: %s", oauthErr)
-		} else if expectedState != "" && q.Get("state") != expectedState {
-			callbackErr = errors.New("OAuth callback state mismatch")
-		} else if code == "" {
-			callbackErr = errors.New("OAuth callback did not contain a code")
-		}
-		if callbackErr != nil {
-			http.Error(w, "Authorization failed. You may close this window.", http.StatusBadRequest)
-		} else {
-			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-			_, _ = io.WriteString(w, "Authorization complete. You may close this window.\n")
-		}
-		select {
-		case result <- callbackResult{code: code, err: callbackErr}:
-		default:
-		}
-	})
-	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second}
-	serveDone := make(chan struct{})
-	go func() {
-		_ = server.Serve(listener)
-		close(serveDone)
-	}()
-	defer func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		_ = server.Shutdown(shutdownCtx)
-		<-serveDone
-	}()
-
-	authURL, err := authorizationURL(actualRedirect)
-	if err != nil {
-		return "", "", fmt.Errorf("build authorization URL: %w", err)
-	}
-	if _, err := fmt.Fprintf(out, "Open this URL in your browser:\n%s\n", authURL); err != nil {
-		return "", "", fmt.Errorf("print authorization URL: %w", err)
-	}
-	browser := c.Browser
-	if browser == nil {
-		browser = openBrowser
-	}
-	// A browser launcher may be unavailable (for example over SSH). The URL was
-	// printed first, so continue waiting for the user to open it manually.
-	_ = browser(authURL)
-
-	select {
-	case <-ctx.Done():
-		return "", "", ctx.Err()
-	case got := <-result:
-		return got.code, actualRedirect, got.err
-	}
+	return callback.Code, callback.RedirectURL, nil
 }
 
 func (c *Client) postForm(ctx context.Context, endpoint string, values url.Values, dst any) error {

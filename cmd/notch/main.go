@@ -26,6 +26,7 @@ import (
 	"github.com/trobrock/notch/internal/extpkg"
 	"github.com/trobrock/notch/internal/luaext"
 	"github.com/trobrock/notch/internal/mcp"
+	"github.com/trobrock/notch/internal/mcpoauth"
 	"github.com/trobrock/notch/internal/model"
 	"github.com/trobrock/notch/internal/modelregistry"
 	"github.com/trobrock/notch/internal/oauth"
@@ -74,6 +75,9 @@ func run(args []string) error {
 	}
 	if len(args) > 0 && (args[0] == "login" || args[0] == "logout" || args[0] == "auth") {
 		return runAuth(args)
+	}
+	if len(args) > 0 && args[0] == "mcp" {
+		return runMCP(args[1:])
 	}
 	if len(args) > 0 && args[0] == "models" {
 		return runListModels(args[1:])
@@ -311,8 +315,12 @@ func run(args []string) error {
 			mcpCfg, loadErr := mcp.LoadConfig(cfg.MCPConfig)
 			if loadErr != nil {
 				extensionHost.Notify(loadErr.Error(), "warning")
-			} else if mcpManager, err = mcp.ConnectConfigured(ctx, mcpCfg, registry); err != nil {
-				extensionHost.Notify(err.Error(), "warning")
+			} else {
+				oauthStore := mcpoauth.NewStore(cfg.MCPAuthFile)
+				authorizer := &mcpoauth.Authorizer{Store: oauthStore, Client: mcpoauth.NewClient()}
+				if mcpManager, err = mcp.ConnectConfigured(ctx, mcpCfg, registry, authorizer); err != nil {
+					extensionHost.Notify(err.Error(), "warning")
+				}
 			}
 		}
 	}

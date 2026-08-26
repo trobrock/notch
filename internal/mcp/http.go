@@ -22,10 +22,11 @@ const (
 )
 
 type httpClient struct {
-	url     string
-	headers map[string]string
-	client  *http.Client
-	nextID  atomic.Int64
+	url           string
+	headers       map[string]string
+	client        *http.Client
+	authorization func(context.Context, bool) (string, error)
+	nextID        atomic.Int64
 
 	mu       sync.RWMutex
 	session  string
@@ -33,15 +34,21 @@ type httpClient struct {
 	closed   bool
 }
 
-func newHTTPClient(cfg ServerConfig) *httpClient {
+func newHTTPClient(cfg ServerConfig, authorization func(context.Context, bool) (string, error)) rpcClient {
 	headers := make(map[string]string, len(cfg.Headers))
 	for key, value := range cfg.Headers {
 		headers[key] = value
 	}
+	transport := &http.Client{
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 	return &httpClient{
-		url:     cfg.URL,
-		headers: headers,
-		client:  &http.Client{},
+		url:           cfg.URL,
+		headers:       headers,
+		client:        transport,
+		authorization: authorization,
 	}
 }
 
@@ -103,10 +110,27 @@ func (c *httpClient) post(ctx context.Context, message any, expectedID int64, re
 	if err != nil {
 		return rpcResponse{}, fmt.Errorf("create MCP HTTP request: %w", err)
 	}
-	c.applyHeaders(req)
+	if err := c.applyHeaders(ctx, req, false); err != nil {
+		return rpcResponse{}, err
+	}
 	response, err := c.client.Do(req)
 	if err != nil {
 		return rpcResponse{}, fmt.Errorf("MCP HTTP request: %w", err)
+	}
+	if response.StatusCode == http.StatusUnauthorized && c.authorization != nil {
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64<<10))
+		response.Body.Close()
+		retry, retryErr := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(data))
+		if retryErr != nil {
+			return rpcResponse{}, fmt.Errorf("retry MCP HTTP request: %w", retryErr)
+		}
+		if retryErr := c.applyHeaders(ctx, retry, true); retryErr != nil {
+			return rpcResponse{}, retryErr
+		}
+		response, err = c.client.Do(retry)
+		if err != nil {
+			return rpcResponse{}, fmt.Errorf("retry MCP HTTP request: %w", err)
+		}
 	}
 	defer response.Body.Close()
 	c.captureSession(response.Header)
@@ -148,11 +172,21 @@ func (c *httpClient) post(ctx context.Context, message any, expectedID int64, re
 	}
 }
 
-func (c *httpClient) applyHeaders(request *http.Request) {
+func (c *httpClient) applyHeaders(ctx context.Context, request *http.Request, forceRefresh bool) error {
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "application/json, text/event-stream")
 	for key, value := range c.headers {
 		request.Header.Set(key, value)
+	}
+	if c.authorization != nil {
+		token, err := c.authorization(ctx, forceRefresh)
+		if err != nil {
+			return fmt.Errorf("authorize MCP HTTP request: %w", err)
+		}
+		if token == "" {
+			return errors.New("authorize MCP HTTP request: empty bearer token")
+		}
+		request.Header.Set("Authorization", "Bearer "+token)
 	}
 	c.mu.RLock()
 	session, protocol := c.session, c.protocol
@@ -163,6 +197,7 @@ func (c *httpClient) applyHeaders(request *http.Request) {
 	if protocol != "" {
 		request.Header.Set("MCP-Protocol-Version", protocol)
 	}
+	return nil
 }
 
 func (c *httpClient) captureSession(header http.Header) {
@@ -252,7 +287,9 @@ func (c *httpClient) close() error {
 	if err != nil {
 		return err
 	}
-	c.applyHeaders(req)
+	if err := c.applyHeaders(ctx, req, false); err != nil {
+		return err
+	}
 	response, err := c.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("close MCP HTTP session: %w", err)

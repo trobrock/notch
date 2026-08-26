@@ -17,7 +17,7 @@ This maps the Pi installation reviewed before Notch was created. It is a porting
 | `developerly-task-list-tracker.ts` | Official tool plugin plus a generic core task-widget host API | Tool can be ported; the task-widget host primitive does not exist |
 | `developerly-token-efficiency.ts` | Native context/compaction middleware | Native compaction exists, but extension context replacement/compaction hooks do not |
 | `@benvargas/pi-firecrawl` | Native HTTP tool or MCP server | Native MCP tools work; direct Firecrawl adapter not bundled |
-| `pi-mcp-adapter` | Notch's native MCP client | Stdio and Streamable HTTP tools work; OAuth, elicitation, sampling, apps, and scripting remain |
+| `pi-mcp-adapter` | Notch's native MCP client | Stdio, Streamable HTTP tools, and authorization-code OAuth work; elicitation, sampling, apps, and scripting remain |
 
 ## Core work required for full parity
 
