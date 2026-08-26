@@ -100,7 +100,7 @@ The import copies credentials into `~/.local/share/notch/auth.json` (or `$XDG_DA
 
 ## Move skills
 
-Notch always provides `/skill:notch-config` and `/skill:notch-extension` from the binary. Disk skills with those names override the bundled versions. Project resources are considered only after one-time persisted trust at the canonical Git root; noninteractive untrusted and `--safe` runs skip project `.notch` and `.agents` inputs.
+Notch always provides `/skill:notch-config` and `/skill:notch-extension` from the binary. Disk skills with those names override the bundled versions. Project resources are considered only after one-time persisted repository trust, shared across linked worktrees through Git's common directory; noninteractive untrusted and `--safe` runs skip project `.notch` and `.agents` inputs.
 
 Notch reads shared Agent Skills directly from `~/.agents/skills` and `<project>/.agents/skills`, alongside its native locations:
 

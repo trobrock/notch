@@ -29,6 +29,73 @@ func TestRootCanonicalizesGitWorkspace(t *testing.T) {
 	}
 }
 
+func TestResolveSharesTrustAcrossLinkedWorktrees(t *testing.T) {
+	parent := t.TempDir()
+	mainRoot := filepath.Join(parent, "main")
+	linkedRoot := filepath.Join(parent, "linked")
+	if err := exec.Command("git", "init", "-q", mainRoot).Run(); err != nil {
+		t.Skipf("git unavailable: %v", err)
+	}
+	for key, value := range map[string]string{"user.email": "test@example.com", "user.name": "Test"} {
+		if err := exec.Command("git", "-C", mainRoot, "config", key, value).Run(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := exec.Command("git", "-C", mainRoot, "commit", "--allow-empty", "-q", "-m", "initial").Run(); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := exec.Command("git", "-C", mainRoot, "worktree", "add", "-q", "-b", "linked", linkedRoot).CombinedOutput(); err != nil {
+		t.Fatalf("add worktree: %v: %s", err, output)
+	}
+
+	mainInfo, err := Resolve(mainRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	linkedInfo, err := Resolve(linkedRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mainInfo.Root == linkedInfo.Root {
+		t.Fatalf("worktree roots unexpectedly equal: %q", mainInfo.Root)
+	}
+	if mainInfo.TrustKey != linkedInfo.TrustKey {
+		t.Fatalf("trust keys differ: main=%q linked=%q", mainInfo.TrustKey, linkedInfo.TrustKey)
+	}
+
+	store := NewStore(filepath.Join(t.TempDir(), "notch-home"))
+	if err := store.Trust(mainRoot); err != nil {
+		t.Fatal(err)
+	}
+	trusted, err := store.IsTrusted(linkedRoot)
+	if err != nil || !trusted {
+		t.Fatalf("linked worktree trust=%v err=%v", trusted, err)
+	}
+}
+
+func TestLegacyWorktreeRootTrustMigratesToSharedKey(t *testing.T) {
+	root := t.TempDir()
+	if err := exec.Command("git", "init", "-q", root).Run(); err != nil {
+		t.Skipf("git unavailable: %v", err)
+	}
+	info, err := Resolve(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewStore(filepath.Join(t.TempDir(), "notch-home"))
+	if err := store.TrustRoot(info.Root); err != nil {
+		t.Fatal(err)
+	}
+	trusted, err := store.IsTrustedWorkspace(info.Root, info.TrustKey)
+	if err != nil || !trusted {
+		t.Fatalf("legacy trust=%v err=%v", trusted, err)
+	}
+	trusted, err = store.IsTrustedRoot(info.TrustKey)
+	if err != nil || !trusted {
+		t.Fatalf("migrated trust=%v err=%v", trusted, err)
+	}
+}
+
 func TestStorePersistsCanonicalRootWithPrivateModes(t *testing.T) {
 	parent := t.TempDir()
 	home := filepath.Join(parent, "notch-home")
@@ -166,7 +233,14 @@ func TestRootFallbackAcceptsDirectoryAndWorktreeFile(t *testing.T) {
 	for name, create := range map[string]func(string) error{
 		"directory": func(marker string) error { return os.Mkdir(marker, 0o755) },
 		"worktree-file": func(marker string) error {
-			return os.WriteFile(marker, []byte("gitdir: /tmp/repository/worktrees/test\n"), 0o600)
+			gitDir := filepath.Join(filepath.Dir(marker), "git-data", "worktrees", "test")
+			if err := os.MkdirAll(gitDir, 0o755); err != nil {
+				return err
+			}
+			if err := os.WriteFile(filepath.Join(gitDir, "commondir"), []byte("../..\n"), 0o600); err != nil {
+				return err
+			}
+			return os.WriteFile(marker, []byte("gitdir: "+gitDir+"\n"), 0o600)
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

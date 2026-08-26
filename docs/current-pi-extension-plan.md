@@ -5,7 +5,7 @@ This maps the Pi installation reviewed before Notch was created. It is a porting
 | Pi extension | Notch target | Current status |
 |---|---|---|
 | `developerly-ask-user-question.ts` | Official Lua tool using `notch.ui.input/select` | Host primitives exist; port needed |
-| `developerly-auto-trust-worktrees.ts` | Native persisted workspace trust | Implemented at canonical Git root; interactive prompt only when project inputs exist, plus `--trust-workspace` and `--safe` |
+| `developerly-auto-trust-worktrees.ts` | Native persisted workspace trust | Implemented with repository-wide trust shared through the canonical Git common directory; interactive prompt only when the active worktree has project inputs, plus `--trust-workspace` and `--safe` |
 | `developerly-explore-subagent.ts` | Official executable plugin spawning an isolated Notch child | Plugin/process primitives exist; hardened runner and port needed |
 | `developerly-goal-loop.ts` | Executable plugin using lifecycle hooks | Basic hooks exist; follow-up/session host APIs need expansion |
 | `developerly-model-system-prompt.ts` | Lua `before_agent_start` hook | Supported; port needed |

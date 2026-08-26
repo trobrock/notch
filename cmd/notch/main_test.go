@@ -123,7 +123,7 @@ func TestResolveWorkspaceTrustDoesNotCreateTrustStateWithoutInputs(t *testing.T)
 	notchHome := filepath.Join(t.TempDir(), "absent-notch-home")
 	t.Setenv("XDG_CONFIG_HOME", notchHome)
 	t.Setenv("XDG_DATA_HOME", notchHome)
-	trusted, err := resolveWorkspaceTrust(home, root, options{}, strings.NewReader("yes\n"), &bytes.Buffer{}, true)
+	trusted, err := resolveWorkspaceTrust(home, root, root, options{}, strings.NewReader("yes\n"), &bytes.Buffer{}, true)
 	if err != nil || trusted {
 		t.Fatalf("trusted=%v err=%v", trusted, err)
 	}
@@ -143,11 +143,11 @@ func TestResolveWorkspaceTrustSafeAndNonInteractive(t *testing.T) {
 		t.Fatal(err)
 	}
 	var output bytes.Buffer
-	trusted, err := resolveWorkspaceTrust(home, root, options{safe: true}, strings.NewReader("yes\n"), &output, true)
+	trusted, err := resolveWorkspaceTrust(home, root, root, options{safe: true}, strings.NewReader("yes\n"), &output, true)
 	if err != nil || trusted || output.Len() != 0 {
 		t.Fatalf("safe: trusted=%v output=%q err=%v", trusted, output.String(), err)
 	}
-	trusted, err = resolveWorkspaceTrust(home, root, options{}, strings.NewReader("yes\n"), &output, false)
+	trusted, err = resolveWorkspaceTrust(home, root, root, options{}, strings.NewReader("yes\n"), &output, false)
 	if err != nil || trusted || output.Len() != 0 {
 		t.Fatalf("noninteractive: trusted=%v output=%q err=%v", trusted, output.String(), err)
 	}
@@ -165,12 +165,12 @@ func TestResolveWorkspaceTrustPromptsOnceAndPersists(t *testing.T) {
 		t.Fatal(err)
 	}
 	var output bytes.Buffer
-	trusted, err := resolveWorkspaceTrust(home, root, options{}, strings.NewReader("yes\n"), &output, true)
+	trusted, err := resolveWorkspaceTrust(home, root, root, options{}, strings.NewReader("yes\n"), &output, true)
 	if err != nil || !trusted || !strings.Contains(output.String(), "Trust workspace") {
 		t.Fatalf("first resolution: trusted=%v output=%q err=%v", trusted, output.String(), err)
 	}
 	output.Reset()
-	trusted, err = resolveWorkspaceTrust(home, root, options{}, strings.NewReader("no\n"), &output, true)
+	trusted, err = resolveWorkspaceTrust(home, root, root, options{}, strings.NewReader("no\n"), &output, true)
 	if err != nil || !trusted || output.Len() != 0 {
 		t.Fatalf("persisted resolution: trusted=%v output=%q err=%v", trusted, output.String(), err)
 	}
@@ -181,7 +181,7 @@ func TestResolveWorkspaceTrustExplicitFlagPersistsWithoutInputs(t *testing.T) {
 	notchHome := filepath.Join(t.TempDir(), "notch-home")
 	t.Setenv("XDG_CONFIG_HOME", notchHome)
 	t.Setenv("XDG_DATA_HOME", notchHome)
-	trusted, err := resolveWorkspaceTrust(home, root, options{trustWorkspace: true}, strings.NewReader(""), &bytes.Buffer{}, false)
+	trusted, err := resolveWorkspaceTrust(home, root, root, options{trustWorkspace: true}, strings.NewReader(""), &bytes.Buffer{}, false)
 	if err != nil || !trusted {
 		t.Fatalf("explicit trust: trusted=%v err=%v", trusted, err)
 	}
@@ -205,7 +205,7 @@ func TestResolveWorkspaceTrustWritesPromptToDiagnosticWriter(t *testing.T) {
 		t.Fatal(err)
 	}
 	var diagnostic bytes.Buffer
-	trusted, err := resolveWorkspaceTrust(home, root, options{jsonOutput: true}, strings.NewReader("no\n"), &diagnostic, true)
+	trusted, err := resolveWorkspaceTrust(home, root, root, options{jsonOutput: true}, strings.NewReader("no\n"), &diagnostic, true)
 	if err != nil || trusted {
 		t.Fatalf("trusted=%v err=%v", trusted, err)
 	}
@@ -226,7 +226,7 @@ func TestResolveWorkspaceTrustExplicitFlagRepairsUnsafeMode(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{"version":1,"workspaces":[]}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	trusted, err := resolveWorkspaceTrust(home, root, options{trustWorkspace: true}, strings.NewReader(""), &bytes.Buffer{}, false)
+	trusted, err := resolveWorkspaceTrust(home, root, root, options{trustWorkspace: true}, strings.NewReader(""), &bytes.Buffer{}, false)
 	if err != nil || !trusted {
 		t.Fatalf("explicit trust: trusted=%v err=%v", trusted, err)
 	}

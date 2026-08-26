@@ -158,6 +158,7 @@ func run(args []string) error {
 		return fmt.Errorf("get home directory: %w", err)
 	}
 	workspaceRoot := cwd
+	workspaceTrustKey := cwd
 	var cfg config.Config
 	switch {
 	case opts.init:
@@ -169,12 +170,14 @@ func run(args []string) error {
 		// metadata, so it must not perform workspace discovery.
 		cfg, err = config.LoadWorkspace(home, cwd, false)
 	default:
-		workspaceRoot, err = workspace.Root(cwd)
-		if err != nil {
-			return err
+		workspaceInfo, resolveErr := workspace.Resolve(cwd)
+		if resolveErr != nil {
+			return resolveErr
 		}
+		workspaceRoot = workspaceInfo.Root
+		workspaceTrustKey = workspaceInfo.TrustKey
 		var trusted bool
-		trusted, err = resolveWorkspaceTrust(home, workspaceRoot, opts, os.Stdin, os.Stderr, terminalsInteractive(os.Stdin, os.Stdout))
+		trusted, err = resolveWorkspaceTrust(home, workspaceRoot, workspaceTrustKey, opts, os.Stdin, os.Stderr, terminalsInteractive(os.Stdin, os.Stdout))
 		if err == nil {
 			cfg, err = config.LoadWorkspace(home, workspaceRoot, trusted)
 		}
@@ -749,7 +752,7 @@ func terminalsInteractive(in, out *os.File) bool {
 	return term.IsTerminal(int(in.Fd())) && term.IsTerminal(int(out.Fd()))
 }
 
-func resolveWorkspaceTrust(home, root string, opts options, in io.Reader, diagnostic io.Writer, interactive bool) (bool, error) {
+func resolveWorkspaceTrust(home, root, trustKey string, opts options, in io.Reader, diagnostic io.Writer, interactive bool) (bool, error) {
 	if opts.safe {
 		return false, nil
 	}
@@ -759,7 +762,7 @@ func resolveWorkspaceTrust(home, root string, opts options, in io.Reader, diagno
 	}
 	store := workspace.NewStore(dataRoot)
 	if opts.trustWorkspace {
-		if err := store.TrustRoot(root); err != nil {
+		if err := store.TrustRoot(trustKey); err != nil {
 			return false, err
 		}
 		return true, nil
@@ -771,7 +774,7 @@ func resolveWorkspaceTrust(home, root string, opts options, in io.Reader, diagno
 	if !hasInputs {
 		return false, nil
 	}
-	trusted, err := store.IsTrustedRoot(root)
+	trusted, err := store.IsTrustedWorkspace(root, trustKey)
 	if err != nil {
 		// --safe must remain usable as an emergency bypass, but an unreadable or
 		// insecure trust database must never silently downgrade a normal run.
@@ -791,7 +794,7 @@ func resolveWorkspaceTrust(home, root string, opts options, in io.Reader, diagno
 	}
 	switch strings.ToLower(strings.TrimSpace(answer)) {
 	case "y", "yes":
-		if err := store.TrustRoot(root); err != nil {
+		if err := store.TrustRoot(trustKey); err != nil {
 			return false, err
 		}
 		return true, nil

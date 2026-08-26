@@ -16,24 +16,40 @@ import (
 
 const trustFileName = "trusted-workspaces.json"
 
-// Root returns the canonical root of the Git workspace containing cwd. Outside
-// a Git worktree it returns the canonical cwd.
-func Root(cwd string) (string, error) {
+// Info separates the active worktree root, where project inputs are loaded,
+// from the repository-wide trust key shared by all linked worktrees.
+type Info struct {
+	Root     string
+	TrustKey string
+}
+
+// Resolve identifies the workspace containing cwd. Git worktrees use their
+// own top-level directory as Root and their shared Git common directory as
+// TrustKey. Outside Git, both values are the canonical cwd.
+func Resolve(cwd string) (Info, error) {
 	canonicalCWD, err := canonicalPath(cwd)
 	if err != nil {
-		return "", fmt.Errorf("canonicalize workspace: %w", err)
+		return Info{}, fmt.Errorf("canonicalize workspace: %w", err)
 	}
-	cmd := exec.Command("git", "-C", canonicalCWD, "rev-parse", "--show-toplevel")
+	cmd := exec.Command("git", "-C", canonicalCWD, "rev-parse", "--show-toplevel", "--git-common-dir")
 	cmd.Env = gitDiscoveryEnv(os.Environ())
 	cmd.Stderr = io.Discard
 	if output, runErr := cmd.Output(); runErr == nil {
-		root := strings.TrimSpace(string(output))
-		if root != "" {
-			canonicalRoot, canonicalErr := canonicalPath(root)
+		lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+		if len(lines) == 2 && strings.TrimSpace(lines[0]) != "" && strings.TrimSpace(lines[1]) != "" {
+			root, canonicalErr := canonicalPath(strings.TrimSpace(lines[0]))
 			if canonicalErr != nil {
-				return "", fmt.Errorf("canonicalize Git workspace: %w", canonicalErr)
+				return Info{}, fmt.Errorf("canonicalize Git workspace: %w", canonicalErr)
 			}
-			return canonicalRoot, nil
+			common := strings.TrimSpace(lines[1])
+			if !filepath.IsAbs(common) {
+				common = filepath.Join(canonicalCWD, common)
+			}
+			trustKey, canonicalErr := canonicalPath(common)
+			if canonicalErr != nil {
+				return Info{}, fmt.Errorf("canonicalize Git common directory: %w", canonicalErr)
+			}
+			return Info{Root: root, TrustKey: trustKey}, nil
 		}
 	}
 
@@ -47,42 +63,70 @@ func Root(cwd string) (string, error) {
 		if statErr == nil {
 			switch {
 			case info.IsDir():
-				return candidate, nil
+				return Info{Root: candidate, TrustKey: marker}, nil
 			case info.Mode().IsRegular():
-				valid, validateErr := validWorktreeMarker(marker)
-				if validateErr != nil {
-					return "", fmt.Errorf("inspect Git workspace: %w", validateErr)
+				trustKey, resolveErr := worktreeCommonDir(marker)
+				if resolveErr != nil {
+					return Info{}, fmt.Errorf("inspect Git workspace: %w", resolveErr)
 				}
-				if valid {
-					return candidate, nil
-				}
-				return "", fmt.Errorf("inspect Git workspace: malformed .git file %q", marker)
+				return Info{Root: candidate, TrustKey: trustKey}, nil
 			default:
-				return "", fmt.Errorf("inspect Git workspace: .git marker %q is not a directory or regular worktree file", marker)
+				return Info{}, fmt.Errorf("inspect Git workspace: .git marker %q is not a directory or regular worktree file", marker)
 			}
 		} else if !errors.Is(statErr, os.ErrNotExist) {
-			return "", fmt.Errorf("inspect Git workspace: %w", statErr)
+			return Info{}, fmt.Errorf("inspect Git workspace: %w", statErr)
 		}
 		parent := filepath.Dir(candidate)
 		if parent == candidate {
 			break
 		}
 	}
-	return canonicalCWD, nil
+	return Info{Root: canonicalCWD, TrustKey: canonicalCWD}, nil
 }
 
-func validWorktreeMarker(path string) (bool, error) {
-	data, err := os.ReadFile(path)
+// Root returns the canonical active worktree root containing cwd.
+func Root(cwd string) (string, error) {
+	info, err := Resolve(cwd)
+	return info.Root, err
+}
+
+func worktreeCommonDir(marker string) (string, error) {
+	data, err := os.ReadFile(marker)
 	if err != nil {
-		return false, err
+		return "", err
 	}
-	line := strings.TrimSuffix(string(data), "\n")
-	line = strings.TrimSuffix(line, "\r")
+	line := strings.TrimSuffix(strings.TrimSuffix(string(data), "\n"), "\r")
 	if strings.ContainsAny(line, "\r\n") {
-		return false, nil
+		return "", fmt.Errorf("malformed .git file %q", marker)
 	}
-	value, found := strings.CutPrefix(line, "gitdir:")
-	return found && strings.TrimSpace(value) != "", nil
+	gitDir, found := strings.CutPrefix(line, "gitdir:")
+	gitDir = strings.TrimSpace(gitDir)
+	if !found || gitDir == "" {
+		return "", fmt.Errorf("malformed .git file %q", marker)
+	}
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(filepath.Dir(marker), gitDir)
+	}
+	gitDir, err = canonicalPath(gitDir)
+	if err != nil {
+		return "", fmt.Errorf("canonicalize Git directory: %w", err)
+	}
+	commonData, err := os.ReadFile(filepath.Join(gitDir, "commondir"))
+	if err != nil {
+		return "", fmt.Errorf("read Git common directory: %w", err)
+	}
+	common := strings.TrimSpace(string(commonData))
+	if common == "" || strings.ContainsAny(common, "\r\n") {
+		return "", errors.New("malformed Git common directory")
+	}
+	if !filepath.IsAbs(common) {
+		common = filepath.Join(gitDir, common)
+	}
+	trustKey, err := canonicalPath(common)
+	if err != nil {
+		return "", fmt.Errorf("canonicalize Git common directory: %w", err)
+	}
+	return trustKey, nil
 }
 
 // HasProjectInputs reports whether root contains any supported project config,
@@ -165,14 +209,45 @@ func (s *Store) Path() string {
 	return filepath.Join(s.home, trustFileName)
 }
 
-// IsTrusted reports whether the canonical workspace containing path is present
-// in the trust database. It is a convenience wrapper around IsTrustedRoot.
+// IsTrusted reports whether the workspace containing path is trusted. Git
+// repository trust is shared by all linked worktrees.
 func (s *Store) IsTrusted(path string) (bool, error) {
-	root, err := Root(path)
+	info, err := Resolve(path)
 	if err != nil {
-		return false, fmt.Errorf("resolve trusted workspace root: %w", err)
+		return false, fmt.Errorf("resolve trusted workspace: %w", err)
 	}
-	return s.IsTrustedRoot(root)
+	return s.IsTrustedWorkspace(info.Root, info.TrustKey)
+}
+
+// IsTrustedWorkspace reports whether trust exists for the repository-wide key.
+// It also recognizes legacy worktree-root records and migrates a matching
+// record to the shared key.
+func (s *Store) IsTrustedWorkspace(root, trustKey string) (bool, error) {
+	doc, err := s.read()
+	if err != nil {
+		return false, err
+	}
+	legacyMatch := false
+	for _, trusted := range doc.Workspaces {
+		if trusted == trustKey {
+			return true, nil
+		}
+		if trusted == root {
+			legacyMatch = true
+			continue
+		}
+		info, resolveErr := Resolve(trusted)
+		if resolveErr == nil && info.TrustKey == trustKey {
+			legacyMatch = true
+		}
+	}
+	if !legacyMatch {
+		return false, nil
+	}
+	if err := s.TrustRoot(trustKey); err != nil {
+		return false, fmt.Errorf("migrate workspace trust: %w", err)
+	}
+	return true, nil
 }
 
 // IsTrustedRoot reports whether the exact canonical root is present in the
@@ -191,14 +266,14 @@ func (s *Store) IsTrustedRoot(root string) (bool, error) {
 	return false, nil
 }
 
-// Trust atomically persists the canonical workspace containing path. It is a
-// convenience wrapper around TrustRoot.
+// Trust atomically persists trust for the workspace containing path. Git
+// repository trust is shared by all linked worktrees.
 func (s *Store) Trust(path string) error {
-	root, err := Root(path)
+	info, err := Resolve(path)
 	if err != nil {
-		return fmt.Errorf("resolve trusted workspace root: %w", err)
+		return fmt.Errorf("resolve trusted workspace: %w", err)
 	}
-	return s.TrustRoot(root)
+	return s.TrustRoot(info.TrustKey)
 }
 
 // TrustRoot atomically persists the exact canonical root as trusted. The Notch

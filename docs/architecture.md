@@ -6,8 +6,8 @@ Notch is one Go program with a deliberately small provider-independent agent loo
 
 `cmd/notch/main.go` is the composition root. Startup proceeds in this order:
 
-1. Dispatch standalone authentication, model-list, extension-package, version, and upgrade commands. Authentication and model-list commands load global configuration only. Otherwise parse agent flags, determine the current directory and home directory, and resolve the canonical workspace root from Git (falling back to the current directory outside Git).
-2. Resolve one-time persisted workspace trust. Prompt only when project inputs exist and stdin/stdout are terminals; noninteractive untrusted and `--safe` runs skip project `.notch`/`.agents` inputs, while `--trust-workspace` persists trust for automation. Load defaults and user config, add trusted project config/discovery paths, apply `NOTCH_PROVIDER`, `NOTCH_MODEL`, and `NOTCH_THINKING_LEVEL`, then CLI overrides. Project `base_url` is ignored as global-only. Auth, MCP auth, session, and model-cache paths are fixed under the XDG data root and cannot be configured in JSON.
+1. Dispatch standalone authentication, model-list, extension-package, version, and upgrade commands. Authentication and model-list commands load global configuration only. Otherwise parse agent flags, determine the current directory and home directory, and resolve both the active worktree's canonical Git root and the repository-wide Git common directory used as its trust identity (falling back to the current directory outside Git).
+2. Resolve one-time persisted repository trust, shared across linked worktrees. Prompt only when the active worktree has project inputs and stdin/stdout are terminals; noninteractive untrusted and `--safe` runs skip project `.notch`/`.agents` inputs, while `--trust-workspace` persists trust for automation. Load defaults and user config, add trusted project config/discovery paths from the active worktree, apply `NOTCH_PROVIDER`, `NOTCH_MODEL`, and `NOTCH_THINKING_LEVEL`, then CLI overrides. Project `base_url` is ignored as global-only. Auth, MCP auth, session, and model-cache paths are fixed under the XDG data root and cannot be configured in JSON.
 3. Recover any interrupted package transaction, validate installed package manifests, append their exported extension directories, and create configured extension, skill, prompt, theme, and session directories.
 4. Load built-in and custom theme JSON, select the configured theme, then create the terminal and extension registry and register built-in tools and official extensions.
 5. Discover and start executable plugins, then load top-level Lua files.
@@ -32,7 +32,7 @@ Malformed custom themes and plugin, Lua, and MCP load failures are generally sho
 - `internal/agent`: serialized model/tool loop and event emission.
 - `internal/tools`: built-in filesystem, search, edit, and shell tools.
 - `internal/officialext`: official extensions linked into the binary and registered automatically.
-- `internal/workspace`: canonical Git-root discovery and mode-protected persisted workspace trust.
+- `internal/workspace`: active Git-worktree discovery, repository-wide trust identity, and mode-protected persisted workspace trust.
 - `internal/process`: cancellation-aware bounded host execution and minimal child environments.
 - `internal/session`: durable append-only JSONL conversation storage with torn-tail recovery and invalid-session isolation during discovery.
 - `internal/resources`: discovery and expansion of Markdown skills/templates.

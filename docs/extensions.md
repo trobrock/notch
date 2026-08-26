@@ -20,7 +20,7 @@ Default extension directories are:
 <workspace-root>/.notch/extensions  # trusted workspaces only
 ```
 
-`XDG_CONFIG_HOME` relocates the first path and must be absolute when set. `extension_dirs` can replace the list in config. Project `.notch`/`.agents` inputs require one-time persisted trust at the canonical Git root and are skipped by untrusted noninteractive and `--safe` runs; `--trust-workspace` is the explicit automation opt-in. Directories exported by packages installed through `notch extensions install` are appended after the configured direct directories.
+`XDG_CONFIG_HOME` relocates the first path and must be absolute when set. `extension_dirs` can replace the list in config. Project `.notch`/`.agents` inputs require one-time persisted repository trust, shared across linked worktrees through Git's common directory, and are skipped by untrusted noninteractive and `--safe` runs; `--trust-workspace` is the explicit automation opt-in. Directories exported by packages installed through `notch extensions install` are appended after the configured direct directories.
 
 Notch recursively discovers files named `plugin.json` for executable plugins. It also loads `.lua` files located directly in each configured extension directory; Lua discovery is not recursive. Manifest paths and Lua filenames are sorted. User directories precede project directories by default.
 

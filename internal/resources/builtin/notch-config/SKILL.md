@@ -8,7 +8,7 @@ Use this skill when changing Notch's own runtime setup. Prefer the smallest scop
 
 ## Workspace trust and configuration precedence
 
-Notch identifies a workspace by its canonical Git root, falling back to the canonical current directory outside Git. Project `.notch` and `.agents` inputs are loaded only after one-time persisted workspace trust. An interactive run prompts only when supported project inputs exist; a noninteractive untrusted run skips them. Use `--trust-workspace` to persist trust in automation and `--safe` to bypass project inputs for one invocation. Trust is not per-command approval: enabled tools and extensions execute automatically.
+Notch loads project inputs from the active worktree's canonical Git root and keys trust by the repository's canonical Git common directory, so one trust decision applies to all linked worktrees. Outside Git, it uses the canonical current directory for both. Project `.notch` and `.agents` inputs are loaded only after one-time persisted trust. An interactive run prompts only when supported project inputs exist; a noninteractive untrusted run skips them. Use `--trust-workspace` to persist trust in automation and `--safe` to bypass project inputs for one invocation. Trust is not per-command approval: enabled tools and extensions execute automatically.
 
 Notch resolves values in this order, with later layers winning:
 
