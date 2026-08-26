@@ -97,7 +97,7 @@ func run(args []string) error {
 	flags.StringVar(&opts.systemPrompt, "system-prompt", "", "override the configured system prompt")
 	flags.StringVar(&opts.systemPromptFile, "system-prompt-file", "", "read the system prompt override from a file")
 	flags.StringVar(&opts.mcpConfig, "mcp-config", "", "path to MCP JSON config")
-	flags.BoolVar(&opts.continueSession, "continue", false, "continue the latest session")
+	flags.BoolVar(&opts.continueSession, "continue", false, "continue the latest session for this working directory")
 	flags.StringVar(&opts.resumeSession, "resume", "", "resume a session by ID, prefix, filename, or path")
 	flags.StringVar(&opts.resumeSession, "r", "", "resume a session (shorthand)")
 	flags.BoolVar(&opts.noSession, "no-session", false, "do not save a session")
@@ -378,7 +378,7 @@ func run(args []string) error {
 				store, err = session.Load(path)
 			}
 		} else if opts.continueSession {
-			store, err = session.Latest(cfg.SessionDir)
+			store, err = session.LatestForCWD(cfg.SessionDir, cwd)
 		} else {
 			store, err = session.New(cfg.SessionDir, cwd, cfg.Provider, cfg.Model)
 		}

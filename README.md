@@ -138,7 +138,7 @@ notch [flags] [prompt words...]
   --print string          run one prompt and exit
   --system-prompt string  override the configured system prompt
   --system-prompt-file    read the system prompt override from a file
-  --continue              continue the most recently modified session
+  --continue              continue the latest session for this working directory
   --no-session            do not create or update a session
   --json                  emit JSONL agent events
   --no-tui                use the line-oriented interface
@@ -205,7 +205,7 @@ Fullscreen interactive commands include `/help`, `/model [refresh]`, `/tools`, `
 
 An interactive invocation uses the fullscreen TUI only when both stdin and stdout are terminals. `--no-tui`, `--json`, and one-shot prompts use the line-oriented path; redirected input/output does too unless RPC mode was selected explicitly. The fullscreen UI runs in the terminal's alternate screen. While a model is active, Enter queues steering for the next safe turn boundary and Alt-Enter queues a follow-up for after the run would otherwise settle; pending messages remain visible above the composer until delivered. It mirrors Pi's presentation: padded full-width user background boxes, plain assistant prose, Markdown styling, provider-supplied thinking summaries with a static fallback indicator, and tool cards with state-colored backgrounds and pending/success/error icons. Transcript entries use consistent blank-row spacing; tool arguments are compact, while output is visually barred and shortened when large. Rendering wraps by terminal display width (including Unicode), is cached by text, width, and theme where styling applies, and sanitizes untrusted text so model/tool content cannot inject terminal controls. See [the TUI guide](docs/tui.md) for details, keys, extension prompts, and fallback behavior.
 
-`--continue` selects the latest session globally in the configured session directory. `--resume ID-OR-PREFIX` opens a specific session by ID, filename, unambiguous prefix, or path. Fullscreen `/resume` presents saved sessions with time, original directory, model, and prompt preview. Resumed requests use the current provider/model configuration while preserving the selected session's conversation context. Each completed provider response, including compaction summaries, appends a `usage` record with provider, model, input/output token counts, and stop reason to the session JSONL.
+`--continue` selects the latest session whose original working directory matches the current working directory. `--resume ID-OR-PREFIX` opens a specific session by ID, filename, unambiguous prefix, or path. Fullscreen `/resume` presents saved sessions with time, original directory, model, and prompt preview. Resumed requests use the current provider/model configuration while preserving the selected session's conversation context. Each completed provider response, including compaction summaries, appends a `usage` record with provider, model, input/output token counts, and stop reason to the session JSONL.
 
 ## Workspace trust
 

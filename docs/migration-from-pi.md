@@ -241,7 +241,7 @@ notch --no-session    # save nothing
 
 In the fullscreen UI, `/new` creates and switches to a distinct durable session and clears conversation context, transcript, and submitted-input history. `/resume` selects an older session and restores its effective context, transcript, and submitted-input history. With `--no-session`, `/new` performs the reset only in memory. `/compact [instructions]` persists a summary and retained recent context in Notch sessions; automatic compaction is enabled by default. See [compaction](compaction.md).
 
-`--continue` means the most recently modified valid file in the configured global session directory, regardless of project. `--resume` and fullscreen `/resume` select existing valid sessions, but there is still no branching or session-tree navigation beyond the flat selectors. The session directory is fixed below the XDG data root; use a separate absolute `XDG_DATA_HOME` when automation needs an isolated session store.
+`--continue` means the most recently modified valid file in the configured session directory whose original working directory matches the current working directory. `--resume` and fullscreen `/resume` select existing valid sessions, but there is still no branching or session-tree navigation beyond the flat selectors. The session directory is fixed below the XDG data root; use a separate absolute `XDG_DATA_HOME` when automation needs an isolated session store.
 
 ## Suggested migration checklist
 

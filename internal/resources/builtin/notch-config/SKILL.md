@@ -129,7 +129,7 @@ The MCP file is static configuration under the config root, so do not store lite
 
 ## Sessions
 
-Sessions default to `~/.local/share/notch/sessions` and are durable JSONL files. Use `--continue` for the latest valid session, `--resume ID` for a specific session, `/resume` for the fullscreen picker, and `--no-session` for no persistence. A malformed unterminated final record is treated as a torn write and truncated only when every preceding record is valid; damaged sessions are skipped by list/latest discovery instead of hiding healthy sessions. The session path is fixed below the XDG data root; select a separate absolute `XDG_DATA_HOME` to isolate it.
+Sessions default to `~/.local/share/notch/sessions` and are durable JSONL files. Use `--continue` for the latest valid session from the current working directory, `--resume ID` for a specific session, `/resume` for the fullscreen picker, and `--no-session` for no persistence. A malformed unterminated final record is treated as a torn write and truncated only when every preceding record is valid; damaged sessions are skipped by list/latest discovery instead of hiding healthy sessions. The session path is fixed below the XDG data root; select a separate absolute `XDG_DATA_HOME` to isolate it.
 
 ## Validation
 

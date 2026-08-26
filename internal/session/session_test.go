@@ -257,6 +257,39 @@ func TestLatest(t *testing.T) {
 	}
 }
 
+func TestLatestForCWD(t *testing.T) {
+	dir := t.TempDir()
+	first, err := New(dir, "/work/one", "p", "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstPath := first.Path()
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	second, err := New(dir, "/work/two", "p", "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := second.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	latest, err := LatestForCWD(dir, "/work/one/.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest.Path() != firstPath {
+		t.Fatalf("LatestForCWD() = %q, want %q", latest.Path(), firstPath)
+	}
+	if err := latest.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LatestForCWD(dir, "/work/missing"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("LatestForCWD(missing) error = %v", err)
+	}
+}
+
 func TestListAndResolve(t *testing.T) {
 	dir := t.TempDir()
 	first, err := New(dir, "/work/one", "p", "first-model")

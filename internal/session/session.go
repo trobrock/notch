@@ -405,6 +405,16 @@ func sessionPreview(messages []model.Message) string {
 
 // Latest loads the most recently modified valid session JSONL file in dir.
 func Latest(dir string) (*Session, error) {
+	return latest(dir, "")
+}
+
+// LatestForCWD loads the most recently modified valid session whose original
+// working directory matches cwd.
+func LatestForCWD(dir, cwd string) (*Session, error) {
+	return latest(dir, filepath.Clean(cwd))
+}
+
+func latest(dir, cwd string) (*Session, error) {
 	items, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("read session directory %q: %w", dir, err)
@@ -434,12 +444,20 @@ func Latest(dir string) (*Session, error) {
 		return files[i].mod.After(files[j].mod)
 	})
 	var loadErr error
+	sawValid := false
 	for _, file := range files {
 		loaded, err := Load(file.path)
 		if err == nil {
-			return loaded, nil
+			sawValid = true
+			if cwd == "" || filepath.Clean(loaded.Header.CWD) == cwd {
+				return loaded, nil
+			}
+			_ = loaded.Close()
 		}
 		loadErr = errors.Join(loadErr, err)
+	}
+	if cwd != "" && sawValid {
+		return nil, fmt.Errorf("latest session for working directory %q in %q: %w", cwd, dir, os.ErrNotExist)
 	}
 	return nil, fmt.Errorf("latest valid session in %q: %w", dir, loadErr)
 }
