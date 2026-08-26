@@ -87,6 +87,11 @@ func (m *Manager) LoadDirs(dirs ...string) error {
 	}
 	for _, dir := range dirs {
 		entries, err := os.ReadDir(dir)
+		if errors.Is(err, os.ErrNotExist) {
+			// Configured discovery roots are optional and commonly absent when a
+			// user or project has no Lua extensions.
+			continue
+		}
 		if err != nil {
 			return rollback(fmt.Errorf("read Lua extension directory %q: %w", dir, err))
 		}

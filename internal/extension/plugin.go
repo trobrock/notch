@@ -141,6 +141,14 @@ func discoverManifests(dirs []string) ([]string, []error) {
 			warnings = append(warnings, fmt.Errorf("extension directory %q: %w", root, err))
 			continue
 		}
+		if _, err := os.Stat(abs); errors.Is(err, os.ErrNotExist) {
+			// Configured discovery roots are optional. In particular, the default
+			// project root may not exist in most working directories.
+			continue
+		} else if err != nil {
+			warnings = append(warnings, fmt.Errorf("extension directory %q: %w", root, err))
+			continue
+		}
 		err = filepath.WalkDir(abs, func(path string, entry os.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				warnings = append(warnings, fmt.Errorf("discover extensions at %s: %w", path, walkErr))

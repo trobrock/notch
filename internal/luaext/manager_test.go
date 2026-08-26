@@ -270,3 +270,11 @@ notch.on("close_hook", function() return {called=true} end)
 		t.Fatalf("previously captured post-close command error = %v", err)
 	}
 }
+
+func TestLoadDirsIgnoresMissingDirectories(t *testing.T) {
+	manager := New(extension.NewRegistry(), &testHost{})
+	defer manager.Close()
+	if err := manager.LoadDirs(filepath.Join(t.TempDir(), "missing")); err != nil {
+		t.Fatalf("LoadDirs missing directory: %v", err)
+	}
+}

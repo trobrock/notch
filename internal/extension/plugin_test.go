@@ -356,3 +356,11 @@ func TestPluginHelper(t *testing.T) {
 		}
 	}
 }
+
+func TestDiscoverAndLoadIgnoresMissingDirectories(t *testing.T) {
+	registry := NewRegistry()
+	plugins, warnings := DiscoverAndLoad(context.Background(), []string{filepath.Join(t.TempDir(), "missing")}, registry, &testHost{})
+	if len(plugins) != 0 || len(warnings) != 0 {
+		t.Fatalf("plugins=%d warnings=%v", len(plugins), warnings)
+	}
+}
