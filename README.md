@@ -136,6 +136,7 @@ notch [flags] [prompt words...]
   --model, -m string      model ID
   --thinking string       off, minimal, low, medium, high, or xhigh
   --print, -p             process the prompt non-interactively and exit
+  --plan                  start with read-only plan mode enabled
   --system-prompt string  override the configured system prompt
   --system-prompt-file    read the system prompt override from a file
   --continue              continue the latest session for this working directory
@@ -188,6 +189,7 @@ notch extensions remove NAME
 
 ```sh
 notch "Explain internal/agent"
+notch --plan "Plan an authentication refactor"
 notch -p "Explain internal/agent"
 notch --json "Run the tests and report failures" | jq -c .
 printf '%s\n' '{"id":"s","type":"get_state"}' | notch --mode rpc --no-session --tools read,grep
@@ -200,7 +202,7 @@ notch --no-session
 notch --mcp-config ./mcp.json
 ```
 
-Fullscreen interactive commands include `/help`, `/model [refresh]`, `/tools`, `/skills`, `/thinking [LEVEL]`, `/theme [NAME]`, `/compact [instructions]`, `/plan [on|off|status]`, `/new`, `/resume`, `/clear`, `/exit`, and `/quit`, plus commands registered by extensions. Typing `/` opens a filtered command menu with descriptions; Up/Down selects an entry and Tab or Enter completes it. Skills are invoked as `/skill:name arguments`; prompt templates use `/name arguments`. See the [TUI guide](docs/tui.md) for runtime command behavior.
+Fullscreen interactive commands include `/help`, `/model [refresh]`, `/tools`, `/skills`, `/thinking [LEVEL]`, `/theme [NAME]`, `/compact [instructions]`, `/plan [on|off|status]`, `/new`, `/resume`, `/clear`, `/exit`, and `/quit`, plus commands registered by extensions. `--plan` enables the same read-only plan mode before the initial prompt in TUI and non-interactive runs; it cannot be combined with tool restriction flags or `--no-extensions`. Typing `/` opens a filtered command menu with descriptions; Up/Down selects an entry and Tab or Enter completes it. Skills are invoked as `/skill:name arguments`; prompt templates use `/name arguments`. See the [TUI guide](docs/tui.md) for runtime command behavior.
 
 `--mode rpc` exposes asynchronous Pi-style command responses and streaming events over strict JSONL; see [RPC mode](docs/rpc.md). Tool flags apply to every run mode after built-in, extension, and MCP registration.
 

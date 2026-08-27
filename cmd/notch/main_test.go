@@ -42,6 +42,17 @@ func TestSelectRunMode(t *testing.T) {
 	}
 }
 
+func TestRootPlanFlag(t *testing.T) {
+	var opts options
+	flags := newRootFlagSet(&opts)
+	if err := flags.Parse([]string{"--plan", "inspect this"}); err != nil {
+		t.Fatal(err)
+	}
+	if !opts.planMode || flags.Arg(0) != "inspect this" {
+		t.Fatalf("parsed options = %+v, args = %q", opts, flags.Args())
+	}
+}
+
 func TestRootPrintAndProviderFlagsMatchPi(t *testing.T) {
 	var opts options
 	flags := newRootFlagSet(&opts)
@@ -59,6 +70,26 @@ func TestRootPrintAndProviderFlagsMatchPi(t *testing.T) {
 	}
 	if opts.provider != "openai" || opts.printMode || flags.Arg(0) != "hello" {
 		t.Fatalf("parsed options = %+v, args = %q", opts, flags.Args())
+	}
+}
+
+func TestEnableStartupPlanModeRequiresCommand(t *testing.T) {
+	if err := enableStartupPlanMode(context.Background(), extension.NewRegistry()); err == nil {
+		t.Fatal("missing plan command succeeded")
+	}
+	registry := extension.NewRegistry()
+	enabled := false
+	if err := registry.RegisterCommand(extension.Command{Name: "plan", Execute: func(_ context.Context, args string) (string, error) {
+		enabled = args == "on"
+		return "", nil
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := enableStartupPlanMode(context.Background(), registry); err != nil {
+		t.Fatal(err)
+	}
+	if !enabled {
+		t.Fatal("plan command was not enabled")
 	}
 }
 

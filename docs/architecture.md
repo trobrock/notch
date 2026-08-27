@@ -113,7 +113,7 @@ Automatic and manual compaction use a structured continuation summary covering g
 
 ## Extension boundaries
 
-Notch’s official plan mode uses `/plan [on|off|status]`. While active, it adds planning instructions, exposes only read-only tools plus `exit_plan_mode`, and blocks other calls. `exit_plan_mode` asks whether to implement in a fresh context (the default), preserve the current investigation context, or remain in plan mode. A fresh handoff appends a durable session reset, clears the visible conversation, restores all tools, and starts implementation with the approved plan as the new user prompt.
+Notch’s official plan mode uses `/plan [on|off|status]`; `--plan` enables it during startup before any initial prompt. While active, it adds planning instructions, exposes only read-only tools plus `exit_plan_mode`, and blocks other calls. The startup flag cannot be combined with tool restriction flags or `--no-extensions`. `exit_plan_mode` asks whether to implement in a fresh context (the default), preserve the current investigation context, or remain in plan mode. A fresh handoff appends a durable session reset, clears the visible conversation, restores all tools, and starts implementation with the approved plan as the new user prompt.
 
 The official `list_models` tool exposes cached or freshly discovered models for the current or requested provider, including context-window and reasoning metadata. The model can use it before `switch_model` instead of guessing an ID.
 

@@ -69,7 +69,7 @@ Run 'notch COMMAND --help' for command-specific help.`
 
 type options struct {
 	provider, modelName, thinking, prompt, systemPrompt, systemPromptFile, mcpConfig, resumeSession, mode, toolAllow, toolExclude string
-	printMode, continueSession, noSession, jsonOutput, noTUI, init, showVersion, rpcMode                                          bool
+	printMode, planMode, continueSession, noSession, jsonOutput, noTUI, init, showVersion, rpcMode                                bool
 	noTools, noBuiltinTools, noExtensions, noResources                                                                            bool
 	safe, trustWorkspace                                                                                                          bool
 }
@@ -89,6 +89,7 @@ func newRootFlagSet(opts *options) *flag.FlagSet {
 	flags.StringVar(&opts.thinking, "thinking", "", "reasoning effort: off, minimal, low, medium, high, or xhigh")
 	flags.BoolVar(&opts.printMode, "print", false, "non-interactive mode: process prompt and exit")
 	flags.BoolVar(&opts.printMode, "p", false, "non-interactive mode (shorthand)")
+	flags.BoolVar(&opts.planMode, "plan", false, "start with read-only plan mode enabled")
 	flags.StringVar(&opts.systemPrompt, "system-prompt", "", "override the configured system prompt")
 	flags.StringVar(&opts.systemPromptFile, "system-prompt-file", "", "read the system prompt override from a file")
 	flags.StringVar(&opts.mcpConfig, "mcp-config", "", "path to MCP JSON config")
@@ -169,6 +170,12 @@ func run(args []string) error {
 	}
 	if opts.safe && opts.trustWorkspace {
 		return errors.New("--safe and --trust-workspace cannot be combined")
+	}
+	if opts.noExtensions && opts.planMode {
+		return errors.New("--plan cannot be combined with --no-extensions")
+	}
+	if opts.planMode && (opts.noTools || opts.noBuiltinTools || opts.toolAllow != "" || opts.toolExclude != "") {
+		return errors.New("--plan cannot be combined with tool restriction flags")
 	}
 	if opts.noTools && (opts.toolAllow != "" || opts.toolExclude != "") {
 		return errors.New("--no-tools cannot be combined with --tools or --exclude-tools")
@@ -500,6 +507,11 @@ func run(args []string) error {
 			AutoCompactionEnabled: compactionEnabled,
 		})
 		return rpcServer.Run(ctx)
+	}
+	if opts.planMode {
+		if err := enableStartupPlanMode(ctx, registry); err != nil {
+			return err
+		}
 	}
 	if fullscreen != nil {
 		fullscreen.SetModelManager(
@@ -964,6 +976,17 @@ func makeProvider(ctx context.Context, cfg config.Config, store *credentials.Sto
 	default:
 		return nil, fmt.Errorf("unsupported provider %q (use openai-codex, anthropic-claude-code, openrouter, anthropic, or openai)", cfg.Provider)
 	}
+}
+
+func enableStartupPlanMode(ctx context.Context, registry *extension.Registry) error {
+	command, ok := registry.Command("plan")
+	if !ok {
+		return errors.New("--plan requires the official plan extension")
+	}
+	if _, err := command.Execute(ctx, "on"); err != nil {
+		return fmt.Errorf("enable plan mode: %w", err)
+	}
+	return nil
 }
 
 func applyToolPolicy(registry *extension.Registry, opts options) error {
