@@ -29,6 +29,7 @@ type Terminal struct {
 	mu        sync.Mutex
 	sessionMu sync.RWMutex
 	session   *session.Session
+	registry  *extension.Registry
 
 	outTTY      bool
 	errTTY      bool
@@ -145,8 +146,16 @@ func (t *Terminal) FollowUp(string) error {
 func (t *Terminal) Handoff(string, bool) error {
 	return errors.New("extension handoff is unavailable in line mode")
 }
-func (t *Terminal) SetActiveTools([]string) error {
-	return errors.New("runtime tool policy is unavailable in line mode")
+func (t *Terminal) SetRegistry(registry *extension.Registry) { t.registry = registry }
+
+func (t *Terminal) SetActiveTools(names []string) error {
+	if t.registry == nil {
+		return errors.New("runtime tool policy is unavailable in line mode")
+	}
+	if missing := t.registry.SetActiveTools(names); len(missing) != 0 {
+		return fmt.Errorf("unknown tools: %s", strings.Join(missing, ", "))
+	}
+	return nil
 }
 func (t *Terminal) SwitchModel(context.Context, string, string) (string, int, error) {
 	return "", 0, errors.New("runtime model switching is unavailable in line mode")

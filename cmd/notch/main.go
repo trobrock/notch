@@ -381,6 +381,7 @@ func run(args []string) error {
 	if err := applyToolPolicy(registry, opts); err != nil {
 		return err
 	}
+	terminal.SetRegistry(registry)
 
 	var catalog *resources.Catalog
 	if opts.noResources {
@@ -506,12 +507,12 @@ func run(args []string) error {
 			ContextWindow: contextWindow, MaxTokens: cfg.MaxTokens, SessionFile: sessionFile, SessionID: sessionID,
 			AutoCompactionEnabled: compactionEnabled,
 		})
-		return rpcServer.Run(ctx)
-	}
-	if opts.planMode {
-		if err := enableStartupPlanMode(ctx, registry); err != nil {
-			return err
+		if opts.planMode {
+			if err := enableStartupPlanMode(ctx, registry); err != nil {
+				return err
+			}
 		}
+		return rpcServer.Run(ctx)
 	}
 	if fullscreen != nil {
 		fullscreen.SetModelManager(
@@ -545,12 +546,22 @@ func run(args []string) error {
 		}
 		fullscreen.SetSessionFactory(store, sessionFactory)
 		fullscreen.Configure(runner, registry, catalog)
+		if opts.planMode {
+			if err := enableStartupPlanMode(ctx, registry); err != nil {
+				return err
+			}
+		}
 		if err := fullscreen.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			return err
 		}
 		return nil
 	}
 
+	if opts.planMode {
+		if err := enableStartupPlanMode(ctx, registry); err != nil {
+			return err
+		}
+	}
 	emit := terminal.Render
 	if opts.jsonOutput {
 		encoder := json.NewEncoder(os.Stdout)
