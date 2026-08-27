@@ -39,6 +39,22 @@ func newAppTestAgent(t *testing.T, store *session.Session) *agent.Agent {
 	return runner
 }
 
+func TestInitialPromptStartsConfiguredAgent(t *testing.T) {
+	store, err := session.New(t.TempDir(), "/work", "test", "model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	a := NewApp(AppConfig{InitialPrompt: "inspect this"})
+	a.Configure(newAppTestAgent(t, store), extension.NewRegistry(), &resources.Catalog{})
+	if !a.submit(context.Background(), a.cfg.InitialPrompt) {
+		t.Fatal("initial prompt did not change app state")
+	}
+	if !a.state.activeModel || len(a.state.layout.Transcript) != 1 || a.state.layout.Transcript[0].Text != "inspect this" {
+		t.Fatalf("initial prompt state = active:%v transcript:%#v", a.state.activeModel, a.state.layout.Transcript)
+	}
+}
+
 func TestAppImplementsExtensionHost(t *testing.T) {
 	var _ extension.Host = NewApp(AppConfig{CWD: "/tmp"})
 }

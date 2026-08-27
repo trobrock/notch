@@ -47,6 +47,7 @@ type AppConfig struct {
 	ThemeName     string
 	Themes        *ThemeCatalog
 	ThinkingLevel string
+	InitialPrompt string
 	GitBranch     string
 	In            *os.File
 	Out           *os.File
@@ -436,6 +437,15 @@ func (a *App) Run(ctx context.Context) (retErr error) {
 	a.state.lastFrame = frame
 	if err := screen.Render(frame); err != nil {
 		return err
+	}
+	if a.cfg.InitialPrompt != "" {
+		a.submit(ctx, a.cfg.InitialPrompt)
+		frame = BuildFrame(&a.state.layout)
+		frame.Selection = a.state.selection
+		a.state.lastFrame = frame
+		if err := screen.Render(frame); err != nil {
+			return err
+		}
 	}
 
 	inputCtx, stopInput := context.WithCancel(ctx)

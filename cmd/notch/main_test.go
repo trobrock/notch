@@ -18,6 +18,50 @@ import (
 	"github.com/trobrock/notch/internal/modelregistry"
 )
 
+func TestSelectRunMode(t *testing.T) {
+	tests := []struct {
+		name                    string
+		opts                    options
+		interactive             bool
+		wantFullscreen, wantOne bool
+	}{
+		{"interactive prompt opens TUI", options{prompt: "hello"}, true, true, false},
+		{"print prompt exits", options{prompt: "hello", printMode: true}, true, false, true},
+		{"redirected prompt exits", options{prompt: "hello"}, false, false, true},
+		{"json prompt exits", options{prompt: "hello", jsonOutput: true}, true, false, true},
+		{"no TUI prompt exits", options{prompt: "hello", noTUI: true}, true, false, true},
+		{"empty interactive opens TUI", options{}, true, true, false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fullscreen, oneShot := selectRunMode(test.opts, test.interactive)
+			if fullscreen != test.wantFullscreen || oneShot != test.wantOne {
+				t.Fatalf("selectRunMode() = (%v, %v), want (%v, %v)", fullscreen, oneShot, test.wantFullscreen, test.wantOne)
+			}
+		})
+	}
+}
+
+func TestRootPrintAndProviderFlagsMatchPi(t *testing.T) {
+	var opts options
+	flags := newRootFlagSet(&opts)
+	if err := flags.Parse([]string{"-p", "hello world"}); err != nil {
+		t.Fatal(err)
+	}
+	if !opts.printMode || opts.provider != "" || flags.Arg(0) != "hello world" {
+		t.Fatalf("parsed options = %+v, args = %q", opts, flags.Args())
+	}
+
+	opts = options{}
+	flags = newRootFlagSet(&opts)
+	if err := flags.Parse([]string{"--provider", "openai", "hello"}); err != nil {
+		t.Fatal(err)
+	}
+	if opts.provider != "openai" || opts.printMode || flags.Arg(0) != "hello" {
+		t.Fatalf("parsed options = %+v, args = %q", opts, flags.Args())
+	}
+}
+
 func TestRootHelpListsCommands(t *testing.T) {
 	output, err := captureStdout(t, func() error { return run([]string{"--help"}) })
 	if err != nil {

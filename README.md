@@ -132,10 +132,10 @@ When `base_url` is set, Notch does not require `OPENAI_API_KEY`. It sends reques
 ```text
 notch [flags] [prompt words...]
 
-  --provider, -p string   openai-codex, anthropic-claude-code, openrouter, anthropic, or openai
+  --provider string       openai-codex, anthropic-claude-code, openrouter, anthropic, or openai
   --model, -m string      model ID
   --thinking string       off, minimal, low, medium, high, or xhigh
-  --print string          run one prompt and exit
+  --print, -p             process the prompt non-interactively and exit
   --system-prompt string  override the configured system prompt
   --system-prompt-file    read the system prompt override from a file
   --continue              continue the latest session for this working directory
@@ -184,10 +184,11 @@ notch extensions update [--force] [NAME...]
 notch extensions remove NAME
 ```
 
-`login` supports `openai-codex`, `anthropic-claude-code`, and `openrouter`. Positional words become a one-shot prompt when `--print` is absent:
+`login` supports `openai-codex`, `anthropic-claude-code`, and `openrouter`. Positional words are the initial prompt. On a terminal they start the fullscreen TUI and leave it open after the response; `--print`/`-p` processes the prompt non-interactively and exits:
 
 ```sh
-notch --print "Explain internal/agent"
+notch "Explain internal/agent"
+notch -p "Explain internal/agent"
 notch --json "Run the tests and report failures" | jq -c .
 printf '%s\n' '{"id":"s","type":"get_state"}' | notch --mode rpc --no-session --tools read,grep
 notch models openrouter
@@ -203,7 +204,7 @@ Fullscreen interactive commands include `/help`, `/model [refresh]`, `/tools`, `
 
 `--mode rpc` exposes asynchronous Pi-style command responses and streaming events over strict JSONL; see [RPC mode](docs/rpc.md). Tool flags apply to every run mode after built-in, extension, and MCP registration.
 
-An interactive invocation uses the fullscreen TUI only when both stdin and stdout are terminals. `--no-tui`, `--json`, and one-shot prompts use the line-oriented path; redirected input/output does too unless RPC mode was selected explicitly. The fullscreen UI runs in the terminal's alternate screen. While a model is active, Enter queues steering for the next safe turn boundary and Alt-Enter queues a follow-up for after the run would otherwise settle; pending messages remain visible above the composer until delivered. It mirrors Pi's presentation: padded full-width user background boxes, plain assistant prose, Markdown styling, provider-supplied thinking summaries with a static fallback indicator, and tool cards with state-colored backgrounds and pending/success/error icons. Transcript entries use consistent blank-row spacing; tool arguments are compact, while output is visually barred and shortened when large. Rendering wraps by terminal display width (including Unicode), is cached by text, width, and theme where styling applies, and sanitizes untrusted text so model/tool content cannot inject terminal controls. See [the TUI guide](docs/tui.md) for details, keys, extension prompts, and fallback behavior.
+An interactive invocation uses the fullscreen TUI when both stdin and stdout are terminals, including when positional words provide an initial prompt. `--print`/`-p`, `--no-tui`, and `--json` use the line-oriented non-interactive path; redirected input/output does too unless RPC mode was selected explicitly. The fullscreen UI runs in the terminal's alternate screen. While a model is active, Enter queues steering for the next safe turn boundary and Alt-Enter queues a follow-up for after the run would otherwise settle; pending messages remain visible above the composer until delivered. It mirrors Pi's presentation: padded full-width user background boxes, plain assistant prose, Markdown styling, provider-supplied thinking summaries with a static fallback indicator, and tool cards with state-colored backgrounds and pending/success/error icons. Transcript entries use consistent blank-row spacing; tool arguments are compact, while output is visually barred and shortened when large. Rendering wraps by terminal display width (including Unicode), is cached by text, width, and theme where styling applies, and sanitizes untrusted text so model/tool content cannot inject terminal controls. See [the TUI guide](docs/tui.md) for details, keys, extension prompts, and fallback behavior.
 
 `--continue` selects the latest session whose original working directory matches the current working directory. `--resume ID-OR-PREFIX` opens a specific session by ID, filename, unambiguous prefix, or path. Fullscreen `/resume` presents saved sessions with time, original directory, model, and prompt preview. Resumed requests use the current provider/model configuration while preserving the selected session's conversation context. Each completed provider response, including compaction summaries, appends a `usage` record with provider, model, input/output token counts, and stop reason to the session JSONL.
 

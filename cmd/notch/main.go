@@ -69,7 +69,7 @@ Run 'notch COMMAND --help' for command-specific help.`
 
 type options struct {
 	provider, modelName, thinking, prompt, systemPrompt, systemPromptFile, mcpConfig, resumeSession, mode, toolAllow, toolExclude string
-	continueSession, noSession, jsonOutput, noTUI, init, showVersion, rpcMode                                                     bool
+	printMode, continueSession, noSession, jsonOutput, noTUI, init, showVersion, rpcMode                                          bool
 	noTools, noBuiltinTools, noExtensions, noResources                                                                            bool
 	safe, trustWorkspace                                                                                                          bool
 }
@@ -84,11 +84,11 @@ func main() {
 func newRootFlagSet(opts *options) *flag.FlagSet {
 	flags := flag.NewFlagSet("notch", flag.ContinueOnError)
 	flags.StringVar(&opts.provider, "provider", "", "provider: openai-codex, anthropic-claude-code, openrouter, anthropic, or openai")
-	flags.StringVar(&opts.provider, "p", "", "model provider (shorthand)")
 	flags.StringVar(&opts.modelName, "model", "", "model ID")
 	flags.StringVar(&opts.modelName, "m", "", "model ID (shorthand)")
 	flags.StringVar(&opts.thinking, "thinking", "", "reasoning effort: off, minimal, low, medium, high, or xhigh")
-	flags.StringVar(&opts.prompt, "print", "", "run one prompt and exit")
+	flags.BoolVar(&opts.printMode, "print", false, "non-interactive mode: process prompt and exit")
+	flags.BoolVar(&opts.printMode, "p", false, "non-interactive mode (shorthand)")
 	flags.StringVar(&opts.systemPrompt, "system-prompt", "", "override the configured system prompt")
 	flags.StringVar(&opts.systemPromptFile, "system-prompt-file", "", "read the system prompt override from a file")
 	flags.StringVar(&opts.mcpConfig, "mcp-config", "", "path to MCP JSON config")
@@ -115,6 +115,12 @@ func newRootFlagSet(opts *options) *flag.FlagSet {
 	flags.BoolVar(&opts.init, "init", false, "create the XDG config directory and a starter config")
 	flags.BoolVar(&opts.showVersion, "version", false, "print version")
 	return flags
+}
+
+func selectRunMode(opts options, interactive bool) (fullscreen, oneShot bool) {
+	fullscreen = !opts.rpcMode && opts.mode != "rpc" && !opts.printMode && !opts.jsonOutput && !opts.noTUI && interactive
+	oneShot = opts.prompt != "" && !fullscreen
+	return fullscreen, oneShot
 }
 
 func run(args []string) error {
@@ -158,7 +164,7 @@ func run(args []string) error {
 		return fmt.Errorf("unsupported mode %q (available: rpc)", opts.mode)
 	}
 	rpcMode := opts.rpcMode || opts.mode == "rpc"
-	if rpcMode && (opts.prompt != "" || opts.jsonOutput || flags.NArg() != 0) {
+	if rpcMode && (opts.printMode || flags.NArg() != 0 || opts.jsonOutput) {
 		return errors.New("RPC mode cannot be combined with --print, --json, or prompt arguments")
 	}
 	if opts.safe && opts.trustWorkspace {
@@ -173,7 +179,7 @@ func run(args []string) error {
 	if opts.noSession && (opts.continueSession || opts.resumeSession != "") {
 		return errors.New("--no-session cannot be combined with --continue or --resume")
 	}
-	if opts.prompt == "" && flags.NArg() != 0 {
+	if flags.NArg() != 0 {
 		opts.prompt = strings.Join(flags.Args(), " ")
 	}
 
@@ -283,7 +289,8 @@ func run(args []string) error {
 		return fmt.Errorf("unknown theme %q (available: %s)", cfg.Theme, strings.Join(themeCatalog.Names(), ", "))
 	}
 	cfg.Theme = selectedThemeName
-	useFullscreen := !rpcMode && opts.prompt == "" && !opts.jsonOutput && !opts.noTUI && term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
+	interactiveTerminal := terminalsInteractive(os.Stdin, os.Stdout)
+	useFullscreen, _ := selectRunMode(opts, interactiveTerminal)
 	sessionDir := cfg.SessionDir
 	if opts.noSession {
 		sessionDir = ""
@@ -298,8 +305,8 @@ func run(args []string) error {
 		fullscreen = tui.NewApp(tui.AppConfig{
 			CWD: cwd, Provider: normalizeProvider(cfg.Provider), Model: cfg.Model, SessionDir: sessionDir,
 			Theme: selectedTheme, ThemeName: cfg.Theme, Themes: themeCatalog, ThinkingLevel: cfg.ThinkingLevel,
-			MouseCapture: cfg.MouseCapture,
-			GitBranch:    currentGitBranch(cwd), In: os.Stdin, Out: os.Stdout,
+			InitialPrompt: opts.prompt, MouseCapture: cfg.MouseCapture,
+			GitBranch: currentGitBranch(cwd), In: os.Stdin, Out: os.Stdout,
 		})
 		extensionHost = fullscreen
 		for _, warning := range themeWarnings {
@@ -536,6 +543,16 @@ func run(args []string) error {
 	if opts.jsonOutput {
 		encoder := json.NewEncoder(os.Stdout)
 		emit = func(event agent.Event) { _ = encoder.Encode(event) }
+	}
+	if opts.printMode && opts.prompt == "" {
+		data, readErr := io.ReadAll(os.Stdin)
+		if readErr != nil {
+			return fmt.Errorf("read prompt from stdin: %w", readErr)
+		}
+		opts.prompt = strings.TrimSpace(string(data))
+		if opts.prompt == "" {
+			return nil
+		}
 	}
 	if opts.prompt != "" {
 		prompt, expandErr := catalog.ExpandInput(opts.prompt)
