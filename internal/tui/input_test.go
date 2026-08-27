@@ -26,6 +26,10 @@ func TestParserKeys(t *testing.T) {
 		{"navigation", "\x1b[H\x1b[F\x1b[3~\x1b[5~\x1b[6~", []KeyEvent{
 			{Key: KeyHome}, {Key: KeyEnd}, {Key: KeyDelete}, {Key: KeyPageUp}, {Key: KeyPageDown},
 		}},
+		{"function-keys-ss3", "\x1bOP\x1bOQ\x1bOR\x1bOS", []KeyEvent{{Key: KeyF1}, {Key: KeyF2}, {Key: KeyF3}, {Key: KeyF4}}},
+		{"function-keys-csi", "\x1b[11~\x1b[12~\x1b[13~\x1b[14~\x1b[15~\x1b[17~\x1b[18~\x1b[19~\x1b[20~", []KeyEvent{
+			{Key: KeyF1}, {Key: KeyF2}, {Key: KeyF3}, {Key: KeyF4}, {Key: KeyF5}, {Key: KeyF6}, {Key: KeyF7}, {Key: KeyF8}, {Key: KeyF9},
+		}},
 		{"tilde-home-end", "\x1b[1~\x1b[4~\x1b[7~\x1b[8~", []KeyEvent{{Key: KeyHome}, {Key: KeyEnd}, {Key: KeyHome}, {Key: KeyEnd}}},
 		{"alt-emacs", "\x1bb\x1bf", []KeyEvent{{Key: KeyAltLeft}, {Key: KeyAltRight}}},
 		{"alt-xterm", "\x1b[1;3D\x1b[1;3C", []KeyEvent{{Key: KeyAltLeft}, {Key: KeyAltRight}}},

@@ -26,6 +26,15 @@ const (
 	KeyDelete     = "delete"
 	KeyPageUp     = "pageup"
 	KeyPageDown   = "pagedown"
+	KeyF1         = "f1"
+	KeyF2         = "f2"
+	KeyF3         = "f3"
+	KeyF4         = "f4"
+	KeyF5         = "f5"
+	KeyF6         = "f6"
+	KeyF7         = "f7"
+	KeyF8         = "f8"
+	KeyF9         = "f9"
 	KeyAltLeft    = "alt+left"
 	KeyAltRight   = "alt+right"
 	KeyAltEnter   = "alt+enter"
@@ -204,11 +213,11 @@ func parseEscape(b []byte) (KeyEvent, int, bool, bool) {
 		return KeyEvent{Key: KeyAltLeft}, 2, true, false
 	case 'f':
 		return KeyEvent{Key: KeyAltRight}, 2, true, false
-	case 'O': // SS3 cursor mode
+	case 'O': // SS3 cursor and function-key mode
 		if len(b) < 3 {
 			return KeyEvent{}, 0, false, false
 		}
-		key := mapFinalKey(b[2])
+		key := mapSS3Key(b[2])
 		if key == "" {
 			return KeyEvent{Key: KeyEscape}, 1, true, false
 		}
@@ -256,6 +265,24 @@ func parseEscape(b []byte) (KeyEvent, int, bool, bool) {
 			return KeyEvent{Key: KeyPageUp}, consumed, true, false
 		case "6~":
 			return KeyEvent{Key: KeyPageDown}, consumed, true, false
+		case "11~":
+			return KeyEvent{Key: KeyF1}, consumed, true, false
+		case "12~":
+			return KeyEvent{Key: KeyF2}, consumed, true, false
+		case "13~":
+			return KeyEvent{Key: KeyF3}, consumed, true, false
+		case "14~":
+			return KeyEvent{Key: KeyF4}, consumed, true, false
+		case "15~":
+			return KeyEvent{Key: KeyF5}, consumed, true, false
+		case "17~":
+			return KeyEvent{Key: KeyF6}, consumed, true, false
+		case "18~":
+			return KeyEvent{Key: KeyF7}, consumed, true, false
+		case "19~":
+			return KeyEvent{Key: KeyF8}, consumed, true, false
+		case "20~":
+			return KeyEvent{Key: KeyF9}, consumed, true, false
 		case "Z", "9;2u", "9;2~", "27;2;9~":
 			return KeyEvent{Key: KeyShiftTab}, consumed, true, false
 		case "13;2u", "13;2~", "27;2;13~":
@@ -458,6 +485,21 @@ func enhancedCodeEvent(code, modifier int) KeyEvent {
 		return KeyEvent{Key: KeyCtrlY}
 	}
 	return KeyEvent{}
+}
+
+func mapSS3Key(final byte) string {
+	switch final {
+	case 'P':
+		return KeyF1
+	case 'Q':
+		return KeyF2
+	case 'R':
+		return KeyF3
+	case 'S':
+		return KeyF4
+	default:
+		return mapFinalKey(final)
+	}
 }
 
 func mapFinalKey(final byte) string {

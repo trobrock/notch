@@ -312,6 +312,7 @@ func run(args []string) error {
 		fullscreen = tui.NewApp(tui.AppConfig{
 			CWD: cwd, Provider: normalizeProvider(cfg.Provider), Model: cfg.Model, SessionDir: sessionDir,
 			Theme: selectedTheme, ThemeName: cfg.Theme, Themes: themeCatalog, ThinkingLevel: cfg.ThinkingLevel,
+			Presets:       tuiPresets(cfg.Presets),
 			InitialPrompt: opts.prompt, MouseCapture: cfg.MouseCapture,
 			GitBranch: currentGitBranch(cwd), In: os.Stdin, Out: os.Stdout,
 		})
@@ -1063,6 +1064,19 @@ func validThinkingLevel(level string) bool {
 	default:
 		return false
 	}
+}
+
+func tuiPresets(presets map[string]config.PresetConfig) map[string]tui.ModelPreset {
+	if len(presets) == 0 {
+		return nil
+	}
+	result := make(map[string]tui.ModelPreset, len(presets))
+	for key, preset := range presets {
+		result[key] = tui.ModelPreset{
+			Provider: normalizeProvider(preset.Provider), Model: preset.Model, ThinkingLevel: preset.ThinkingLevel,
+		}
+	}
+	return result
 }
 
 func normalizeProvider(provider string) string {
