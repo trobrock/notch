@@ -50,32 +50,39 @@ func (c *CompactionConfig) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+type PresetConfig struct {
+	Provider      string `json:"provider,omitempty"`
+	Model         string `json:"model,omitempty"`
+	ThinkingLevel string `json:"thinking_level,omitempty"`
+}
+
 // Config is the configuration for the notch process. Provider credentials are
 // deliberately not represented here; providers obtain credentials from their
 // environment.
 type Config struct {
-	Provider          string            `json:"provider,omitempty"`
-	Model             string            `json:"model,omitempty"`
-	BaseURL           string            `json:"base_url,omitempty"`
-	MaxTokens         int               `json:"max_tokens,omitempty"`
-	SystemPrompt      string            `json:"system_prompt,omitempty"`
-	MCPConfig         string            `json:"mcp_config,omitempty"`
-	ExtensionDirs     []string          `json:"extension_dirs,omitempty"`
-	SkillDirs         []string          `json:"skill_dirs,omitempty"`
-	PromptDirs        []string          `json:"prompt_dirs,omitempty"`
-	ThemeDirs         []string          `json:"theme_dirs,omitempty"`
-	AgentSkillDirs    []string          `json:"-"`
-	AgentCommandDirs  []string          `json:"-"`
-	SessionDir        string            `json:"-"`
-	AuthFile          string            `json:"-"`
-	MCPAuthFile       string            `json:"-"`
-	Theme             string            `json:"theme,omitempty"`
-	ThinkingLevel     string            `json:"thinking_level,omitempty"`
-	MouseCapture      *bool             `json:"mouse,omitempty"`
-	ContextWindow     int               `json:"context_window,omitempty"`
-	ModelCache        string            `json:"-"`
-	ModelRefreshHours int               `json:"model_refresh_hours,omitempty"`
-	Compaction        *CompactionConfig `json:"compaction,omitempty"`
+	Provider          string                  `json:"provider,omitempty"`
+	Model             string                  `json:"model,omitempty"`
+	BaseURL           string                  `json:"base_url,omitempty"`
+	MaxTokens         int                     `json:"max_tokens,omitempty"`
+	SystemPrompt      string                  `json:"system_prompt,omitempty"`
+	MCPConfig         string                  `json:"mcp_config,omitempty"`
+	ExtensionDirs     []string                `json:"extension_dirs,omitempty"`
+	SkillDirs         []string                `json:"skill_dirs,omitempty"`
+	PromptDirs        []string                `json:"prompt_dirs,omitempty"`
+	ThemeDirs         []string                `json:"theme_dirs,omitempty"`
+	AgentSkillDirs    []string                `json:"-"`
+	AgentCommandDirs  []string                `json:"-"`
+	SessionDir        string                  `json:"-"`
+	AuthFile          string                  `json:"-"`
+	MCPAuthFile       string                  `json:"-"`
+	Theme             string                  `json:"theme,omitempty"`
+	ThinkingLevel     string                  `json:"thinking_level,omitempty"`
+	Presets           map[string]PresetConfig `json:"presets,omitempty"`
+	MouseCapture      *bool                   `json:"mouse,omitempty"`
+	ContextWindow     int                     `json:"context_window,omitempty"`
+	ModelCache        string                  `json:"-"`
+	ModelRefreshHours int                     `json:"model_refresh_hours,omitempty"`
+	Compaction        *CompactionConfig       `json:"compaction,omitempty"`
 	configRoot        string
 	dataRoot          string
 }
@@ -309,6 +316,14 @@ func merge(dst *Config, src Config) {
 	}
 	if src.ThinkingLevel != "" {
 		dst.ThinkingLevel = src.ThinkingLevel
+	}
+	if len(src.Presets) != 0 {
+		if dst.Presets == nil {
+			dst.Presets = make(map[string]PresetConfig, len(src.Presets))
+		}
+		for key, preset := range src.Presets {
+			dst.Presets[strings.ToLower(strings.TrimSpace(key))] = preset
+		}
 	}
 	if src.MouseCapture != nil {
 		value := *src.MouseCapture

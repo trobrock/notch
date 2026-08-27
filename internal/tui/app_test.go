@@ -55,6 +55,55 @@ func TestInitialPromptStartsConfiguredAgent(t *testing.T) {
 	}
 }
 
+func TestFunctionKeyPresetSwitchesModelAndThinking(t *testing.T) {
+	a := NewApp(AppConfig{
+		Provider: "anthropic", Model: "old", ThinkingLevel: "medium",
+		Presets: map[string]ModelPreset{"f1": {Provider: "openai-codex", Model: "new", ThinkingLevel: "high"}},
+	})
+	a.Configure(newAppTestAgent(t, nil), extension.NewRegistry(), &resources.Catalog{})
+	a.SetModelManager(nil, func(_ context.Context, provider, modelName string, window int) (int, error) {
+		if provider != "openai-codex" || modelName != "new" || window != 0 {
+			t.Fatalf("switch args = %q, %q, %d", provider, modelName, window)
+		}
+		return 1234, nil
+	})
+	a.running = true
+	a.runDone = make(chan struct{})
+	defer close(a.runDone)
+	if changed, exit := a.handleKey(context.Background(), KeyEvent{Key: KeyF1}); !changed || exit {
+		t.Fatalf("F1 changed=%v exit=%v", changed, exit)
+	}
+	if !a.state.activeCommand {
+		t.Fatal("preset switch did not become active")
+	}
+	select {
+	case event := <-a.events:
+		a.applyEvent(context.Background(), event)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for preset switch")
+	}
+	if a.state.layout.Provider != "openai-codex" || a.state.layout.Model != "new" || a.state.layout.ContextWindow != 1234 {
+		t.Fatalf("layout = provider:%q model:%q window:%d", a.state.layout.Provider, a.state.layout.Model, a.state.layout.ContextWindow)
+	}
+	if a.state.layout.ThinkingLevel != "high" {
+		t.Fatalf("thinking = %q, want high", a.state.layout.ThinkingLevel)
+	}
+}
+
+func TestFunctionKeyPresetBusyAndUnconfigured(t *testing.T) {
+	a := NewApp(AppConfig{Presets: map[string]ModelPreset{"f1": {Provider: "anthropic", Model: "new"}}})
+	if changed, _ := a.handleKey(context.Background(), KeyEvent{Key: KeyF2}); changed {
+		t.Fatal("unconfigured F2 should be ignored")
+	}
+	a.state.activeModel = true
+	if changed, _ := a.handleKey(context.Background(), KeyEvent{Key: KeyF1}); !changed {
+		t.Fatal("configured F1 should report busy")
+	}
+	if got := a.state.layout.Transcript[len(a.state.layout.Transcript)-1].Text; got != "cannot apply preset while work is running" {
+		t.Fatalf("notice = %q", got)
+	}
+}
+
 func TestAppImplementsExtensionHost(t *testing.T) {
 	var _ extension.Host = NewApp(AppConfig{CWD: "/tmp"})
 }

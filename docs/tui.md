@@ -50,7 +50,20 @@ On startup, the transcript shows compact `[Skills]` and `[Commands]` sections fo
 | `Ctrl-C` | Cancel active model/command work; otherwise clear the composer; if already empty, exit |
 | `Ctrl-D` | Exit when the composer is empty; otherwise delete at the cursor |
 
-Notch enables the Kitty keyboard protocol in native Ghostty, Kitty, and WezTerm sessions. Inside tmux it uses xterm `modifyOtherKeys`, matching Pi's fallback when tmux does not expose Kitty protocol flags. Both modes are restored on exit. This enhanced reporting is also how Notch distinguishes `Shift-Tab`; terminals/multiplexers that do not report it can send the conventional back-tab sequence (`CSI Z`) as a fallback. On terminals without enhanced keyboard reporting, `Shift-Enter` may still be indistinguishable from Enter; `Ctrl-J` always inserts a newline. Common xterm and rxvt modified-key encodings are also handled.
+Notch enables the Kitty keyboard protocol in native Ghostty, Kitty, and WezTerm sessions. Inside tmux it uses xterm `modifyOtherKeys`, matching Pi's fallback when tmux does not expose Kitty protocol flags. Both modes are restored on exit. This enhanced reporting is also how Notch distinguishes `Shift-Tab`; terminals/multiplexers that do not report it can send the conventional back-tab sequence (`CSI Z`) as a fallback. On terminals without enhanced keyboard reporting, `Shift-Enter` may still be indistinguishable from Enter; `Ctrl-J` always inserts a newline. Common xterm and rxvt modified-key encodings are also handled. Standard F1–F9 sequences are accepted for configured presets.
+
+Function-key presets are configured under `presets` using keys `f1` through `f9`:
+
+```json
+{
+  "presets": {
+    "f1": {"provider": "openai-codex", "model": "gpt-5.6-sol", "thinking_level": "high"},
+    "f2": {"provider": "anthropic", "model": "claude-sonnet-4-5", "thinking_level": "medium"}
+  }
+}
+```
+
+Pressing a configured key changes subsequent turns and does not rewrite config. Missing provider, model, or thinking fields preserve the current value. Presets cannot be applied while model or command work is active; unconfigured function keys are ignored.
 
 While a model run is active, Enter clears the composer and queues its text as steering for the next safe turn boundary, after current tool results. Alt-Enter queues a follow-up for after the run would otherwise settle. Pending messages appear directly above the composer; they become labeled user transcript entries when delivered. Queues are first-in/first-out and deliver one message per model turn. Slash templates and skills are expanded before queueing; built-in or unknown slash commands are rejected while streaming.
 
