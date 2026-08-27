@@ -451,16 +451,15 @@ func renderTranscript(state *LayoutState, width int, theme Theme) []string {
 
 		case TranscriptThinking:
 			style := theme.Muted + "\x1b[3m"
+			icon := "◆"
+			if entry.Pending {
+				icon = activitySpinner(state.ThinkingFrame)
+			}
 			if entry.Pending && strings.TrimSpace(entry.Text) == "" {
-				spinner := []string{"◐", "◓", "◑", "◒"}
-				frame := state.ThinkingFrame % len(spinner)
-				if frame < 0 {
-					frame += len(spinner)
-				}
-				result = append(result, styleFull(style, " "+spinner[frame]+" Thinking…", width, theme.Reset))
+				result = append(result, styleFull(style, " "+icon+" Thinking…", width, theme.Reset))
 				break
 			}
-			result = append(result, styleFull(style, " ◆ Thinking", width, theme.Reset))
+			result = append(result, styleFull(style, " "+icon+" Thinking", width, theme.Reset))
 			for _, line := range entry.markdown(max(1, width-2), entry.Text, theme, style) {
 				result = append(result, padANSI("  "+line, width))
 			}
@@ -468,7 +467,7 @@ func renderTranscript(state *LayoutState, width int, theme Theme) []string {
 		case TranscriptTool:
 			bgStyle, icon := theme.ToolSuccessBG, "✓"
 			if entry.Pending {
-				bgStyle, icon = theme.ToolPendingBG, "●"
+				bgStyle, icon = theme.ToolPendingBG, activitySpinner(state.ThinkingFrame)
 			}
 			if isError {
 				bgStyle, icon = theme.ToolErrorBG, "✗"
@@ -529,6 +528,17 @@ func renderTranscript(state *LayoutState, width int, theme Theme) []string {
 
 		case TranscriptNotice, TranscriptError:
 			style, label := theme.Notice, entry.Label
+			if entry.Pending && label == "compact" {
+				entryIcon := activitySpinner(state.ThinkingFrame)
+				text := strings.TrimSpace(entry.Text)
+				if text == "" {
+					text = "Compacting context"
+				}
+				for _, line := range entry.wrapped(max(1, width-3), text) {
+					result = append(result, padANSI(style+" "+entryIcon+" "+line+theme.Reset, width))
+				}
+				break
+			}
 			if (label == "skills" || label == "commands") && !isError {
 				title := "Skills"
 				if label == "commands" {
@@ -574,6 +584,15 @@ func renderTranscript(state *LayoutState, width int, theme Theme) []string {
 		}
 	}
 	return result
+}
+
+func activitySpinner(frame int) string {
+	frames := [...]string{"◐", "◓", "◑", "◒"}
+	frame %= len(frames)
+	if frame < 0 {
+		frame += len(frames)
+	}
+	return frames[frame]
 }
 
 func pendingText(text string) string {

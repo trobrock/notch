@@ -511,6 +511,29 @@ func TestAppThinkingSummaryAndFallbackIndicator(t *testing.T) {
 	}
 }
 
+func TestPendingAnimatedActivityTracksToolsAndCompaction(t *testing.T) {
+	a := NewApp(AppConfig{})
+	if a.pendingAnimatedActivity() {
+		t.Fatal("empty transcript reported animated activity")
+	}
+	a.handleAgentEvent(agent.Event{Type: "tool_start", ToolCallID: "call-1", ToolName: "read"})
+	if !a.pendingAnimatedActivity() || a.state.pendingTools != 1 {
+		t.Fatalf("pending tool did not activate animation: count=%d", a.state.pendingTools)
+	}
+	a.handleAgentEvent(agent.Event{Type: "tool_end", ToolCallID: "call-1", ToolName: "read"})
+	if a.pendingAnimatedActivity() || a.state.pendingTools != 0 {
+		t.Fatalf("completed tool kept animation active: count=%d", a.state.pendingTools)
+	}
+	a.handleAgentEvent(agent.Event{Type: "compaction_start"})
+	if !a.pendingAnimatedActivity() {
+		t.Fatal("pending compaction did not activate animation")
+	}
+	a.handleAgentEvent(agent.Event{Type: "compaction_end"})
+	if a.pendingAnimatedActivity() {
+		t.Fatal("completed compaction kept animation active")
+	}
+}
+
 func TestFinishResumeRestoresTranscriptAndHistory(t *testing.T) {
 	dir := t.TempDir()
 	old, err := session.New(dir, "/old", "p", "m")

@@ -73,7 +73,7 @@ func TestBuildFramePiRowRoles(t *testing.T) {
 		bg   string
 		text string
 	}{
-		{6, theme.ToolPendingBG, ""}, {7, theme.ToolPendingBG, " ● read"}, {8, theme.ToolPendingBG, " │ waiting"}, {9, theme.ToolPendingBG, ""},
+		{6, theme.ToolPendingBG, ""}, {7, theme.ToolPendingBG, " ◐ read"}, {8, theme.ToolPendingBG, " │ waiting"}, {9, theme.ToolPendingBG, ""},
 		{11, theme.ToolSuccessBG, ""}, {12, theme.ToolSuccessBG, " ✓ write"}, {13, theme.ToolSuccessBG, " │ saved"}, {14, theme.ToolSuccessBG, ""},
 		{16, theme.ToolErrorBG, ""}, {17, theme.ToolErrorBG, " ✗ shell"}, {18, theme.ToolErrorBG, " │ failed"}, {19, theme.ToolErrorBG, ""},
 	}
@@ -266,6 +266,21 @@ func TestThinkingIndicatorAndSummaryRendering(t *testing.T) {
 	plain := plainANSI(strings.Join(summary, "\n"))
 	if !strings.Contains(plain, "◆ Thinking") || !strings.Contains(plain, "Checked three files.") || !strings.Contains(strings.Join(summary, "\n"), "\x1b[1m") {
 		t.Fatalf("thinking summary = %q", plain)
+	}
+}
+
+func TestPendingToolThinkingAndCompactionIconsAnimate(t *testing.T) {
+	theme := DefaultTheme()
+	state := &LayoutState{ThinkingFrame: 2, Transcript: []TranscriptEntry{
+		{Kind: KindThinking, Text: "Checking files", Pending: true},
+		{Kind: KindTool, Label: "read", Pending: true},
+		{Kind: KindNotice, Label: "compact", Text: "Compacting context automatically", Pending: true},
+	}}
+	plain := plainANSI(strings.Join(renderTranscript(state, 40, theme), "\n"))
+	for _, want := range []string{"◑ Thinking", "◑ read", "◑ Compacting context automatically"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("animated pending icon %q missing from %q", want, plain)
+		}
 	}
 }
 

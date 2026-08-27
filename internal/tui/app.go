@@ -96,6 +96,7 @@ type appState struct {
 	assistant           int
 	thinking            int
 	compaction          int
+	pendingTools        int
 	tools               map[string]int
 	queuedText          map[string]string
 	promptErrored       bool
@@ -312,6 +313,7 @@ func (a *App) Configure(runner *agent.Agent, registry *extension.Registry, catal
 	a.state.assistant = -1
 	a.state.thinking = -1
 	a.state.compaction = -1
+	a.state.pendingTools = 0
 	a.state.tools = make(map[string]int)
 	if runner != nil {
 		a.state.layout.ThinkingLevel = runner.ThinkingLevel()
@@ -526,7 +528,7 @@ func (a *App) Run(ctx context.Context) (retErr error) {
 	defer stopThinkingTimer()
 
 	for {
-		if a.pendingThinkingIndicator() {
+		if a.pendingAnimatedActivity() {
 			if thinkingTimer == nil {
 				thinkingTimer = a.newTimer(thinkingFrameDelay)
 				thinkingC = thinkingTimer.C
@@ -1216,6 +1218,7 @@ func (a *App) submit(runCtx context.Context, input string) bool {
 			a.state.layout.Transcript = nil
 			a.state.layout.ScrollOffset = 0
 			a.state.assistant, a.state.thinking, a.state.compaction = -1, -1, -1
+			a.state.pendingTools = 0
 			a.state.tools = make(map[string]int)
 			return true
 		case "thinking":
@@ -1413,6 +1416,7 @@ func (a *App) handleAgentEvent(event agent.Event) bool {
 		entry := TranscriptEntry{Kind: KindTool, Label: event.ToolName, Detail: formatToolArguments(event.Arguments), Pending: true}
 		a.state.layout.Transcript = append(a.state.layout.Transcript, entry)
 		a.state.tools[event.ToolCallID] = len(a.state.layout.Transcript) - 1
+		a.state.pendingTools++
 		a.state.layout.Status = "tool: " + event.ToolName
 	case "tool_update":
 		i := a.toolEntry(event)
@@ -1426,6 +1430,9 @@ func (a *App) handleAgentEvent(event agent.Event) bool {
 	case "tool_end":
 		i := a.toolEntry(event)
 		entry := &a.state.layout.Transcript[i]
+		if entry.Pending && a.state.pendingTools > 0 {
+			a.state.pendingTools--
+		}
 		entry.Pending = false
 		if event.Result != nil {
 			limit := 8
@@ -1456,6 +1463,21 @@ func (a *App) handleAgentEvent(event agent.Event) bool {
 	return true
 }
 
+// pendingAnimatedActivity reports whether the shared animation clock is needed.
+// Indexed thinking/compaction state and a tool counter keep this hot-loop check O(1).
+func (a *App) pendingAnimatedActivity() bool {
+	pendingAt := func(index int, kind TranscriptKind) bool {
+		return index >= 0 && index < len(a.state.layout.Transcript) &&
+			a.state.layout.Transcript[index].Kind == kind &&
+			a.state.layout.Transcript[index].Pending
+	}
+	return pendingAt(a.state.thinking, KindThinking) ||
+		pendingAt(a.state.compaction, KindNotice) ||
+		a.state.pendingTools > 0
+}
+
+// pendingThinkingIndicator identifies the empty fallback shown before thinking
+// text arrives; populated thinking summaries still animate but are not fallback indicators.
 func (a *App) pendingThinkingIndicator() bool {
 	i := a.state.thinking
 	return i >= 0 && i < len(a.state.layout.Transcript) &&
@@ -1501,6 +1523,10 @@ func (a *App) finishThinking(removeEmpty bool) {
 func (a *App) removeTranscriptEntry(index int) {
 	if index < 0 || index >= len(a.state.layout.Transcript) {
 		return
+	}
+	removed := a.state.layout.Transcript[index]
+	if removed.Kind == KindTool && removed.Pending && a.state.pendingTools > 0 {
+		a.state.pendingTools--
 	}
 	a.state.layout.Transcript = append(a.state.layout.Transcript[:index], a.state.layout.Transcript[index+1:]...)
 	adjust := func(value *int) {
@@ -1551,6 +1577,7 @@ func (a *App) toolEntry(event agent.Event) int {
 	a.state.layout.Transcript = append(a.state.layout.Transcript, TranscriptEntry{
 		Kind: KindTool, Label: event.ToolName, Detail: formatToolArguments(event.Arguments), Pending: true,
 	})
+	a.state.pendingTools++
 	i := len(a.state.layout.Transcript) - 1
 	a.state.tools[event.ToolCallID] = i
 	return i
@@ -2003,6 +2030,7 @@ func (a *App) resetConversationState() {
 	a.state.editor.Clear()
 	a.state.editor.SetHistory(nil)
 	a.state.assistant, a.state.thinking, a.state.compaction = -1, -1, -1
+	a.state.pendingTools = 0
 	a.state.tools = make(map[string]int)
 	a.state.queuedText = make(map[string]string)
 	a.state.layout.PendingMessages = nil
