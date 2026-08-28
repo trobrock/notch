@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -119,6 +121,51 @@ func (c *Client) Authorize(ctx context.Context, redirect, expectedState string, 
 	if _, err := fmt.Fprintf(out, "Open this URL in your browser:\n%s\n", authURL); err != nil {
 		return AuthorizationCallback{}, fmt.Errorf("print authorization URL: %w", err)
 	}
+	if c.CallbackInput != nil {
+		if _, err := fmt.Fprintln(out, "If the browser cannot reach this machine, paste the final redirect URL here and press Enter:"); err != nil {
+			return AuthorizationCallback{}, fmt.Errorf("print OAuth redirect prompt: %w", err)
+		}
+		go func() {
+			scanner := bufio.NewScanner(c.CallbackInput)
+			for scanner.Scan() {
+				raw := strings.TrimSpace(scanner.Text())
+				if raw == "" {
+					continue
+				}
+				pasted, parseErr := url.Parse(raw)
+				if parseErr != nil || !sameRedirectURL(parsed, pasted) {
+					_, _ = fmt.Fprintln(out, "That is not the expected OAuth redirect URL; try again:")
+					continue
+				}
+				q := pasted.Query()
+				if expectedState != "" && q.Get("state") != expectedState {
+					_, _ = fmt.Fprintln(out, "The pasted OAuth redirect has an invalid state; try again:")
+					continue
+				}
+				if oauthErr := q.Get("error"); oauthErr != "" {
+					detail := q.Get("error_description")
+					if detail == "" {
+						detail = oauthErr
+					}
+					select {
+					case result <- callbackResult{err: fmt.Errorf("authorization denied: %s", detail)}:
+					default:
+					}
+					return
+				}
+				code := q.Get("code")
+				if code == "" {
+					_, _ = fmt.Fprintln(out, "The pasted OAuth redirect does not contain a code; try again:")
+					continue
+				}
+				select {
+				case result <- callbackResult{callback: AuthorizationCallback{Code: code, RedirectURL: actualRedirect, Query: q}}:
+				default:
+				}
+				return
+			}
+		}()
+	}
 	browser := c.Browser
 	if browser == nil {
 		browser = openBrowser
@@ -133,6 +180,12 @@ func (c *Client) Authorize(ctx context.Context, redirect, expectedState string, 
 	case got := <-result:
 		return got.callback, got.err
 	}
+}
+
+func sameRedirectURL(expected, actual *url.URL) bool {
+	return expected != nil && actual != nil && actual.User == nil && actual.Fragment == "" &&
+		strings.EqualFold(expected.Scheme, actual.Scheme) && strings.EqualFold(expected.Host, actual.Host) &&
+		expected.EscapedPath() == actual.EscapedPath()
 }
 
 // MakePKCE returns an RFC 7636 verifier and S256 challenge.

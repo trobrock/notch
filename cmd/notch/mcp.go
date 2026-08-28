@@ -80,7 +80,9 @@ func runMCP(args []string) error {
 		defer stop()
 		ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 		defer cancel()
-		credential, err := mcpoauth.NewClient().Login(ctx, server.URL, requestedScope, os.Stderr)
+		client := mcpoauth.NewClient()
+		client.CallbackInput = os.Stdin
+		credential, err := client.Login(ctx, server.URL, requestedScope, os.Stderr)
 		if err != nil {
 			return err
 		}
