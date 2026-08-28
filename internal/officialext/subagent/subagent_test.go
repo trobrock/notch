@@ -103,13 +103,18 @@ func TestRunSubagentToolSafetyAndValidation(t *testing.T) {
 func TestParseEventsUsesLastAssistantTurnAndTrimsOutput(t *testing.T) {
 	stream := strings.Join([]string{
 		`{"type":"turn_end","usage":{"input_tokens":10,"output_tokens":2,"cache_read_tokens":3,"cache_write_tokens":1,"reasoning_tokens":1,"cost_usd":0.002},"message":{"role":"assistant","content":[{"type":"text","text":"first"}]}}`,
+		`{"type":"tool_start","tool_name":"read","tool_call_id":"1"}`,
 		`not json`,
 		`{"type":"turn_end","usage":{"input_tokens":20,"output_tokens":4,"cache_read_tokens":5,"cache_write_tokens":2,"reasoning_tokens":2,"cost_usd":0.003},"message":{"role":"assistant","content":[{"type":"text","text":"` + strings.Repeat("x", 1200) + `"}]}}`,
 	}, "\n")
-	parsed := parseEvents(strings.NewReader(stream), 1000)
+	var progress []childProgress
+	parsed := parseEvents(strings.NewReader(stream), 1000, func(update childProgress) { progress = append(progress, update) })
 	cost := parsed.costUSD()
-	if parsed.turns != 2 || parsed.input != 30 || parsed.outputTokens != 6 || parsed.cacheRead != 8 || parsed.cacheWrite != 3 || parsed.reasoning != 3 || cost == nil || *cost != 0.005 || !strings.Contains(parsed.output, "output truncated") {
+	if parsed.turns != 2 || parsed.toolCalls != 1 || parsed.lastTool != "read" || parsed.input != 30 || parsed.outputTokens != 6 || parsed.cacheRead != 8 || parsed.cacheWrite != 3 || parsed.reasoning != 3 || cost == nil || *cost != 0.005 || !strings.Contains(parsed.output, "output truncated") {
 		t.Fatalf("parsed = %#v", parsed)
+	}
+	if len(progress) != 3 || progress[len(progress)-1] != (childProgress{Turns: 2, ToolCalls: 1, LastTool: "read"}) {
+		t.Fatalf("progress = %#v", progress)
 	}
 }
 
@@ -148,7 +153,8 @@ func TestProcessRunnerDurationIncludedWhenTimedOut(t *testing.T) {
 		t.Skip("shell script test")
 	}
 	path := t.TempDir() + "/slow-subagent.sh"
-	if err := os.WriteFile(path, []byte("#!/bin/sh\nsleep 1\n"), 0o755); err != nil {
+	script := "#!/bin/sh\nprintf '{\"type\":\"turn_end\",\"message\":{\"role\":\"assistant\",\"content\":[]}}\n'\nprintf '{\"type\":\"tool_start\",\"tool_name\":\"grep\",\"tool_call_id\":\"1\"}\n'\nsleep 5\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	runner := &processRunner{executable: path, defaultCWD: t.TempDir()}
@@ -156,8 +162,13 @@ func TestProcessRunnerDurationIncludedWhenTimedOut(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.TimedOut || result.Usage.WallMS <= 0 || result.ExitCode != 124 {
+	if !result.TimedOut || result.Usage.WallMS <= 0 || result.ExitCode != 124 || result.Usage.Turns != 1 || result.Usage.ToolCalls != 1 {
 		t.Fatalf("result = %#v", result)
+	}
+	for _, text := range []string{"1 completed turn", "1 tool call", "last tool: grep"} {
+		if !strings.Contains(result.Output, text) {
+			t.Fatalf("timeout output missing %q: %q", text, result.Output)
+		}
 	}
 }
 

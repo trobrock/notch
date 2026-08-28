@@ -52,6 +52,7 @@ type Input struct {
 
 type Usage struct {
 	Turns      int      `json:"turns"`
+	ToolCalls  int      `json:"tool_calls,omitempty"`
 	Input      int      `json:"input"`
 	Output     int      `json:"output"`
 	CacheRead  int      `json:"cache_read,omitempty"`
@@ -134,7 +135,7 @@ func RegisterWithRunner(registry *extension.Registry, runner Runner) error {
 			details := map[string]any{
 				"output": result.Output, "stderr": result.Stderr, "exitCode": result.ExitCode,
 				"timedOut": result.TimedOut, "usage": result.Usage,
-				"usageLine":       fmt.Sprintf("subagent usage: %s, in %d, out %d, %d ms", result.Usage.Model, result.Usage.Input, result.Usage.Output, result.Usage.WallMS),
+				"usageLine":       fmt.Sprintf("subagent usage: %s, %d turns, %d tool calls, in %d, out %d, %d ms", result.Usage.Model, result.Usage.Turns, result.Usage.ToolCalls, result.Usage.Input, result.Usage.Output, result.Usage.WallMS),
 				"delegated_usage": delegated,
 			}
 			return extension.ToolResult{Content: content, IsError: result.ExitCode != 0, Details: details}, nil
@@ -288,19 +289,30 @@ func (r *processRunner) Run(ctx context.Context, input Input, update func(string
 	}
 
 	parsedCh := make(chan parsedEvents, 1)
-	go func() { parsedCh <- parseEvents(stdout, input.MaxOutputChars) }()
+	progressCh := make(chan childProgress, 1)
+	go func() {
+		parsedCh <- parseEvents(stdout, input.MaxOutputChars, func(progress childProgress) {
+			publishLatestProgress(progressCh, progress)
+		})
+	}()
 	heartbeatPeriod := r.heartbeatPeriod
 	if heartbeatPeriod <= 0 {
 		heartbeatPeriod = defaultHeartbeat
 	}
 	heartbeat := time.NewTicker(heartbeatPeriod)
 	var parsed parsedEvents
+	var progress childProgress
 	streamDone := false
 	terminated := false
 	for !streamDone {
 		select {
 		case parsed = <-parsedCh:
+			progress = parsed.progress()
 			streamDone = true
+		case progress = <-progressCh:
+			if update != nil {
+				update(formatChildProgress(progress, time.Since(start)))
+			}
 		case <-runCtx.Done():
 			terminateProcessGroup(cmd)
 			terminated = true
@@ -308,7 +320,7 @@ func (r *processRunner) Run(ctx context.Context, input Input, update func(string
 			streamDone = true
 		case <-heartbeat.C:
 			if update != nil {
-				update(fmt.Sprintf("running · %s elapsed", time.Since(start).Round(time.Second)))
+				update(formatChildProgress(progress, time.Since(start)))
 			}
 		}
 	}
@@ -370,11 +382,11 @@ func (r *processRunner) Run(ctx context.Context, input Input, update func(string
 	}
 	if timedOut {
 		exitCode = 124
-		output = fmt.Sprintf("Subagent timed out after %d seconds.\n\n%s", input.TimeoutSeconds, output)
+		output = fmt.Sprintf("Subagent timed out after %d seconds (%s).\n\n%s", input.TimeoutSeconds, formatChildActivity(parsed.progress()), output)
 	}
 	return Result{Output: output, Stderr: stderrText, ExitCode: exitCode, TimedOut: timedOut,
 		Usage: Usage{
-			Turns: parsed.turns, Input: parsed.input, Output: parsed.outputTokens,
+			Turns: parsed.turns, ToolCalls: parsed.toolCalls, Input: parsed.input, Output: parsed.outputTokens,
 			CacheRead: parsed.cacheRead, CacheWrite: parsed.cacheWrite, Reasoning: parsed.reasoning,
 			CostUSD: parsed.costUSD(), WallMS: wallMS, Model: input.Model,
 		}}, nil
@@ -414,9 +426,17 @@ func modelArgs(value string) []string {
 	return []string{"--model", value}
 }
 
+type childProgress struct {
+	Turns     int
+	ToolCalls int
+	LastTool  string
+}
+
 type parsedEvents struct {
 	output       string
 	turns        int
+	toolCalls    int
+	lastTool     string
 	input        int
 	outputTokens int
 	cacheRead    int
@@ -427,6 +447,62 @@ type parsedEvents struct {
 	err          error
 }
 
+func (p parsedEvents) progress() childProgress {
+	return childProgress{Turns: p.turns, ToolCalls: p.toolCalls, LastTool: p.lastTool}
+}
+
+func publishLatestProgress(ch chan childProgress, progress childProgress) {
+	select {
+	case ch <- progress:
+		return
+	default:
+	}
+	select {
+	case <-ch:
+	default:
+	}
+	select {
+	case ch <- progress:
+	default:
+	}
+}
+
+func formatChildProgress(progress childProgress, elapsed time.Duration) string {
+	parts := []string{"running"}
+	if progress.Turns > 0 {
+		parts = append(parts, fmt.Sprintf("%d %s", progress.Turns, plural(progress.Turns, "turn", "turns")))
+	}
+	if progress.ToolCalls > 0 {
+		parts = append(parts, fmt.Sprintf("%d %s", progress.ToolCalls, plural(progress.ToolCalls, "tool call", "tool calls")))
+	}
+	if progress.LastTool != "" {
+		parts = append(parts, "last: "+progress.LastTool)
+	}
+	parts = append(parts, elapsed.Round(time.Second).String()+" elapsed")
+	return strings.Join(parts, " · ")
+}
+
+func formatChildActivity(progress childProgress) string {
+	if progress.Turns == 0 && progress.ToolCalls == 0 {
+		return "no completed turns or tool calls observed"
+	}
+	parts := []string{
+		fmt.Sprintf("%d completed %s", progress.Turns, plural(progress.Turns, "turn", "turns")),
+		fmt.Sprintf("%d %s", progress.ToolCalls, plural(progress.ToolCalls, "tool call", "tool calls")),
+	}
+	if progress.LastTool != "" {
+		parts = append(parts, "last tool: "+progress.LastTool)
+	}
+	return strings.Join(parts, ", ")
+}
+
+func plural(value int, singular, plural string) string {
+	if value == 1 {
+		return singular
+	}
+	return plural
+}
+
 func (p parsedEvents) costUSD() *float64 {
 	if p.turns == 0 || p.costTurns != p.turns {
 		return nil
@@ -435,15 +511,16 @@ func (p parsedEvents) costUSD() *float64 {
 	return &cost
 }
 
-func parseEvents(reader io.Reader, limit int) parsedEvents {
+func parseEvents(reader io.Reader, limit int, onProgress func(childProgress)) parsedEvents {
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 64*1024), maxEventLine)
 	var parsed parsedEvents
 	for scanner.Scan() {
 		var event struct {
-			Type    string         `json:"type"`
-			Message *model.Message `json:"message"`
-			Usage   *struct {
+			Type     string         `json:"type"`
+			ToolName string         `json:"tool_name"`
+			Message  *model.Message `json:"message"`
+			Usage    *struct {
 				InputTokens      int      `json:"input_tokens"`
 				OutputTokens     int      `json:"output_tokens"`
 				CacheReadTokens  int      `json:"cache_read_tokens"`
@@ -454,6 +531,13 @@ func parseEvents(reader io.Reader, limit int) parsedEvents {
 		}
 		if json.Unmarshal(scanner.Bytes(), &event) != nil {
 			continue
+		}
+		if event.Type == "tool_start" {
+			parsed.toolCalls++
+			parsed.lastTool = strings.TrimSpace(event.ToolName)
+			if onProgress != nil {
+				onProgress(parsed.progress())
+			}
 		}
 		if event.Type == "turn_end" {
 			parsed.turns++
@@ -472,6 +556,9 @@ func parseEvents(reader io.Reader, limit int) parsedEvents {
 				if text := messageText(*event.Message); text != "" {
 					parsed.output = trimOutput(text, limit)
 				}
+			}
+			if onProgress != nil {
+				onProgress(parsed.progress())
 			}
 		}
 	}
