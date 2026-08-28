@@ -836,3 +836,28 @@ func TestPromptRetryBackoffHonorsCancellation(t *testing.T) {
 		t.Fatalf("err=%v calls=%d", err, provider.calls)
 	}
 }
+
+func TestDelegationToolsInheritCurrentProviderAndModel(t *testing.T) {
+	a := &Agent{providerName: "openrouter", model: "anthropic/claude-test"}
+	for _, name := range []string{"run_subagent", "explore_codebase"} {
+		call := model.Block{Name: name, Arguments: json.RawMessage(`{"prompt":"inspect"}`)}
+		a.applyDelegationModelDefault(&call)
+		var arguments map[string]any
+		if err := json.Unmarshal(call.Arguments, &arguments); err != nil {
+			t.Fatal(err)
+		}
+		if arguments["model"] != "openrouter/anthropic/claude-test" {
+			t.Fatalf("%s model = %#v", name, arguments["model"])
+		}
+	}
+	explicit := model.Block{Name: "run_subagent", Arguments: json.RawMessage(`{"prompt":"inspect","model":"anthropic/custom"}`)}
+	a.applyDelegationModelDefault(&explicit)
+	if !strings.Contains(string(explicit.Arguments), `"anthropic/custom"`) {
+		t.Fatalf("explicit model changed: %s", explicit.Arguments)
+	}
+	ordinary := model.Block{Name: "read", Arguments: json.RawMessage(`{"path":"x"}`)}
+	a.applyDelegationModelDefault(&ordinary)
+	if string(ordinary.Arguments) != `{"path":"x"}` {
+		t.Fatalf("ordinary tool changed: %s", ordinary.Arguments)
+	}
+}

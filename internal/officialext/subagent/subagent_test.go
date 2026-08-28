@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/trobrock/notch/internal/delegation"
 	"github.com/trobrock/notch/internal/extension"
@@ -161,5 +162,59 @@ func TestDelegatedUsageShape(t *testing.T) {
 	usage := delegatedUsage(Usage{Turns: 2, Input: 3, Output: 4, WallMS: 5})
 	if usage != (delegation.Usage{Turns: 2, InputTokens: 3, OutputTokens: 4, WallMS: 5, Calls: 1}) {
 		t.Fatalf("usage = %#v", usage)
+	}
+}
+
+func TestProcessRunnerSendsPromptOnStdinAndReportsHeartbeat(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script test")
+	}
+	path := t.TempDir() + "/stdin-subagent.sh"
+	script := `#!/bin/sh
+for arg in "$@"; do
+  if [ "$arg" = "prompt from stdin" ]; then
+    echo "prompt leaked into argv" >&2
+    exit 9
+  fi
+done
+prompt=$(cat)
+if [ "$prompt" != "prompt from stdin" ]; then
+  echo "bad stdin: $prompt" >&2
+  exit 8
+fi
+sleep 0.03
+printf '{"type":"turn_end","usage":{"input_tokens":1,"output_tokens":2},"message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}\n'
+`
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runner := &processRunner{executable: path, defaultCWD: t.TempDir(), heartbeatPeriod: 5 * time.Millisecond}
+	var updates []string
+	result, err := runner.Run(context.Background(), Input{Prompt: "prompt from stdin", Tools: defaultTools, Thinking: DefaultThinking, TimeoutSeconds: 1, MaxOutputChars: 2000}, func(update string) {
+		updates = append(updates, update)
+	})
+	if err != nil || result.ExitCode != 0 || result.Output != "done" {
+		t.Fatalf("Run() = %#v, %v", result, err)
+	}
+	if len(updates) == 0 || !strings.Contains(updates[len(updates)-1], "elapsed") {
+		t.Fatalf("heartbeat updates = %#v", updates)
+	}
+}
+
+func TestProcessRunnerRejectsCleanExitWithoutTurn(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script test")
+	}
+	path := t.TempDir() + "/empty-subagent.sh"
+	if err := os.WriteFile(path, []byte("#!/bin/sh\necho 'credential setup failed' >&2\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runner := &processRunner{executable: path, defaultCWD: t.TempDir()}
+	result, err := runner.Run(context.Background(), Input{Prompt: "go", Tools: defaultTools, Thinking: DefaultThinking, TimeoutSeconds: 1, MaxOutputChars: 2000}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ExitCode == 0 || !strings.Contains(result.Output, "without a completed model turn") || !strings.Contains(result.Output, "credential setup failed") {
+		t.Fatalf("result = %#v", result)
 	}
 }

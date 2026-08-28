@@ -33,6 +33,7 @@ const (
 	maxOutputChars        = 50000
 	maxTimeoutSeconds     = 3600
 	maxEventLine          = 16 << 20
+	defaultHeartbeat      = 10 * time.Second
 )
 
 var readOnlyTools = map[string]bool{"read": true, "grep": true, "find": true, "ls": true}
@@ -74,8 +75,9 @@ type Runner interface {
 }
 
 type processRunner struct {
-	executable string
-	defaultCWD string
+	executable      string
+	defaultCWD      string
+	heartbeatPeriod time.Duration
 }
 
 // NewRunner creates a subprocess runner using the current Notch executable.
@@ -148,9 +150,9 @@ func schema() map[string]any {
 		"type": "object",
 		"properties": map[string]any{
 			"prompt":          map[string]any{"type": "string", "minLength": 1, "description": "Self-contained task or question for the subagent."},
-			"model":           map[string]any{"type": "string", "description": "Model ID, optionally provider/model. Defaults to current configuration."},
+			"model":           map[string]any{"type": "string", "description": "Model ID, optionally provider/model. The parent agent supplies its current provider/model when omitted."},
 			"cwd":             map[string]any{"type": "string", "description": "Working directory. Defaults to the parent working directory."},
-			"tools":           map[string]any{"type": "string", "description": "Comma-separated tool allowlist. Defaults to read,grep,find,ls."},
+			"tools":           map[string]any{"type": "string", "description": "Comma-separated tool allowlist. Defaults to read,grep,find,ls. Include write-capable tools only with allowWriteTools=true."},
 			"allowWriteTools": map[string]any{"type": "boolean", "description": "Permit tools outside the read-only default set."},
 			"timeoutSeconds":  map[string]any{"type": "integer", "minimum": 1, "maximum": maxTimeoutSeconds},
 			"maxOutputChars":  map[string]any{"type": "integer", "minimum": 1000, "maximum": maxOutputChars},
@@ -258,7 +260,7 @@ func (r *processRunner) Run(ctx context.Context, input Input, update func(string
 	args := []string{"--json", "--no-session", "--no-tui", "--no-extensions", "--no-resources", "--tools", input.Tools,
 		"--thinking", input.Thinking, "--system-prompt-file", systemPath}
 	args = append(args, modelArgs(input.Model)...)
-	args = append(args, "--print", input.Prompt)
+	args = append(args, "--print")
 	if update != nil {
 		modelName := input.Model
 		if modelName == "" {
@@ -272,6 +274,7 @@ func (r *processRunner) Run(ctx context.Context, input Input, update func(string
 	defer cancel()
 	cmd := exec.Command(r.executable, args...)
 	cmd.Dir = cwd
+	cmd.Stdin = strings.NewReader(input.Prompt)
 	configureProcessGroup(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -288,12 +291,27 @@ func (r *processRunner) Run(ctx context.Context, input Input, update func(string
 	waitCh := make(chan error, 1)
 	go func() { waitCh <- cmd.Wait() }()
 	var waitErr error
-	select {
-	case waitErr = <-waitCh:
-	case <-runCtx.Done():
-		terminateProcessGroup(cmd)
-		waitErr = <-waitCh
+	heartbeatPeriod := r.heartbeatPeriod
+	if heartbeatPeriod <= 0 {
+		heartbeatPeriod = defaultHeartbeat
 	}
+	heartbeat := time.NewTicker(heartbeatPeriod)
+	waiting := true
+	for waiting {
+		select {
+		case waitErr = <-waitCh:
+			waiting = false
+		case <-runCtx.Done():
+			terminateProcessGroup(cmd)
+			waitErr = <-waitCh
+			waiting = false
+		case <-heartbeat.C:
+			if update != nil {
+				update(fmt.Sprintf("subagent running (%s elapsed)", time.Since(start).Round(time.Second)))
+			}
+		}
+	}
+	heartbeat.Stop()
 	parsed := <-parsedCh
 	exitCode := 0
 	if waitErr != nil {
@@ -313,6 +331,24 @@ func (r *processRunner) Run(ctx context.Context, input Input, update func(string
 	stderrText := trimOutput(stderr.String(), input.MaxOutputChars)
 	if output == "" {
 		output = stderrText
+	}
+	if parsed.err != nil {
+		if output == "" {
+			output = "subagent event stream failed: " + parsed.err.Error()
+		} else {
+			output += "\n\nsubagent event stream failed: " + parsed.err.Error()
+		}
+		if exitCode == 0 {
+			exitCode = 1
+		}
+	}
+	if parsed.turns == 0 && exitCode == 0 && !timedOut {
+		exitCode = 1
+		if output == "" {
+			output = "subagent exited without a completed model turn"
+		} else {
+			output = "subagent exited without a completed model turn\n\n" + output
+		}
 	}
 	if output == "" {
 		output = "(run_subagent returned no text)"
@@ -373,6 +409,7 @@ type parsedEvents struct {
 	reasoning    int
 	cost         float64
 	costTurns    int
+	err          error
 }
 
 func (p parsedEvents) costUSD() *float64 {
@@ -423,6 +460,7 @@ func parseEvents(reader io.Reader, limit int) parsedEvents {
 			}
 		}
 	}
+	parsed.err = scanner.Err()
 	return parsed
 }
 

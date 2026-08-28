@@ -624,7 +624,32 @@ func toolCalls(blocks []model.Block) []model.Block {
 	return calls
 }
 
+func (a *Agent) applyDelegationModelDefault(call *model.Block) {
+	if call == nil || (call.Name != "run_subagent" && call.Name != "explore_codebase") {
+		return
+	}
+	arguments := make(map[string]any)
+	if len(call.Arguments) != 0 && json.Unmarshal(call.Arguments, &arguments) != nil {
+		return
+	}
+	if value, _ := arguments["model"].(string); strings.TrimSpace(value) != "" {
+		return
+	}
+	modelName := strings.TrimSpace(a.model)
+	if modelName == "" {
+		return
+	}
+	if provider := strings.TrimSpace(a.providerName); provider != "" {
+		modelName = provider + "/" + modelName
+	}
+	arguments["model"] = modelName
+	if raw, err := json.Marshal(arguments); err == nil {
+		call.Arguments = raw
+	}
+}
+
 func (a *Agent) executeTool(ctx context.Context, call model.Block, emit func(Event)) extension.ToolResult {
+	a.applyDelegationModelDefault(&call)
 	eventArgs := any(map[string]any{})
 	if len(call.Arguments) != 0 {
 		_ = json.Unmarshal(call.Arguments, &eventArgs)
