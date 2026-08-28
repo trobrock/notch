@@ -58,6 +58,31 @@ func TestPromptDoesNotMutateMessagesWhenSessionAppendFails(t *testing.T) {
 	}
 }
 
+func TestPromptFillsEmptyFailedToolResult(t *testing.T) {
+	reg := extension.NewRegistry()
+	err := reg.RegisterTool(extension.Tool{Definition: model.ToolDefinition{Name: "echo", InputSchema: map[string]any{"type": "object"}}, Source: "test", Execute: func(context.Context, json.RawMessage, func(string)) (extension.ToolResult, error) {
+		return extension.ToolResult{IsError: true}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := New(Config{Provider: &fakeProvider{}, Registry: reg, Model: "fake"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Prompt(context.Background(), "go", nil); err != nil {
+		t.Fatal(err)
+	}
+	messages := a.Messages()
+	if len(messages) < 3 || len(messages[2].Content) != 1 {
+		t.Fatalf("messages = %#v", messages)
+	}
+	result := messages[2].Content[0]
+	if !result.IsError || strings.TrimSpace(result.Text) == "" {
+		t.Fatalf("empty failed tool result was persisted: %#v", result)
+	}
+}
+
 func TestPromptExecutesToolAndContinues(t *testing.T) {
 	reg := extension.NewRegistry()
 	err := reg.RegisterTool(extension.Tool{Definition: model.ToolDefinition{Name: "echo", InputSchema: map[string]any{"type": "object"}}, Source: "test", Execute: func(_ context.Context, args json.RawMessage, _ func(string)) (extension.ToolResult, error) {
