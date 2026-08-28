@@ -67,7 +67,7 @@ func RegisterWithRunner(registry *extension.Registry, runner subagent.Runner) er
 		Source: Source,
 		Definition: model.ToolDefinition{
 			Name:        ToolName,
-			Description: "Delegate broad or multi-file codebase discovery to isolated read-only Notch subagents when doing so is likely to save parent context or parallelize independent work. Prefer direct read/grep/find/ls calls for focused lookups, and avoid delegation when startup and duplicated context would likely cost more than a few direct tool calls. Provide exactly one of task (one focused question) or tasks (independent questions run in parallel).",
+			Description: "Delegate broad or multi-file codebase discovery to isolated read-only Notch subagents when doing so is likely to save parent context or parallelize independent work. Prefer direct read/grep/find/ls calls for focused lookups, and avoid delegation when startup and duplicated context would likely cost more than a few direct tool calls. Always provide a tasks array: use one item for one focused question or multiple items for independent parallel questions.",
 			InputSchema: schema(),
 		},
 		Execute: func(ctx context.Context, raw json.RawMessage, update func(string)) (extension.ToolResult, error) {
@@ -105,14 +105,11 @@ func schema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"task":  map[string]any{"type": "string", "minLength": 1, "description": "One focused exploration question. Do not provide tasks with this field."},
-			"tasks": map[string]any{"type": "array", "minItems": 1, "maxItems": maxTasks, "items": task, "description": "Independent exploration questions to run in parallel. Do not provide task with this field."},
+			"tasks": map[string]any{"type": "array", "minItems": 1, "maxItems": maxTasks, "items": task, "description": "Exploration questions. Use one item for a single focused question or multiple independent items to run in parallel."},
 			"model": map[string]any{"type": "string", "description": "Default model override."},
 			"cwd":   map[string]any{"type": "string", "description": "Default working directory override."},
 		},
-		// Anthropic rejects oneOf/anyOf/allOf at an input schema's top level.
-		// decode enforces that exactly one of task or tasks is provided.
-		"additionalProperties": false,
+		"required": []string{"tasks"}, "additionalProperties": false,
 	}
 }
 
@@ -130,24 +127,17 @@ func decode(raw json.RawMessage) (Input, error) {
 	for i := range input.Tasks {
 		input.Tasks[i].Task = strings.TrimSpace(input.Tasks[i].Task)
 	}
-	if input.Task != "" && len(input.Tasks) != 0 {
-		// Some model providers populate every optional schema property and use a
-		// blank task as a placeholder for the unused mode. Treat that placeholder
-		// as omitted, while still rejecting two actual exploration requests.
-		if len(input.Tasks) == 1 && input.Tasks[0].Task == "" {
-			input.Tasks = nil
-		} else {
-			return input, errors.New("provide either task or tasks, not both")
-		}
+	if input.Task != "" {
+		// Backward compatibility for callers using the old singular field. If a
+		// provider also synthesizes a tasks placeholder, the explicit singular
+		// request wins instead of forcing the model through a retry loop.
+		input.Tasks = []Task{{Task: input.Task}}
 	}
-	if input.Task == "" && len(input.Tasks) == 0 {
-		return input, errors.New("task or tasks is required")
+	if len(input.Tasks) == 0 {
+		return input, errors.New("tasks is required")
 	}
 	if len(input.Tasks) > maxTasks {
 		return input, fmt.Errorf("tasks must contain at most %d items", maxTasks)
-	}
-	if input.Task != "" {
-		input.Tasks = []Task{{Task: input.Task}}
 	}
 	for i := range input.Tasks {
 		if input.Tasks[i].Task == "" {

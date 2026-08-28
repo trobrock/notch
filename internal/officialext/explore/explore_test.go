@@ -46,7 +46,7 @@ func TestExploreSchemaAndDescriptionGuideCorrectUse(t *testing.T) {
 		t.Fatal(err)
 	}
 	tool, _ := registry.Tool(ToolName)
-	if !strings.Contains(tool.Definition.Description, "save parent context") || !strings.Contains(tool.Definition.Description, "exactly one") || !strings.Contains(tool.Definition.Description, "avoid delegation") {
+	if !strings.Contains(tool.Definition.Description, "save parent context") || !strings.Contains(tool.Definition.Description, "tasks array") || !strings.Contains(tool.Definition.Description, "avoid delegation") {
 		t.Fatalf("description = %q", tool.Definition.Description)
 	}
 	schema := tool.Definition.InputSchema
@@ -56,8 +56,11 @@ func TestExploreSchemaAndDescriptionGuideCorrectUse(t *testing.T) {
 		}
 	}
 	properties, ok := schema["properties"].(map[string]any)
-	if !ok || properties["task"] == nil || properties["tasks"] == nil {
-		t.Fatalf("schema does not expose both task modes: %#v", schema)
+	if !ok || properties["tasks"] == nil || properties["task"] != nil {
+		t.Fatalf("schema should expose one unambiguous tasks mode: %#v", schema)
+	}
+	if required, ok := schema["required"].([]string); !ok || !reflect.DeepEqual(required, []string{"tasks"}) {
+		t.Fatalf("required = %#v", schema["required"])
 	}
 }
 
@@ -123,15 +126,15 @@ func TestExploreParallelWallTimeUsesBatchElapsed(t *testing.T) {
 }
 
 func TestExploreValidatesModes(t *testing.T) {
-	for _, raw := range []string{`{}`, `{"task":"x","tasks":[{"task":"y"}]}`, `{"tasks":[]}`, `{"tasks":[{"task":" "}]}`, `{"unknown":true}`} {
+	for _, raw := range []string{`{}`, `{"tasks":[]}`, `{"tasks":[{"task":" "}]}`, `{"unknown":true}`} {
 		if _, err := decode(json.RawMessage(raw)); err == nil {
 			t.Fatalf("decode(%s) succeeded", raw)
 		}
 	}
 }
 
-func TestExploreIgnoresBlankBatchPlaceholderWithSingleTask(t *testing.T) {
-	input, err := decode(json.RawMessage(`{"task":"find parser","tasks":[{"task":" "}],"model":"test/model","cwd":"/work"}`))
+func TestExplorePrefersLegacySingleTaskWhenProviderAlsoSendsTasks(t *testing.T) {
+	input, err := decode(json.RawMessage(`{"task":"find parser","tasks":[{"task":"placeholder"}],"model":"test/model","cwd":"/work"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
