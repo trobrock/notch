@@ -16,7 +16,7 @@ const (
 	defaultMaxTokens    = 8192
 	defaultSystemPrompt = `You are a coding agent. Help the user understand and modify their codebase.
 
-Delegate broad codebase discovery or multi-file flow tracing only when doing so is likely to save parent context or parallelize independent work. Prefer direct grep, find, read, and ls calls for focused work, and avoid delegation when startup and duplicated context would cost more than a few direct tool calls. Bring only concise findings into the main context. When calling explore_codebase, provide exactly one of task for one focused question or tasks for independent questions that can run in parallel; never provide both.`
+Delegate broad codebase discovery or multi-file flow tracing only when doing so is likely to save parent context or parallelize independent work. Prefer direct grep, find, read, and ls calls for focused work, and avoid delegation when startup and duplicated context would cost more than a few direct tool calls. Bring only concise findings into the main context. When calling explore_codebase, always provide a tasks array: one item for one focused question or multiple independent items to run in parallel. Normally omit model so Notch uses the configured explore model or the current parent model. Never invent a model ID; if an explore model is unavailable, call list_models for that provider and retry once with the closest available model in the same family and capability tier.`
 	defaultTheme    = "dark"
 	defaultThinking = "medium"
 )
@@ -62,6 +62,7 @@ type PresetConfig struct {
 type Config struct {
 	Provider          string                  `json:"provider,omitempty"`
 	Model             string                  `json:"model,omitempty"`
+	ExploreModel      string                  `json:"explore_model,omitempty"`
 	BaseURL           string                  `json:"base_url,omitempty"`
 	MaxTokens         int                     `json:"max_tokens,omitempty"`
 	SystemPrompt      string                  `json:"system_prompt,omitempty"`
@@ -145,8 +146,8 @@ func defaults(home, cwd string, includeProject bool) (Config, error) {
 }
 
 // Load loads the built-in defaults, then the per-user configuration, then the
-// project configuration, and finally NOTCH_PROVIDER, NOTCH_MODEL, and
-// NOTCH_THINKING_LEVEL. It preserves the historical API and treats project
+// project configuration, and finally NOTCH_PROVIDER, NOTCH_MODEL,
+// NOTCH_EXPLORE_MODEL, and NOTCH_THINKING_LEVEL. It preserves the historical API and treats project
 // inputs as enabled; callers handling an untrusted workspace should use
 // LoadWorkspace.
 func Load(home, cwd string) (Config, error) {
@@ -247,6 +248,9 @@ func applyEnvironment(cfg *Config) {
 	if value := strings.TrimSpace(os.Getenv("NOTCH_MODEL")); value != "" {
 		cfg.Model = value
 	}
+	if value := strings.TrimSpace(os.Getenv("NOTCH_EXPLORE_MODEL")); value != "" {
+		cfg.ExploreModel = value
+	}
 	if value := strings.TrimSpace(os.Getenv("NOTCH_THINKING_LEVEL")); value != "" {
 		cfg.ThinkingLevel = value
 	}
@@ -288,6 +292,9 @@ func merge(dst *Config, src Config) {
 	}
 	if src.Model != "" {
 		dst.Model = src.Model
+	}
+	if value := strings.TrimSpace(src.ExploreModel); value != "" {
+		dst.ExploreModel = value
 	}
 	if src.BaseURL != "" {
 		dst.BaseURL = src.BaseURL

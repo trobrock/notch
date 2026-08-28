@@ -16,7 +16,7 @@ func TestDefaultSystemPromptGuidesCodebaseExploration(t *testing.T) {
 	if cfg.CacheRetention != "short" {
 		t.Fatalf("default cache retention = %q", cfg.CacheRetention)
 	}
-	for _, text := range []string{"likely to save parent context", "Prefer direct grep", "avoid delegation", "exactly one of task", "never provide both"} {
+	for _, text := range []string{"likely to save parent context", "Prefer direct grep", "avoid delegation", "always provide a tasks array", "Normally omit model", "Never invent a model ID", "call list_models"} {
 		if !strings.Contains(cfg.SystemPrompt, text) {
 			t.Fatalf("default system prompt missing %q: %q", text, cfg.SystemPrompt)
 		}
@@ -166,27 +166,29 @@ func TestLoadEnvironmentOverridesFilesAndEmptyValuesFallBack(t *testing.T) {
 	clearRuntimeConfigEnv(t)
 	home, cwd := t.TempDir(), t.TempDir()
 	t.Setenv("NOTCH_HOME", "")
-	writeJSON(t, filepath.Join(cwd, ".notch", "config.json"), `{"provider":"anthropic","model":"file-model","thinking_level":"low"}`)
+	writeJSON(t, filepath.Join(cwd, ".notch", "config.json"), `{"provider":"anthropic","model":"file-model","explore_model":"anthropic/file-explore","thinking_level":"low"}`)
 	t.Setenv("NOTCH_PROVIDER", " openrouter ")
 	t.Setenv("NOTCH_MODEL", " env-model ")
+	t.Setenv("NOTCH_EXPLORE_MODEL", " openai-codex/env-explore ")
 	t.Setenv("NOTCH_THINKING_LEVEL", " high ")
 
 	cfg, err := Load(home, cwd)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Provider != "openrouter" || cfg.Model != "env-model" || cfg.ThinkingLevel != "high" {
+	if cfg.Provider != "openrouter" || cfg.Model != "env-model" || cfg.ExploreModel != "openai-codex/env-explore" || cfg.ThinkingLevel != "high" {
 		t.Fatalf("environment overrides = %+v", cfg)
 	}
 
 	t.Setenv("NOTCH_PROVIDER", "")
 	t.Setenv("NOTCH_MODEL", "  ")
+	t.Setenv("NOTCH_EXPLORE_MODEL", "")
 	t.Setenv("NOTCH_THINKING_LEVEL", "")
 	cfg, err = Load(home, cwd)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Provider != "anthropic" || cfg.Model != "file-model" || cfg.ThinkingLevel != "low" {
+	if cfg.Provider != "anthropic" || cfg.Model != "file-model" || cfg.ExploreModel != "anthropic/file-explore" || cfg.ThinkingLevel != "low" {
 		t.Fatalf("empty environment values did not fall back: %+v", cfg)
 	}
 }
@@ -366,7 +368,7 @@ func TestEnsureDirsReportsFileConflict(t *testing.T) {
 
 func clearRuntimeConfigEnv(t *testing.T) {
 	t.Helper()
-	for _, name := range []string{"NOTCH_PROVIDER", "NOTCH_MODEL", "NOTCH_THINKING_LEVEL", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "NOTCH_HOME"} {
+	for _, name := range []string{"NOTCH_PROVIDER", "NOTCH_MODEL", "NOTCH_EXPLORE_MODEL", "NOTCH_THINKING_LEVEL", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "NOTCH_HOME"} {
 		t.Setenv(name, "")
 	}
 }

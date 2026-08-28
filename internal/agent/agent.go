@@ -81,6 +81,7 @@ type Config struct {
 	Registry       *extension.Registry
 	Session        *session.Session
 	Model          string
+	ExploreModel   string
 	SystemPrompt   string
 	MaxTokens      int
 	ThinkingLevel  string
@@ -102,6 +103,7 @@ type Agent struct {
 	registry       *extension.Registry
 	session        *session.Session
 	model          string
+	exploreModel   string
 	system         string
 	maxTokens      int
 	cacheRetention string
@@ -199,7 +201,7 @@ func New(cfg Config) (*Agent, error) {
 	}
 	a := &Agent{
 		provider: cfg.Provider, providerName: providerName, registry: cfg.Registry, session: cfg.Session,
-		model: cfg.Model, system: cfg.SystemPrompt, maxTokens: cfg.MaxTokens,
+		model: cfg.Model, exploreModel: strings.TrimSpace(cfg.ExploreModel), system: cfg.SystemPrompt, maxTokens: cfg.MaxTokens,
 		thinkingLevel: cfg.ThinkingLevel, cacheRetention: cfg.CacheRetention, cacheKey: cacheKey,
 		compaction: cfg.Compaction, retry: cfg.Retry,
 	}
@@ -635,12 +637,18 @@ func (a *Agent) applyDelegationModelDefault(call *model.Block) {
 	if value, _ := arguments["model"].(string); strings.TrimSpace(value) != "" {
 		return
 	}
-	modelName := strings.TrimSpace(a.model)
-	if modelName == "" {
-		return
+	modelName := ""
+	if call.Name == "explore_codebase" {
+		modelName = strings.TrimSpace(a.exploreModel)
 	}
-	if provider := strings.TrimSpace(a.providerName); provider != "" {
-		modelName = provider + "/" + modelName
+	if modelName == "" {
+		modelName = strings.TrimSpace(a.model)
+		if modelName == "" {
+			return
+		}
+		if provider := strings.TrimSpace(a.providerName); provider != "" {
+			modelName = provider + "/" + modelName
+		}
 	}
 	arguments["model"] = modelName
 	if raw, err := json.Marshal(arguments); err == nil {

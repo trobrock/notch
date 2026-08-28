@@ -46,8 +46,10 @@ func TestExploreSchemaAndDescriptionGuideCorrectUse(t *testing.T) {
 		t.Fatal(err)
 	}
 	tool, _ := registry.Tool(ToolName)
-	if !strings.Contains(tool.Definition.Description, "save parent context") || !strings.Contains(tool.Definition.Description, "tasks array") || !strings.Contains(tool.Definition.Description, "avoid delegation") {
-		t.Fatalf("description = %q", tool.Definition.Description)
+	for _, text := range []string{"save parent context", "tasks array", "avoid delegation", "Normally omit model", "Never guess model IDs", "call list_models"} {
+		if !strings.Contains(tool.Definition.Description, text) {
+			t.Fatalf("description missing %q: %q", text, tool.Definition.Description)
+		}
 	}
 	schema := tool.Definition.InputSchema
 	for _, keyword := range []string{"oneOf", "anyOf", "allOf"} {
@@ -122,6 +124,39 @@ func TestExploreParallelWallTimeUsesBatchElapsed(t *testing.T) {
 	usage := result.Details["delegated_usage"].(delegation.Usage)
 	if usage.WallMS >= 1000 {
 		t.Fatalf("wall_ms should be batch elapsed rather than summed child duration, got %#v", usage)
+	}
+}
+
+type unavailableModelRunner struct{}
+
+func (unavailableModelRunner) Run(_ context.Context, input subagent.Input, _ func(string)) (subagent.Result, error) {
+	return subagent.Result{
+		Output:   "openai: The requested model is not supported for this account",
+		ExitCode: 1,
+		Usage:    subagent.Usage{Model: input.Model},
+	}, nil
+}
+
+func TestExploreUnavailableModelGuidesListedFallback(t *testing.T) {
+	registry := extension.NewRegistry()
+	if err := RegisterWithRunner(registry, unavailableModelRunner{}); err != nil {
+		t.Fatal(err)
+	}
+	tool, _ := registry.Tool(ToolName)
+	result, err := tool.Execute(context.Background(), json.RawMessage(`{"tasks":[{"task":"inspect"}],"model":"openai-codex/gpt-guessed"}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Fatalf("result = %#v", result)
+	}
+	for _, text := range []string{"`openai-codex/gpt-guessed`", "Do not invent another model ID", "Call list_models", "`openai-codex`", "retry once", "mini/small", "full coding model"} {
+		if !strings.Contains(result.Content, text) {
+			t.Fatalf("recovery guidance missing %q: %q", text, result.Content)
+		}
+	}
+	if guidance := modelRecoveryGuidance([]taskResult{{ExitCode: 1, Output: "ordinary test failure", Usage: subagent.Usage{Model: "openai-codex/gpt"}}}); guidance != "" {
+		t.Fatalf("ordinary failure guidance = %q", guidance)
 	}
 }
 

@@ -418,6 +418,9 @@ func run(args []string) error {
 	if summary := catalog.SystemSummary(skillToolAvailable); summary != "" {
 		systemPrompt += "\n\n" + summary
 	}
+	if cfg.ExploreModel != "" {
+		systemPrompt += "\n\nThe configured default for explore_codebase is `" + cfg.ExploreModel + "`. Omit model to use it. If it is unavailable, call list_models for its provider and retry once with the closest listed model in the same family and capability tier; never guess an unlisted model ID."
+	}
 
 	credentialStore := credentials.New(cfg.AuthFile)
 	baseModelConfig := cfg
@@ -491,7 +494,7 @@ func run(args []string) error {
 	}
 	runner, err := agent.New(agent.Config{
 		Provider: provider, ProviderName: normalizeProvider(cfg.Provider), Registry: registry, Session: store, Model: cfg.Model,
-		SystemPrompt: systemPrompt, MaxTokens: cfg.MaxTokens, ThinkingLevel: cfg.ThinkingLevel, CacheRetention: cfg.CacheRetention,
+		ExploreModel: cfg.ExploreModel, SystemPrompt: systemPrompt, MaxTokens: cfg.MaxTokens, ThinkingLevel: cfg.ThinkingLevel, CacheRetention: cfg.CacheRetention,
 		Compaction: agent.CompactionConfig{Enabled: compactionEnabled, ContextWindow: contextWindow, ReserveTokens: reserveTokens, KeepRecentTokens: keepRecentTokens},
 	})
 	if err != nil {
@@ -1345,7 +1348,7 @@ func initialize(home, cwd string, cfg config.Config) error {
 		return nil
 	}
 	data, _ := json.MarshalIndent(map[string]any{
-		"provider": cfg.Provider, "model": cfg.Model, "max_tokens": cfg.MaxTokens,
+		"provider": cfg.Provider, "model": cfg.Model, "explore_model": cfg.ExploreModel, "max_tokens": cfg.MaxTokens,
 		"theme": cfg.Theme, "thinking_level": cfg.ThinkingLevel, "compaction": cfg.Compaction,
 	}, "", "  ")
 	data = append(data, '\n')

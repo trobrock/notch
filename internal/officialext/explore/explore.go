@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -67,7 +68,7 @@ func RegisterWithRunner(registry *extension.Registry, runner subagent.Runner) er
 		Source: Source,
 		Definition: model.ToolDefinition{
 			Name:        ToolName,
-			Description: "Delegate broad or multi-file codebase discovery to isolated read-only Notch subagents when doing so is likely to save parent context or parallelize independent work. Prefer direct read/grep/find/ls calls for focused lookups, and avoid delegation when startup and duplicated context would likely cost more than a few direct tool calls. Always provide a tasks array: use one item for one focused question or multiple items for independent parallel questions.",
+			Description: "Delegate broad or multi-file codebase discovery to isolated read-only Notch subagents when doing so is likely to save parent context or parallelize independent work. Prefer direct read/grep/find/ls calls for focused lookups, and avoid delegation when startup and duplicated context would likely cost more than a few direct tool calls. Always provide a tasks array: use one item for one focused question or multiple items for independent parallel questions. Normally omit model (or leave it empty) so Notch uses the configured explore model or current parent model. Never guess model IDs. If the selected model is unavailable, call list_models for that provider and retry once with the closest listed model in the same family and capability tier.",
 			InputSchema: schema(),
 		},
 		Execute: func(ctx context.Context, raw json.RawMessage, update func(string)) (extension.ToolResult, error) {
@@ -83,7 +84,11 @@ func RegisterWithRunner(registry *extension.Registry, runner subagent.Runner) er
 			for _, result := range batch.Results {
 				failed = failed || result.ExitCode != 0
 			}
-			return extension.ToolResult{Content: render(batch.Results), IsError: failed, Details: map[string]any{"results": batch.Results, "count": len(batch.Results), "delegated_usage": batch.DelegatedUsage}}, nil
+			content := render(batch.Results)
+			if guidance := modelRecoveryGuidance(batch.Results); guidance != "" {
+				content += "\n\n" + guidance
+			}
+			return extension.ToolResult{Content: content, IsError: failed, Details: map[string]any{"results": batch.Results, "count": len(batch.Results), "delegated_usage": batch.DelegatedUsage}}, nil
 		},
 	}
 	if err := registry.RegisterTool(tool); err != nil {
@@ -97,7 +102,7 @@ func schema() map[string]any {
 		"type": "object",
 		"properties": map[string]any{
 			"task":  map[string]any{"type": "string", "minLength": 1, "description": "Focused exploration question."},
-			"model": map[string]any{"type": "string", "description": "Optional model override for this task."},
+			"model": map[string]any{"type": "string", "description": "Optional per-task override. Normally omit or leave empty; only use an ID returned by list_models."},
 			"cwd":   map[string]any{"type": "string", "description": "Optional working directory override."},
 		},
 		"required": []string{"task"}, "additionalProperties": false,
@@ -106,7 +111,7 @@ func schema() map[string]any {
 		"type": "object",
 		"properties": map[string]any{
 			"tasks": map[string]any{"type": "array", "minItems": 1, "maxItems": maxTasks, "items": task, "description": "Exploration questions. Use one item for a single focused question or multiple independent items to run in parallel."},
-			"model": map[string]any{"type": "string", "description": "Default model override."},
+			"model": map[string]any{"type": "string", "description": "Optional batch override. Normally omit or leave empty to use configured explore_model or the parent model; never guess an ID."},
 			"cwd":   map[string]any{"type": "string", "description": "Default working directory override."},
 		},
 		"required": []string{"tasks"}, "additionalProperties": false,
@@ -215,6 +220,64 @@ func run(ctx context.Context, runner subagent.Runner, input Input, update func(s
 		aggregate.Calls++
 	}
 	return runResult{Results: results, DelegatedUsage: aggregate}, nil
+}
+
+func modelRecoveryGuidance(results []taskResult) string {
+	models := make(map[string]bool)
+	providers := make(map[string]bool)
+	for _, result := range results {
+		if result.ExitCode == 0 || !isUnavailableModelError(result.Output) {
+			continue
+		}
+		name := strings.TrimSpace(result.Usage.Model)
+		if name == "" {
+			continue
+		}
+		models[name] = true
+		if provider, _, ok := strings.Cut(name, "/"); ok && provider != "" {
+			providers[provider] = true
+		}
+	}
+	if len(models) == 0 {
+		return ""
+	}
+	modelNames := sortedKeys(models)
+	providerNames := sortedKeys(providers)
+	providerHint := "the failed model's provider"
+	if len(providerNames) != 0 {
+		quoted := make([]string, len(providerNames))
+		for i, provider := range providerNames {
+			quoted[i] = "`" + provider + "`"
+		}
+		providerHint = strings.Join(quoted, ", ")
+	}
+	quotedModels := make([]string, len(modelNames))
+	for i, name := range modelNames {
+		quotedModels[i] = "`" + name + "`"
+	}
+	return "Explore model " + strings.Join(quotedModels, ", ") + " appears unavailable. Do not invent another model ID. Call list_models for " + providerHint + " (refresh if needed), then retry once with a returned model closest in family and capability tier. For bounded read-only exploration, prefer a current mini/small coding variant; for nuanced architecture work, prefer the current full coding model."
+}
+
+func isUnavailableModelError(output string) bool {
+	value := strings.ToLower(output)
+	if !strings.Contains(value, "model") {
+		return false
+	}
+	for _, marker := range []string{"not supported", "unsupported", "not found", "unknown model", "does not exist", "unavailable", "not available"} {
+		if strings.Contains(value, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func sortedKeys(values map[string]bool) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func systemPrompt() string {

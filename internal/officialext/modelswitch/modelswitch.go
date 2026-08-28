@@ -54,7 +54,7 @@ func switchTool(host extension.Host) extension.Tool {
 }
 
 func listTool(host extension.Host) extension.Tool {
-	return extension.Tool{Source: Source, Definition: model.ToolDefinition{Name: "list_models", Description: "List models available from a provider before choosing one with switch_model.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+	return extension.Tool{Source: Source, Definition: model.ToolDefinition{Name: "list_models", Description: "List models available from a provider before choosing one for switch_model, run_subagent, or explore_codebase. Use returned IDs rather than guessing model names.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 		"provider": map[string]any{"type": "string", "enum": []string{"openai-codex", "anthropic-claude-code", "anthropic", "openrouter", "openai"}, "description": "Provider to list. Omit for the current provider."},
 		"refresh":  map[string]any{"type": "boolean", "description": "Refresh provider model discovery instead of using the cache."},
 	}, "additionalProperties": false}}, Execute: func(ctx context.Context, raw json.RawMessage, _ func(string)) (extension.ToolResult, error) {

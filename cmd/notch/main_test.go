@@ -180,6 +180,7 @@ func TestInitIgnoresProjectInputsAndAppliesModelFlags(t *testing.T) {
 	notchHome := filepath.Join(t.TempDir(), "notch-home")
 	t.Setenv("XDG_CONFIG_HOME", notchHome)
 	t.Setenv("XDG_DATA_HOME", notchHome)
+	t.Setenv("NOTCH_EXPLORE_MODEL", "openai/explore-model")
 	if err := os.WriteFile(filepath.Join(cwd, ".git"), []byte("malformed worktree marker"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -201,14 +202,15 @@ func TestInitIgnoresProjectInputsAndAppliesModelFlags(t *testing.T) {
 		t.Fatal(err)
 	}
 	var initialized struct {
-		Provider string `json:"provider"`
-		Model    string `json:"model"`
-		Thinking string `json:"thinking_level"`
+		Provider     string `json:"provider"`
+		Model        string `json:"model"`
+		ExploreModel string `json:"explore_model"`
+		Thinking     string `json:"thinking_level"`
 	}
 	if err := json.Unmarshal(data, &initialized); err != nil {
 		t.Fatal(err)
 	}
-	if initialized.Provider != "openai" || initialized.Model != "init-model" || initialized.Thinking != "high" {
+	if initialized.Provider != "openai" || initialized.Model != "init-model" || initialized.ExploreModel != "openai/explore-model" || initialized.Thinking != "high" {
 		t.Fatalf("initialized config = %+v", initialized)
 	}
 	if !strings.Contains(output, filepath.Join(cwd, ".notch", "extensions")) {

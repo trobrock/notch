@@ -73,6 +73,9 @@ func TestListModels(t *testing.T) {
 		t.Fatal(err)
 	}
 	tool, _ := r.Tool("list_models")
+	if !strings.Contains(tool.Definition.Description, "run_subagent") || !strings.Contains(tool.Definition.Description, "explore_codebase") || !strings.Contains(tool.Definition.Description, "rather than guessing") {
+		t.Fatalf("description = %q", tool.Definition.Description)
+	}
 	result, err := tool.Execute(context.Background(), json.RawMessage(`{"provider":"anthropic","refresh":true}`), nil)
 	if err != nil {
 		t.Fatal(err)

@@ -837,20 +837,30 @@ func TestPromptRetryBackoffHonorsCancellation(t *testing.T) {
 	}
 }
 
-func TestDelegationToolsInheritCurrentProviderAndModel(t *testing.T) {
-	a := &Agent{providerName: "openrouter", model: "anthropic/claude-test"}
-	for _, name := range []string{"run_subagent", "explore_codebase"} {
+func TestDelegationToolsUseConfiguredDefaults(t *testing.T) {
+	a, err := New(Config{
+		Provider: &fakeProvider{}, ProviderName: "openrouter", Registry: extension.NewRegistry(),
+		Model: "anthropic/claude-test", ExploreModel: " openai-codex/gpt-explore ",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"run_subagent":     "openrouter/anthropic/claude-test",
+		"explore_codebase": "openai-codex/gpt-explore",
+	}
+	for name, expected := range want {
 		call := model.Block{Name: name, Arguments: json.RawMessage(`{"prompt":"inspect"}`)}
 		a.applyDelegationModelDefault(&call)
 		var arguments map[string]any
 		if err := json.Unmarshal(call.Arguments, &arguments); err != nil {
 			t.Fatal(err)
 		}
-		if arguments["model"] != "openrouter/anthropic/claude-test" {
-			t.Fatalf("%s model = %#v", name, arguments["model"])
+		if arguments["model"] != expected {
+			t.Fatalf("%s model = %#v, want %q", name, arguments["model"], expected)
 		}
 	}
-	explicit := model.Block{Name: "run_subagent", Arguments: json.RawMessage(`{"prompt":"inspect","model":"anthropic/custom"}`)}
+	explicit := model.Block{Name: "explore_codebase", Arguments: json.RawMessage(`{"tasks":[{"task":"inspect"}],"model":"anthropic/custom"}`)}
 	a.applyDelegationModelDefault(&explicit)
 	if !strings.Contains(string(explicit.Arguments), `"anthropic/custom"`) {
 		t.Fatalf("explicit model changed: %s", explicit.Arguments)

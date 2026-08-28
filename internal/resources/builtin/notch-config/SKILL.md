@@ -15,10 +15,10 @@ Notch resolves values in this order, with later layers winning:
 1. compiled defaults;
 2. `$XDG_CONFIG_HOME/notch/config.json`, or `~/.config/notch/config.json` when unset;
 3. `<workspace-root>/.notch/config.json`, only when trusted;
-4. `NOTCH_PROVIDER`, `NOTCH_MODEL`, and `NOTCH_THINKING_LEVEL`;
+4. `NOTCH_PROVIDER`, `NOTCH_MODEL`, `NOTCH_EXPLORE_MODEL`, and `NOTCH_THINKING_LEVEL`;
 5. CLI flags such as `--provider` and `--model`.
 
-Use trusted project config for repository-specific behavior and user config for defaults shared by all projects. `base_url` is global-only. Auth, MCP-auth, session, and model-cache paths are fixed below `$XDG_DATA_HOME/notch` (default `~/.local/share/notch`) and JSON keys attempting to configure them are ignored. Standalone `notch login`, `logout`, `auth`, and `models` commands load global configuration only. Use environment variables for temporary shell or CI overrides. Provider and model overrides are independent.
+Use trusted project config for repository-specific behavior and user config for defaults shared by all projects. `base_url` is global-only. Auth, MCP-auth, session, and model-cache paths are fixed below `$XDG_DATA_HOME/notch` (default `~/.local/share/notch`) and JSON keys attempting to configure them are ignored. Standalone `notch login`, `logout`, `auth`, and `models` commands load global configuration only. Use environment variables for temporary shell or CI overrides. Provider, parent model, and explore model overrides are independent.
 
 Before editing, read every existing applicable config file. Do not replace unrelated keys. Ask before changing user-global configuration when a project-local change would work.
 
@@ -28,6 +28,7 @@ Before editing, read every existing applicable config file. Do not replace unrel
 {
   "provider": "openai-codex",
   "model": "gpt-5.6-sol",
+  "explore_model": "openai-codex/gpt-5.4-mini",
   "base_url": "",
   "max_tokens": 8192,
   "theme": "dark",
@@ -49,11 +50,11 @@ Before editing, read every existing applicable config file. Do not replace unrel
   "extension_dirs": ["/home/me/.config/notch/extensions", "/work/project/.notch/extensions"],
   "skill_dirs": ["/home/me/.config/notch/skills", "/work/project/.notch/skills"],
   "prompt_dirs": ["/home/me/.config/notch/prompts", "/work/project/.notch/prompts"],
-  "theme_dirs": ["/home/me/.config/notch/themes", "/work/project/.notch/themes"],
+  "theme_dirs": ["/home/me/.config/notch/themes", "/work/project/.notch/themes"]
 }
 ```
 
-Empty scalar values in later files do not erase earlier values. A non-empty directory array replaces the complete earlier array; it is not appended. `context_window: 0` lets the provider/model default apply.
+Empty scalar values in later files do not erase earlier values. A non-empty directory array replaces the complete earlier array; it is not appended. `context_window: 0` lets the provider/model default apply. `explore_model` (or `NOTCH_EXPLORE_MODEL`) is the provider-qualified default for `explore_codebase`. Explicit batch and per-task overrides still win; normally omit them. If the configured model is unavailable, use `list_models` for that provider and retry once with a returned closest-family/capability model rather than guessing an ID.
 
 The model registry ships with an offline fallback and refreshes stale selected-provider data from provider model-list APIs on startup or when `/model` is opened. `model_refresh_hours` controls staleness; no polling timer runs. Use `notch models [provider]` to list cached/discovered models, `notch models --refresh [provider]` to force discovery, and `/model refresh` to force it in the fullscreen selector. The mode-0600 JSON cache has a fixed path below the XDG data root.
 
