@@ -14,6 +14,8 @@ import (
 	"github.com/mattn/go-runewidth"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
+	"github.com/yuin/goldmark/extension"
+	extast "github.com/yuin/goldmark/extension/ast"
 	textm "github.com/yuin/goldmark/text"
 )
 
@@ -32,9 +34,10 @@ type markdownLine struct {
 type markdownRenderer struct {
 	source []byte
 	theme  Theme
+	width  int
 }
 
-var markdownParser = goldmark.New()
+var markdownParser = goldmark.New(goldmark.WithExtensions(extension.Table))
 
 // renderMarkdown returns unpadded ANSI lines. width is a display-cell width,
 // not a byte count. base is restored after every inline style reset (important
@@ -45,7 +48,7 @@ func renderMarkdown(source string, width int, theme Theme, base string) []string
 	}
 	data := []byte(strings.ReplaceAll(strings.ReplaceAll(source, "\r\n", "\n"), "\r", "\n"))
 	doc := markdownParser.Parser().Parse(textm.NewReader(data))
-	r := markdownRenderer{source: data, theme: theme}
+	r := markdownRenderer{source: data, theme: theme, width: width}
 	logical := r.blocks(doc)
 	if len(logical) == 0 {
 		logical = []markdownLine{{}}
@@ -97,6 +100,8 @@ func (r markdownRenderer) blocks(parent ast.Node) []markdownLine {
 			block = []markdownLine{{spans: []markdownSpan{{text: "─", style: r.theme.MarkdownRule}}, rule: true}}
 		case *ast.List:
 			block = r.list(n)
+		case *extast.Table:
+			block = r.table(n)
 		case *ast.HTMLBlock:
 			// Raw HTML has no terminal semantics.  Showing it literally is safer
 			// and less surprising than silently dropping streamed model output.
@@ -170,6 +175,187 @@ func (r markdownRenderer) code(lines *textm.Segments) []markdownLine {
 		out = append(out, markdownLine{spans: []markdownSpan{{style: r.theme.MarkdownCodeBlock}}, verbatim: true})
 	}
 	return out
+}
+
+func (r markdownRenderer) table(table *extast.Table) []markdownLine {
+	type row struct {
+		cells  [][]markdownSpan
+		aligns []extast.Alignment
+		header bool
+	}
+
+	var rows []row
+	columns := 0
+	for node := table.FirstChild(); node != nil; node = node.NextSibling() {
+		current := row{}
+		switch node.(type) {
+		case *extast.TableHeader:
+			current.header = true
+		case *extast.TableRow:
+		default:
+			continue
+		}
+		for child := node.FirstChild(); child != nil; child = child.NextSibling() {
+			cell, ok := child.(*extast.TableCell)
+			if !ok {
+				continue
+			}
+			style := ""
+			if current.header {
+				style = "\x1b[1m"
+			}
+			current.cells = append(current.cells, r.inlines(cell, style))
+			current.aligns = append(current.aligns, cell.Alignment)
+		}
+		if len(current.cells) > columns {
+			columns = len(current.cells)
+		}
+		rows = append(rows, current)
+	}
+	if columns == 0 {
+		return nil
+	}
+
+	// A boxed table needs one content cell per column, two spaces around each
+	// cell, and its vertical borders. At very narrow widths, retain the parsed
+	// cells but fall back to ordinary wrapping instead of emitting broken boxes.
+	minimumWidth := 4*columns + 1
+	if r.width < minimumWidth {
+		var out []markdownLine
+		for _, row := range rows {
+			var spans []markdownSpan
+			for i, cell := range row.cells {
+				if i > 0 {
+					spans = appendSpan(spans, " │ ", r.theme.MarkdownRule)
+				}
+				for _, span := range cell {
+					spans = appendSpan(spans, span.text, span.style)
+				}
+			}
+			out = append(out, markdownLine{spans: spans})
+		}
+		return out
+	}
+
+	widths := make([]int, columns)
+	for i := range widths {
+		widths[i] = 1
+	}
+	for _, row := range rows {
+		for column, cell := range row.cells {
+			cellWidth := markdownSpansWidth(cell)
+			if cellWidth > r.width {
+				cellWidth = r.width
+			}
+			if cellWidth > widths[column] {
+				widths[column] = cellWidth
+			}
+		}
+	}
+	budget := r.width - 3*columns - 1
+	for totalInt(widths) > budget {
+		widest := 0
+		for i := 1; i < len(widths); i++ {
+			if widths[i] > widths[widest] {
+				widest = i
+			}
+		}
+		if widths[widest] <= 1 {
+			break
+		}
+		widths[widest]--
+	}
+
+	border := func(left, middle, right string) markdownLine {
+		var b strings.Builder
+		b.WriteString(left)
+		for i, width := range widths {
+			if i > 0 {
+				b.WriteString(middle)
+			}
+			b.WriteString(strings.Repeat("─", width+2))
+		}
+		b.WriteString(right)
+		return markdownLine{spans: []markdownSpan{{text: b.String(), style: r.theme.MarkdownRule}}, verbatim: true}
+	}
+
+	out := []markdownLine{border("┌", "┬", "┐")}
+	for rowIndex, row := range rows {
+		wrapped := make([][]markdownLine, columns)
+		height := 1
+		for column := 0; column < columns; column++ {
+			var cell []markdownSpan
+			if column < len(row.cells) {
+				cell = row.cells[column]
+			}
+			wrapped[column] = wrapMarkdownLine(markdownLine{spans: cell}, widths[column])
+			if len(wrapped[column]) > height {
+				height = len(wrapped[column])
+			}
+		}
+		for lineIndex := 0; lineIndex < height; lineIndex++ {
+			line := markdownLine{verbatim: true}
+			line.spans = appendSpan(line.spans, "│", r.theme.MarkdownRule)
+			for column := 0; column < columns; column++ {
+				line.spans = appendSpan(line.spans, " ", "")
+				var content markdownLine
+				if lineIndex < len(wrapped[column]) {
+					content = wrapped[column][lineIndex]
+				}
+				contentWidth := markdownSpansWidth(content.spans)
+				left, right := tablePadding(widths[column]-contentWidth, alignmentAt(row.aligns, column))
+				line.spans = appendSpan(line.spans, strings.Repeat(" ", left), "")
+				for _, span := range content.spans {
+					line.spans = appendSpan(line.spans, span.text, span.style)
+				}
+				line.spans = appendSpan(line.spans, strings.Repeat(" ", right)+" ", "")
+				line.spans = appendSpan(line.spans, "│", r.theme.MarkdownRule)
+			}
+			out = append(out, line)
+		}
+		if row.header && rowIndex < len(rows)-1 {
+			out = append(out, border("├", "┼", "┤"))
+		}
+	}
+	out = append(out, border("└", "┴", "┘"))
+	return out
+}
+
+func markdownSpansWidth(spans []markdownSpan) int {
+	width := 0
+	for _, span := range spans {
+		width += runewidth.StringWidth(span.text)
+	}
+	return width
+}
+
+func totalInt(values []int) int {
+	total := 0
+	for _, value := range values {
+		total += value
+	}
+	return total
+}
+
+func alignmentAt(alignments []extast.Alignment, column int) extast.Alignment {
+	if column < len(alignments) {
+		return alignments[column]
+	}
+	return extast.AlignNone
+}
+
+func tablePadding(space int, alignment extast.Alignment) (left, right int) {
+	if space < 0 {
+		space = 0
+	}
+	switch alignment {
+	case extast.AlignRight:
+		return space, 0
+	case extast.AlignCenter:
+		return space / 2, space - space/2
+	default:
+		return 0, space
+	}
 }
 
 func (r markdownRenderer) list(list *ast.List) []markdownLine {
