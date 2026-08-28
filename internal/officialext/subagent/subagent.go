@@ -50,11 +50,15 @@ type Input struct {
 }
 
 type Usage struct {
-	Turns  int    `json:"turns"`
-	Input  int    `json:"input"`
-	Output int    `json:"output"`
-	WallMS int64  `json:"wall_ms"`
-	Model  string `json:"model"`
+	Turns      int      `json:"turns"`
+	Input      int      `json:"input"`
+	Output     int      `json:"output"`
+	CacheRead  int      `json:"cache_read,omitempty"`
+	CacheWrite int      `json:"cache_write,omitempty"`
+	Reasoning  int      `json:"reasoning,omitempty"`
+	CostUSD    *float64 `json:"cost_usd,omitempty"`
+	WallMS     int64    `json:"wall_ms"`
+	Model      string   `json:"model"`
 }
 
 type Result struct {
@@ -318,16 +322,19 @@ func (r *processRunner) Run(ctx context.Context, input Input, update func(string
 		output = fmt.Sprintf("Subagent timed out after %d seconds.\n\n%s", input.TimeoutSeconds, output)
 	}
 	return Result{Output: output, Stderr: stderrText, ExitCode: exitCode, TimedOut: timedOut,
-		Usage: Usage{Turns: parsed.turns, Input: parsed.input, Output: parsed.outputTokens, WallMS: wallMS, Model: input.Model}}, nil
+		Usage: Usage{
+			Turns: parsed.turns, Input: parsed.input, Output: parsed.outputTokens,
+			CacheRead: parsed.cacheRead, CacheWrite: parsed.cacheWrite, Reasoning: parsed.reasoning,
+			CostUSD: parsed.costUSD(), WallMS: wallMS, Model: input.Model,
+		}}, nil
 }
 
 func delegatedUsage(usage Usage) delegation.Usage {
 	return delegation.Usage{
-		Turns:        usage.Turns,
-		InputTokens:  usage.Input,
-		OutputTokens: usage.Output,
-		WallMS:       usage.WallMS,
-		Calls:        1,
+		Turns: usage.Turns, InputTokens: usage.Input, OutputTokens: usage.Output,
+		CacheReadTokens: usage.CacheRead, CacheWriteTokens: usage.CacheWrite,
+		ReasoningTokens: usage.Reasoning, CostUSD: usage.CostUSD,
+		WallMS: usage.WallMS, Calls: 1,
 	}
 }
 
@@ -361,6 +368,19 @@ type parsedEvents struct {
 	turns        int
 	input        int
 	outputTokens int
+	cacheRead    int
+	cacheWrite   int
+	reasoning    int
+	cost         float64
+	costTurns    int
+}
+
+func (p parsedEvents) costUSD() *float64 {
+	if p.turns == 0 || p.costTurns != p.turns {
+		return nil
+	}
+	cost := p.cost
+	return &cost
 }
 
 func parseEvents(reader io.Reader, limit int) parsedEvents {
@@ -372,8 +392,12 @@ func parseEvents(reader io.Reader, limit int) parsedEvents {
 			Type    string         `json:"type"`
 			Message *model.Message `json:"message"`
 			Usage   *struct {
-				InputTokens  int `json:"input_tokens"`
-				OutputTokens int `json:"output_tokens"`
+				InputTokens      int      `json:"input_tokens"`
+				OutputTokens     int      `json:"output_tokens"`
+				CacheReadTokens  int      `json:"cache_read_tokens"`
+				CacheWriteTokens int      `json:"cache_write_tokens"`
+				ReasoningTokens  int      `json:"reasoning_tokens"`
+				CostUSD          *float64 `json:"cost_usd"`
 			} `json:"usage"`
 		}
 		if json.Unmarshal(scanner.Bytes(), &event) != nil {
@@ -384,6 +408,13 @@ func parseEvents(reader io.Reader, limit int) parsedEvents {
 			if event.Usage != nil {
 				parsed.input += event.Usage.InputTokens
 				parsed.outputTokens += event.Usage.OutputTokens
+				parsed.cacheRead += event.Usage.CacheReadTokens
+				parsed.cacheWrite += event.Usage.CacheWriteTokens
+				parsed.reasoning += event.Usage.ReasoningTokens
+				if event.Usage.CostUSD != nil {
+					parsed.cost += *event.Usage.CostUSD
+					parsed.costTurns++
+				}
 			}
 			if event.Message != nil {
 				if text := messageText(*event.Message); text != "" {

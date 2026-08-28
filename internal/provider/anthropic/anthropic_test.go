@@ -127,7 +127,7 @@ func TestStreamTextToolUseAndUsage(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w, ": keep-alive\n\n")
 		events := []string{
-			`{"type":"message_start","message":{"usage":{"input_tokens":12,"output_tokens":0}}}`,
+			`{"type":"message_start","message":{"usage":{"input_tokens":12,"output_tokens":0,"cache_read_input_tokens":5,"cache_creation_input_tokens":3}}}`,
 			`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
 			`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello "}}`,
 			`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"world"}}`,
@@ -151,7 +151,7 @@ func TestStreamTextToolUseAndUsage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if response.StopReason != "tool_use" || response.InputTokens != 12 || response.OutputTokens != 9 {
+	if response.StopReason != "tool_use" || response.InputTokens != 12 || response.OutputTokens != 9 || response.CacheReadTokens != 5 || response.CacheWriteTokens != 3 || response.TotalTokens() != 29 {
 		t.Errorf("unexpected metadata: %#v", response)
 	}
 	if len(response.Content) != 2 || response.Content[0].Text != "hello world" {

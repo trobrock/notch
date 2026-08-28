@@ -129,9 +129,11 @@ func TestPromptExecutesToolAndContinues(t *testing.T) {
 type usageProvider struct{}
 
 func (usageProvider) Stream(context.Context, model.Request, func(model.StreamEvent)) (model.Response, error) {
+	cost := 0.0123
 	return model.Response{
 		Content: []model.Block{{Type: "text", Text: "done"}}, StopReason: "end_turn",
-		InputTokens: 123, OutputTokens: 45,
+		InputTokens: 123, OutputTokens: 45, CacheReadTokens: 67, CacheWriteTokens: 8,
+		ReasoningTokens: 12, CostUSD: &cost,
 	}, nil
 }
 
@@ -163,7 +165,7 @@ func TestPromptPersistsProviderUsage(t *testing.T) {
 		t.Fatalf("usage entries = %#v", loaded.UsageEntries)
 	}
 	entry := loaded.UsageEntries[0]
-	if entry.Provider != "anthropic" || entry.Model != "model-a" || entry.Usage.InputTokens != 123 || entry.Usage.OutputTokens != 45 || entry.StopReason != "end_turn" {
+	if entry.Provider != "anthropic" || entry.Model != "model-a" || entry.Usage.InputTokens != 123 || entry.Usage.OutputTokens != 45 || entry.Usage.CacheReadTokens != 67 || entry.Usage.CacheWriteTokens != 8 || entry.Usage.ReasoningTokens != 12 || entry.Usage.CostUSD == nil || *entry.Usage.CostUSD != 0.0123 || entry.StopReason != "end_turn" {
 		t.Fatalf("usage entry = %#v", entry)
 	}
 	if entry.Delegated != nil {

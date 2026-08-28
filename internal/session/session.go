@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -83,16 +84,24 @@ type ResetEntry struct {
 
 // TokenUsage is the provider-reported token count for one model response.
 type TokenUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens      int      `json:"input_tokens"`
+	OutputTokens     int      `json:"output_tokens"`
+	CacheReadTokens  int      `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int      `json:"cache_write_tokens,omitempty"`
+	ReasoningTokens  int      `json:"reasoning_tokens,omitempty"`
+	CostUSD          *float64 `json:"cost_usd,omitempty"`
 }
 
 type DelegatedUsage struct {
-	Turns        int   `json:"turns"`
-	InputTokens  int   `json:"input_tokens"`
-	OutputTokens int   `json:"output_tokens"`
-	WallMS       int64 `json:"wall_ms"`
-	Calls        int   `json:"calls"`
+	Turns            int      `json:"turns"`
+	InputTokens      int      `json:"input_tokens"`
+	OutputTokens     int      `json:"output_tokens"`
+	CacheReadTokens  int      `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int      `json:"cache_write_tokens,omitempty"`
+	ReasoningTokens  int      `json:"reasoning_tokens,omitempty"`
+	CostUSD          *float64 `json:"cost_usd,omitempty"`
+	WallMS           int64    `json:"wall_ms"`
+	Calls            int      `json:"calls"`
 }
 
 // UsageEntry records provider usage for one completed model turn.
@@ -513,8 +522,11 @@ func (s *Session) AppendUsage(provider, modelName string, usage TokenUsage, stop
 	if strings.TrimSpace(modelName) == "" {
 		return errors.New("append session usage: model is empty")
 	}
-	if usage.InputTokens < 0 || usage.OutputTokens < 0 {
+	if usage.InputTokens < 0 || usage.OutputTokens < 0 || usage.CacheReadTokens < 0 || usage.CacheWriteTokens < 0 || usage.ReasoningTokens < 0 {
 		return errors.New("append session usage: token counts cannot be negative")
+	}
+	if usage.CostUSD != nil && (*usage.CostUSD < 0 || math.IsNaN(*usage.CostUSD) || math.IsInf(*usage.CostUSD, 0)) {
+		return errors.New("append session usage: cost must be a finite non-negative number")
 	}
 	entry := UsageEntry{
 		Type: "usage", Timestamp: time.Now().UTC(), Provider: provider, Model: modelName,
@@ -522,8 +534,11 @@ func (s *Session) AppendUsage(provider, modelName string, usage TokenUsage, stop
 	}
 	if len(delegated) != 0 {
 		value := delegated[0]
-		if value.Turns < 0 || value.InputTokens < 0 || value.OutputTokens < 0 || value.WallMS < 0 || value.Calls < 0 {
+		if value.Turns < 0 || value.InputTokens < 0 || value.OutputTokens < 0 || value.CacheReadTokens < 0 || value.CacheWriteTokens < 0 || value.ReasoningTokens < 0 || value.WallMS < 0 || value.Calls < 0 {
 			return errors.New("append session usage: delegated usage cannot be negative")
+		}
+		if value.CostUSD != nil && (*value.CostUSD < 0 || math.IsNaN(*value.CostUSD) || math.IsInf(*value.CostUSD, 0)) {
+			return errors.New("append session usage: delegated cost must be a finite non-negative number")
 		}
 		entry.Delegated = &value
 	}
@@ -792,12 +807,18 @@ func (s *Session) decode(r io.Reader) error {
 					if decodeErr := decodeStrict(trimmed, &entry); decodeErr != nil {
 						return fmt.Errorf("line %d: invalid usage entry: %w", lineNumber, decodeErr)
 					}
-					if entry.Model == "" || entry.Usage.InputTokens < 0 || entry.Usage.OutputTokens < 0 {
+					if entry.Model == "" || entry.Usage.InputTokens < 0 || entry.Usage.OutputTokens < 0 || entry.Usage.CacheReadTokens < 0 || entry.Usage.CacheWriteTokens < 0 || entry.Usage.ReasoningTokens < 0 {
 						return fmt.Errorf("line %d: invalid usage entry values", lineNumber)
 					}
+					if entry.Usage.CostUSD != nil && (*entry.Usage.CostUSD < 0 || math.IsNaN(*entry.Usage.CostUSD) || math.IsInf(*entry.Usage.CostUSD, 0)) {
+						return fmt.Errorf("line %d: invalid usage entry cost", lineNumber)
+					}
 					if entry.Delegated != nil {
-						if entry.Delegated.Turns < 0 || entry.Delegated.InputTokens < 0 || entry.Delegated.OutputTokens < 0 || entry.Delegated.WallMS < 0 || entry.Delegated.Calls < 0 {
+						if entry.Delegated.Turns < 0 || entry.Delegated.InputTokens < 0 || entry.Delegated.OutputTokens < 0 || entry.Delegated.CacheReadTokens < 0 || entry.Delegated.CacheWriteTokens < 0 || entry.Delegated.ReasoningTokens < 0 || entry.Delegated.WallMS < 0 || entry.Delegated.Calls < 0 {
 							return fmt.Errorf("line %d: invalid delegated usage values", lineNumber)
+						}
+						if entry.Delegated.CostUSD != nil && (*entry.Delegated.CostUSD < 0 || math.IsNaN(*entry.Delegated.CostUSD) || math.IsInf(*entry.Delegated.CostUSD, 0)) {
+							return fmt.Errorf("line %d: invalid delegated usage cost", lineNumber)
 						}
 					}
 					s.UsageEntries = append(s.UsageEntries, entry)

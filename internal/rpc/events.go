@@ -234,25 +234,40 @@ func (a *eventAdapter) assistantMessage(message *model.Message, usage *agent.Usa
 }
 
 func rpcUsage(usage *agent.Usage) map[string]any {
-	providerInput, providerOutput := 0, 0
+	providerInput, providerOutput, cacheRead, cacheWrite, reasoning := 0, 0, 0, 0, 0
+	totalCost, costKnown := 0.0, false
 	if usage != nil {
 		providerInput, providerOutput = usage.InputTokens, usage.OutputTokens
+		cacheRead, cacheWrite, reasoning = usage.CacheReadTokens, usage.CacheWriteTokens, usage.ReasoningTokens
+		if usage.CostUSD != nil {
+			totalCost, costKnown = *usage.CostUSD, true
+		}
 	}
-	providerTokens := providerInput + providerOutput
+	providerTokens := providerInput + providerOutput + cacheRead + cacheWrite
 	return map[string]any{
-		"input": providerInput, "output": providerOutput, "cacheRead": 0, "cacheWrite": 0,
+		"input": providerInput, "output": providerOutput, "cacheRead": cacheRead, "cacheWrite": cacheWrite,
+		"reasoning":      reasoning,
 		"providerTokens": providerTokens,
 		"totalTokens":    providerTokens,
-		"cost":           map[string]float64{"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0},
+		"cost": map[string]float64{
+			"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": totalCost,
+		},
+		"costKnown": costKnown,
 	}
 }
 
 func rpcDelegationUsage(usage *delegation.Usage) map[string]any {
 	if usage == nil {
-		return map[string]any{"turns": 0, "input": 0, "output": 0, "wallMs": 0, "calls": 0, "totalTokens": 0}
+		return map[string]any{"turns": 0, "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "reasoning": 0, "costUSD": nil, "wallMs": 0, "calls": 0, "totalTokens": 0}
+	}
+	var cost any
+	if usage.CostUSD != nil {
+		cost = *usage.CostUSD
 	}
 	return map[string]any{
 		"turns": usage.Turns, "input": usage.InputTokens, "output": usage.OutputTokens,
+		"cacheRead": usage.CacheReadTokens, "cacheWrite": usage.CacheWriteTokens,
+		"reasoning": usage.ReasoningTokens, "costUSD": cost,
 		"wallMs": usage.WallMS, "calls": usage.Calls, "totalTokens": usage.TotalTokens(),
 	}
 }

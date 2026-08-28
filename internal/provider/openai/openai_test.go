@@ -149,7 +149,7 @@ func TestStreamTextFunctionCallAndUsage(t *testing.T) {
 			`{"type":"response.function_call_arguments.delta","output_index":1,"delta":"{\"city\":"}`,
 			`{"type":"response.function_call_arguments.delta","output_index":1,"delta":"\"Paris\"}"}`,
 			`{"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","id":"fc-1","call_id":"call-1","name":"weather","arguments":"{\"city\":\"Paris\"}"}}`,
-			`{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":17,"output_tokens":8}}}`,
+			`{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":17,"output_tokens":8,"input_tokens_details":{"cached_tokens":6},"output_tokens_details":{"reasoning_tokens":4}}}}`,
 		}
 		for _, data := range events {
 			fmt.Fprintf(w, "event: ignored-by-json-type\ndata: %s\n\n", data)
@@ -171,7 +171,7 @@ func TestStreamTextFunctionCallAndUsage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if response.InputTokens != 17 || response.OutputTokens != 8 || response.StopReason != "tool_use" {
+	if response.InputTokens != 11 || response.CacheReadTokens != 6 || response.OutputTokens != 8 || response.ReasoningTokens != 4 || response.TotalTokens() != 25 || response.StopReason != "tool_use" {
 		t.Errorf("response metadata = %#v", response)
 	}
 	if len(response.Content) != 2 || response.Content[0].Type != "text" || response.Content[0].Text != "hello world" {

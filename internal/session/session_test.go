@@ -91,7 +91,14 @@ func TestNewAppendLoad(t *testing.T) {
 	if err := s.AppendEntry(map[string]any{"type": "note", "text": "remember"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AppendUsage("anthropic", "test-model", TokenUsage{InputTokens: 12, OutputTokens: 7}, "end_turn", DelegatedUsage{Turns: 3, InputTokens: 9, OutputTokens: 5, WallMS: 42, Calls: 2}); err != nil {
+	cost, delegatedCost := 0.0123, 0.0045
+	if err := s.AppendUsage("anthropic", "test-model", TokenUsage{
+		InputTokens: 12, OutputTokens: 7, CacheReadTokens: 5, CacheWriteTokens: 3,
+		ReasoningTokens: 2, CostUSD: &cost,
+	}, "end_turn", DelegatedUsage{
+		Turns: 3, InputTokens: 9, OutputTokens: 5, CacheReadTokens: 4, CacheWriteTokens: 2,
+		ReasoningTokens: 1, CostUSD: &delegatedCost, WallMS: 42, Calls: 2,
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Close(); err != nil {
@@ -118,10 +125,10 @@ func TestNewAppendLoad(t *testing.T) {
 	if len(loaded.Entries) != 4 {
 		t.Fatalf("got %d entries", len(loaded.Entries))
 	}
-	if len(loaded.UsageEntries) != 1 || loaded.UsageEntries[0].Provider != "anthropic" || loaded.UsageEntries[0].Model != "test-model" || loaded.UsageEntries[0].Usage.InputTokens != 12 || loaded.UsageEntries[0].Usage.OutputTokens != 7 || loaded.UsageEntries[0].StopReason != "end_turn" {
+	if len(loaded.UsageEntries) != 1 || loaded.UsageEntries[0].Provider != "anthropic" || loaded.UsageEntries[0].Model != "test-model" || loaded.UsageEntries[0].Usage.InputTokens != 12 || loaded.UsageEntries[0].Usage.OutputTokens != 7 || loaded.UsageEntries[0].Usage.CacheReadTokens != 5 || loaded.UsageEntries[0].Usage.CacheWriteTokens != 3 || loaded.UsageEntries[0].Usage.ReasoningTokens != 2 || loaded.UsageEntries[0].Usage.CostUSD == nil || *loaded.UsageEntries[0].Usage.CostUSD != cost || loaded.UsageEntries[0].StopReason != "end_turn" {
 		t.Fatalf("bad usage entries: %+v", loaded.UsageEntries)
 	}
-	if loaded.UsageEntries[0].Delegated == nil || loaded.UsageEntries[0].Delegated.WallMS != 42 || loaded.UsageEntries[0].Delegated.Calls != 2 {
+	if loaded.UsageEntries[0].Delegated == nil || loaded.UsageEntries[0].Delegated.CacheReadTokens != 4 || loaded.UsageEntries[0].Delegated.CacheWriteTokens != 2 || loaded.UsageEntries[0].Delegated.ReasoningTokens != 1 || loaded.UsageEntries[0].Delegated.CostUSD == nil || *loaded.UsageEntries[0].Delegated.CostUSD != delegatedCost || loaded.UsageEntries[0].Delegated.WallMS != 42 || loaded.UsageEntries[0].Delegated.Calls != 2 {
 		t.Fatalf("bad delegated usage: %+v", loaded.UsageEntries[0].Delegated)
 	}
 	var custom CustomEntry

@@ -410,8 +410,10 @@ func (p *provider) Stream(ctx context.Context, req model.Request, onEvent func(m
 			Index   int    `json:"index"`
 			Message struct {
 				Usage struct {
-					InputTokens  int `json:"input_tokens"`
-					OutputTokens int `json:"output_tokens"`
+					InputTokens         int `json:"input_tokens"`
+					OutputTokens        int `json:"output_tokens"`
+					CacheReadTokens     int `json:"cache_read_input_tokens"`
+					CacheCreationTokens int `json:"cache_creation_input_tokens"`
 				} `json:"usage"`
 			} `json:"message"`
 			ContentBlock struct {
@@ -432,8 +434,10 @@ func (p *provider) Stream(ctx context.Context, req model.Request, onEvent func(m
 				StopReason  string `json:"stop_reason"`
 			} `json:"delta"`
 			Usage struct {
-				InputTokens  int `json:"input_tokens"`
-				OutputTokens int `json:"output_tokens"`
+				InputTokens         int `json:"input_tokens"`
+				OutputTokens        int `json:"output_tokens"`
+				CacheReadTokens     int `json:"cache_read_input_tokens"`
+				CacheCreationTokens int `json:"cache_creation_input_tokens"`
 			} `json:"usage"`
 			Error struct {
 				Type    string `json:"type"`
@@ -451,6 +455,8 @@ func (p *provider) Stream(ctx context.Context, req model.Request, onEvent func(m
 		case "message_start":
 			result.InputTokens = envelope.Message.Usage.InputTokens
 			result.OutputTokens = envelope.Message.Usage.OutputTokens
+			result.CacheReadTokens = envelope.Message.Usage.CacheReadTokens
+			result.CacheWriteTokens = envelope.Message.Usage.CacheCreationTokens
 		case "content_block_start":
 			name := envelope.ContentBlock.Name
 			if original, ok := toolNames[strings.ToLower(name)]; ok {
@@ -511,6 +517,12 @@ func (p *provider) Stream(ctx context.Context, req model.Request, onEvent func(m
 			result.StopReason = envelope.Delta.StopReason
 			if envelope.Usage.InputTokens != 0 {
 				result.InputTokens = envelope.Usage.InputTokens
+			}
+			if envelope.Usage.CacheReadTokens != 0 {
+				result.CacheReadTokens = envelope.Usage.CacheReadTokens
+			}
+			if envelope.Usage.CacheCreationTokens != 0 {
+				result.CacheWriteTokens = envelope.Usage.CacheCreationTokens
 			}
 			result.OutputTokens = envelope.Usage.OutputTokens
 		case "message_stop":

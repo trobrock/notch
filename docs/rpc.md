@@ -130,7 +130,7 @@ Text and thinking use Pi's delta envelope:
 ```json
 {
   "type": "message_update",
-  "usage": {"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0},
+  "usage": {"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"reasoning":0,"totalTokens":0,"cost":{"total":0},"costKnown":false},
   "assistantMessageEvent": {
     "type": "text_delta",
     "contentIndex": 0,
@@ -139,7 +139,7 @@ Text and thinking use Pi's delta envelope:
 }
 ```
 
-`message_end.message` is authoritative. `turn_end` contains the assistant message and tool results. Tool calls use `toolCallId` for correlation. Provider token counts are included when the completed turn reports them; Notch currently reports zero RPC cost because provider pricing is not part of its model registry.
+`message_end.message` is authoritative. `turn_end` contains the assistant message and tool results. Tool calls use `toolCallId` for correlation. Provider token counts include uncached input, output, cache reads, cache writes, and the reasoning-token subset. `cost.total` contains provider-reported USD cost when available (currently OpenRouter); `costKnown` distinguishes a reported value from the protocol-compatible zero placeholder. Notch does not guess from a potentially stale local pricing table.
 
 Failed commands use Pi's response envelope:
 

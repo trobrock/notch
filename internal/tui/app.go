@@ -1332,6 +1332,23 @@ func (a *App) finishPrompt(err error) bool {
 	return true
 }
 
+func formatProviderUsage(usage agent.Usage) string {
+	parts := []string{fmt.Sprintf("%d in", usage.InputTokens), fmt.Sprintf("%d out", usage.OutputTokens)}
+	if usage.CacheReadTokens > 0 {
+		parts = append(parts, fmt.Sprintf("%d cache read", usage.CacheReadTokens))
+	}
+	if usage.CacheWriteTokens > 0 {
+		parts = append(parts, fmt.Sprintf("%d cache write", usage.CacheWriteTokens))
+	}
+	if usage.ReasoningTokens > 0 {
+		parts = append(parts, fmt.Sprintf("%d reasoning", usage.ReasoningTokens))
+	}
+	if usage.CostUSD != nil {
+		parts = append(parts, fmt.Sprintf("$%.4f", *usage.CostUSD))
+	}
+	return strings.Join(parts, " / ")
+}
+
 func (a *App) handleAgentEvent(event agent.Event) bool {
 	followTail := a.state.layout.ScrollOffset == 0
 	switch event.Type {
@@ -1381,7 +1398,7 @@ func (a *App) handleAgentEvent(event agent.Event) bool {
 		if event.Usage != nil {
 			usage := *event.Usage
 			a.state.providerUsage = &usage
-			a.state.layout.Usage = fmt.Sprintf("%d in / %d out", usage.InputTokens, usage.OutputTokens)
+			a.state.layout.Usage = formatProviderUsage(usage)
 		}
 		if event.ContextUsage != nil {
 			a.applyContextUsage(*event.ContextUsage)
@@ -1391,7 +1408,7 @@ func (a *App) handleAgentEvent(event agent.Event) bool {
 		if event.DelegationUsage != nil {
 			prefix := ""
 			if usage := a.state.providerUsage; usage != nil {
-				prefix = fmt.Sprintf("%d in / %d out / ", usage.InputTokens, usage.OutputTokens)
+				prefix = formatProviderUsage(*usage) + " / "
 			}
 			delegated := event.DelegationUsage
 			a.state.layout.Usage = fmt.Sprintf("%s%d delegated / %.1fs", prefix, delegated.TotalTokens(), float64(delegated.WallMS)/1000)

@@ -47,10 +47,22 @@ type StreamEvent struct {
 }
 
 type Response struct {
-	Content      []Block `json:"content"`
-	StopReason   string  `json:"stop_reason"`
-	InputTokens  int     `json:"input_tokens,omitempty"`
-	OutputTokens int     `json:"output_tokens,omitempty"`
+	Content          []Block  `json:"content"`
+	StopReason       string   `json:"stop_reason"`
+	InputTokens      int      `json:"input_tokens,omitempty"`
+	OutputTokens     int      `json:"output_tokens,omitempty"`
+	CacheReadTokens  int      `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int      `json:"cache_write_tokens,omitempty"`
+	ReasoningTokens  int      `json:"reasoning_tokens,omitempty"`
+	CostUSD          *float64 `json:"cost_usd,omitempty"`
+}
+
+func (r Response) TotalInputTokens() int {
+	return r.InputTokens + r.CacheReadTokens + r.CacheWriteTokens
+}
+
+func (r Response) TotalTokens() int {
+	return r.TotalInputTokens() + r.OutputTokens
 }
 
 type Provider interface {

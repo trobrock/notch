@@ -138,7 +138,7 @@ func TestStreamRequestTextToolsAndUsage(t *testing.T) {
 			`{"id":"gen","choices":[{"index":0,"delta":{"content":"check.","tool_calls":[{"index":1,"id":"call-b","type":"function","function":{"name":"time","arguments":"{\"zone\":"}}]},"finish_reason":null}]}`,
 			`{"id":"gen","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call-a","type":"function","function":{"name":"weather","arguments":"{\"city\":"}},{"index":1,"function":{"arguments":"\"UTC\"}"}}]},"finish_reason":null}]}`,
 			`{"id":"gen","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"Paris\"}"}}]},"finish_reason":"tool_calls"}]}`,
-			`{"id":"gen","choices":[],"usage":{"prompt_tokens":25,"completion_tokens":11,"total_tokens":36}}`,
+			`{"id":"gen","choices":[],"usage":{"prompt_tokens":25,"completion_tokens":11,"total_tokens":36,"cost":0.0042,"prompt_tokens_details":{"cached_tokens":7,"cache_write_tokens":2},"completion_tokens_details":{"reasoning_tokens":3}}}`,
 		}
 		for _, chunk := range chunks {
 			fmt.Fprintf(w, "data: %s\n\n", chunk)
@@ -170,7 +170,7 @@ func TestStreamRequestTextToolsAndUsage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if response.StopReason != "tool_use" || response.InputTokens != 25 || response.OutputTokens != 11 {
+	if response.StopReason != "tool_use" || response.InputTokens != 16 || response.CacheReadTokens != 7 || response.CacheWriteTokens != 2 || response.OutputTokens != 11 || response.ReasoningTokens != 3 || response.CostUSD == nil || *response.CostUSD != 0.0042 || response.TotalTokens() != 36 {
 		t.Errorf("response metadata = %#v", response)
 	}
 	if len(response.Content) != 3 || response.Content[0].Type != "text" || response.Content[0].Text != "I'll check." {

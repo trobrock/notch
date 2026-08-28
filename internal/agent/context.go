@@ -277,7 +277,7 @@ Preserve exact paths, identifiers, commands, errors, user decisions, current imp
 		return errors.New("compact conversation: provider returned an empty summary")
 	}
 
-	return a.applyCompactionLocked(summary, recent, auto, before, Usage{InputTokens: response.InputTokens, OutputTokens: response.OutputTokens}, emit)
+	return a.applyCompactionLocked(summary, recent, auto, before, Usage{InputTokens: response.InputTokens, OutputTokens: response.OutputTokens, CacheReadTokens: response.CacheReadTokens, CacheWriteTokens: response.CacheWriteTokens, ReasoningTokens: response.ReasoningTokens, CostUSD: response.CostUSD}, emit)
 }
 
 func (a *Agent) applyCompactionLocked(summary string, recent []model.Message, auto bool, before ContextUsage, usage Usage, emit func(Event)) error {

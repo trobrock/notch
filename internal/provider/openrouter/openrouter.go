@@ -217,8 +217,16 @@ type streamEnvelope struct {
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
+		PromptTokens        int      `json:"prompt_tokens"`
+		CompletionTokens    int      `json:"completion_tokens"`
+		Cost                *float64 `json:"cost"`
+		PromptTokensDetails struct {
+			CachedTokens     int `json:"cached_tokens"`
+			CacheWriteTokens int `json:"cache_write_tokens"`
+		} `json:"prompt_tokens_details"`
+		CompletionTokensDetails struct {
+			ReasoningTokens int `json:"reasoning_tokens"`
+		} `json:"completion_tokens_details"`
 	} `json:"usage"`
 	Error *wireError `json:"error"`
 }
@@ -343,6 +351,27 @@ func (p *provider) Stream(ctx context.Context, req model.Request, onEvent func(m
 		}
 		if envelope.Usage.CompletionTokens != 0 {
 			result.OutputTokens = envelope.Usage.CompletionTokens
+		}
+		if envelope.Usage.PromptTokensDetails.CachedTokens != 0 {
+			result.CacheReadTokens = envelope.Usage.PromptTokensDetails.CachedTokens
+			result.InputTokens = envelope.Usage.PromptTokens - result.CacheReadTokens
+			if result.InputTokens < 0 {
+				result.InputTokens = 0
+			}
+		}
+		if envelope.Usage.PromptTokensDetails.CacheWriteTokens != 0 {
+			result.CacheWriteTokens = envelope.Usage.PromptTokensDetails.CacheWriteTokens
+			result.InputTokens = envelope.Usage.PromptTokens - result.CacheReadTokens - result.CacheWriteTokens
+			if result.InputTokens < 0 {
+				result.InputTokens = 0
+			}
+		}
+		if envelope.Usage.CompletionTokensDetails.ReasoningTokens != 0 {
+			result.ReasoningTokens = envelope.Usage.CompletionTokensDetails.ReasoningTokens
+		}
+		if envelope.Usage.Cost != nil {
+			cost := *envelope.Usage.Cost
+			result.CostUSD = &cost
 		}
 		for _, choice := range envelope.Choices {
 			// Chat Completions defaults to one choice. Ignore any unsolicited

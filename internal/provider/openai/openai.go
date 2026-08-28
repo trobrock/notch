@@ -244,8 +244,14 @@ type responseData struct {
 		Reason string `json:"reason"`
 	} `json:"incomplete_details"`
 	Usage struct {
-		InputTokens  int `json:"input_tokens"`
-		OutputTokens int `json:"output_tokens"`
+		InputTokens        int `json:"input_tokens"`
+		OutputTokens       int `json:"output_tokens"`
+		InputTokensDetails struct {
+			CachedTokens int `json:"cached_tokens"`
+		} `json:"input_tokens_details"`
+		OutputTokensDetails struct {
+			ReasoningTokens int `json:"reasoning_tokens"`
+		} `json:"output_tokens_details"`
 	} `json:"usage"`
 	Error struct {
 		Code    string `json:"code"`
@@ -571,8 +577,13 @@ func mergeOutputItem(slots map[int]*outputSlot, index int, item outputItem, done
 }
 
 func applyResponse(result *model.Response, slots map[int]*outputSlot, response responseData) {
-	result.InputTokens = response.Usage.InputTokens
+	result.CacheReadTokens = response.Usage.InputTokensDetails.CachedTokens
+	result.InputTokens = response.Usage.InputTokens - result.CacheReadTokens
+	if result.InputTokens < 0 {
+		result.InputTokens = 0
+	}
 	result.OutputTokens = response.Usage.OutputTokens
+	result.ReasoningTokens = response.Usage.OutputTokensDetails.ReasoningTokens
 	for index, item := range response.Output {
 		mergeOutputItem(slots, index, item, true)
 	}

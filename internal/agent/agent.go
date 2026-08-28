@@ -47,8 +47,12 @@ type Event struct {
 }
 
 type Usage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens      int      `json:"input_tokens"`
+	OutputTokens     int      `json:"output_tokens"`
+	CacheReadTokens  int      `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int      `json:"cache_write_tokens,omitempty"`
+	ReasoningTokens  int      `json:"reasoning_tokens,omitempty"`
+	CostUSD          *float64 `json:"cost_usd,omitempty"`
 }
 
 type CompactionConfig struct {
@@ -196,16 +200,19 @@ func (a *Agent) appendUsage(response model.Response, delegated delegation.Usage)
 	if a.session == nil {
 		return nil
 	}
-	entry := session.TokenUsage{InputTokens: response.InputTokens, OutputTokens: response.OutputTokens}
+	entry := session.TokenUsage{
+		InputTokens: response.InputTokens, OutputTokens: response.OutputTokens,
+		CacheReadTokens: response.CacheReadTokens, CacheWriteTokens: response.CacheWriteTokens,
+		ReasoningTokens: response.ReasoningTokens, CostUSD: response.CostUSD,
+	}
 	if delegated.Empty() {
 		return a.session.AppendUsage(a.providerName, a.model, entry, response.StopReason)
 	}
 	return a.session.AppendUsage(a.providerName, a.model, entry, response.StopReason, session.DelegatedUsage{
-		Turns:        delegated.Turns,
-		InputTokens:  delegated.InputTokens,
-		OutputTokens: delegated.OutputTokens,
-		WallMS:       delegated.WallMS,
-		Calls:        delegated.Calls,
+		Turns: delegated.Turns, InputTokens: delegated.InputTokens, OutputTokens: delegated.OutputTokens,
+		CacheReadTokens: delegated.CacheReadTokens, CacheWriteTokens: delegated.CacheWriteTokens,
+		ReasoningTokens: delegated.ReasoningTokens, CostUSD: delegated.CostUSD,
+		WallMS: delegated.WallMS, Calls: delegated.Calls,
 	})
 }
 
@@ -380,8 +387,8 @@ func (a *Agent) PromptWithStart(ctx context.Context, text string, emit func(Even
 			emit(Event{Type: "error", Text: err.Error()})
 			return err
 		}
-		if response.InputTokens > 0 {
-			a.reportedInputTokens = response.InputTokens
+		if response.TotalInputTokens() > 0 {
+			a.reportedInputTokens = response.TotalInputTokens()
 			a.reportedEstimate = requestEstimate
 		} else {
 			a.reportedInputTokens = 0
@@ -392,7 +399,11 @@ func (a *Agent) PromptWithStart(ctx context.Context, text string, emit func(Even
 			return err
 		}
 
-		usage := &Usage{InputTokens: response.InputTokens, OutputTokens: response.OutputTokens}
+		usage := &Usage{
+			InputTokens: response.InputTokens, OutputTokens: response.OutputTokens,
+			CacheReadTokens: response.CacheReadTokens, CacheWriteTokens: response.CacheWriteTokens,
+			ReasoningTokens: response.ReasoningTokens, CostUSD: response.CostUSD,
+		}
 		contextUsage := a.contextUsageLocked()
 		emit(Event{Type: "turn_end", Usage: usage, ContextUsage: &contextUsage, Message: &assistant, StopReason: response.StopReason})
 		var delegatedTotals delegation.Usage

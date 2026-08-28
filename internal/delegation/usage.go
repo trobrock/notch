@@ -9,33 +9,60 @@ import (
 
 // Usage records aggregate work delegated to child Notch agents.
 type Usage struct {
-	Turns        int   `json:"turns"`
-	InputTokens  int   `json:"input_tokens"`
-	OutputTokens int   `json:"output_tokens"`
-	WallMS       int64 `json:"wall_ms"`
-	Calls        int   `json:"calls"`
+	Turns            int      `json:"turns"`
+	InputTokens      int      `json:"input_tokens"`
+	OutputTokens     int      `json:"output_tokens"`
+	CacheReadTokens  int      `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int      `json:"cache_write_tokens,omitempty"`
+	ReasoningTokens  int      `json:"reasoning_tokens,omitempty"`
+	CostUSD          *float64 `json:"cost_usd,omitempty"`
+	WallMS           int64    `json:"wall_ms"`
+	Calls            int      `json:"calls"`
 }
 
 func (u Usage) TotalTokens() int {
-	return u.InputTokens + u.OutputTokens
+	return u.InputTokens + u.OutputTokens + u.CacheReadTokens + u.CacheWriteTokens
 }
 
 func (u Usage) Empty() bool {
-	return u.Turns == 0 && u.InputTokens == 0 && u.OutputTokens == 0 && u.WallMS == 0 && u.Calls == 0
+	return u.Turns == 0 && u.InputTokens == 0 && u.OutputTokens == 0 && u.CacheReadTokens == 0 && u.CacheWriteTokens == 0 && u.ReasoningTokens == 0 && u.CostUSD == nil && u.WallMS == 0 && u.Calls == 0
 }
 
 func (u Usage) Add(other Usage) Usage {
+	hadUsage := !u.Empty()
 	u.Turns += other.Turns
 	u.InputTokens += other.InputTokens
 	u.OutputTokens += other.OutputTokens
+	u.CacheReadTokens += other.CacheReadTokens
+	u.CacheWriteTokens += other.CacheWriteTokens
+	u.ReasoningTokens += other.ReasoningTokens
+	if !hadUsage {
+		u.CostUSD = cloneCost(other.CostUSD)
+	} else if u.CostUSD != nil && other.CostUSD != nil {
+		cost := *u.CostUSD + *other.CostUSD
+		u.CostUSD = &cost
+	} else {
+		u.CostUSD = nil
+	}
 	u.WallMS += other.WallMS
 	u.Calls += other.Calls
 	return u
 }
 
+func cloneCost(cost *float64) *float64 {
+	if cost == nil {
+		return nil
+	}
+	value := *cost
+	return &value
+}
+
 func (u Usage) Validate() error {
-	if u.Turns < 0 || u.InputTokens < 0 || u.OutputTokens < 0 || u.WallMS < 0 || u.Calls < 0 {
+	if u.Turns < 0 || u.InputTokens < 0 || u.OutputTokens < 0 || u.CacheReadTokens < 0 || u.CacheWriteTokens < 0 || u.ReasoningTokens < 0 || u.WallMS < 0 || u.Calls < 0 {
 		return fmt.Errorf("delegated usage cannot be negative")
+	}
+	if u.CostUSD != nil && (*u.CostUSD < 0 || math.IsNaN(*u.CostUSD) || math.IsInf(*u.CostUSD, 0)) {
+		return fmt.Errorf("delegated cost must be a finite non-negative number")
 	}
 	return nil
 }
@@ -93,6 +120,22 @@ func fromMap(value map[string]any) (Usage, bool) {
 	if !ok {
 		return Usage{}, false
 	}
+	cacheRead, ok := optionalInt(value, "cache_read_tokens")
+	if !ok {
+		return Usage{}, false
+	}
+	cacheWrite, ok := optionalInt(value, "cache_write_tokens")
+	if !ok {
+		return Usage{}, false
+	}
+	reasoning, ok := optionalInt(value, "reasoning_tokens")
+	if !ok {
+		return Usage{}, false
+	}
+	cost, ok := optionalFloat(value, "cost_usd")
+	if !ok {
+		return Usage{}, false
+	}
 	wall, ok := numberAsInt64(value["wall_ms"])
 	if !ok {
 		return Usage{}, false
@@ -101,7 +144,40 @@ func fromMap(value map[string]any) (Usage, bool) {
 	if !ok {
 		return Usage{}, false
 	}
-	return Usage{Turns: turns, InputTokens: input, OutputTokens: output, WallMS: wall, Calls: calls}, true
+	return Usage{
+		Turns: turns, InputTokens: input, OutputTokens: output,
+		CacheReadTokens: cacheRead, CacheWriteTokens: cacheWrite, ReasoningTokens: reasoning, CostUSD: cost,
+		WallMS: wall, Calls: calls,
+	}, true
+}
+
+func optionalInt(value map[string]any, key string) (int, bool) {
+	raw, exists := value[key]
+	if !exists || raw == nil {
+		return 0, true
+	}
+	return numberAsInt(raw)
+}
+
+func optionalFloat(value map[string]any, key string) (*float64, bool) {
+	raw, exists := value[key]
+	if !exists || raw == nil {
+		return nil, true
+	}
+	var result float64
+	switch typed := raw.(type) {
+	case float64:
+		result = typed
+	case float32:
+		result = float64(typed)
+	case int:
+		result = float64(typed)
+	case int64:
+		result = float64(typed)
+	default:
+		return nil, false
+	}
+	return &result, true
 }
 
 func numberAsInt(value any) (int, bool) {

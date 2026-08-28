@@ -98,12 +98,13 @@ func TestRunSubagentToolSafetyAndValidation(t *testing.T) {
 
 func TestParseEventsUsesLastAssistantTurnAndTrimsOutput(t *testing.T) {
 	stream := strings.Join([]string{
-		`{"type":"turn_end","usage":{"input_tokens":10,"output_tokens":2},"message":{"role":"assistant","content":[{"type":"text","text":"first"}]}}`,
+		`{"type":"turn_end","usage":{"input_tokens":10,"output_tokens":2,"cache_read_tokens":3,"cache_write_tokens":1,"reasoning_tokens":1,"cost_usd":0.002},"message":{"role":"assistant","content":[{"type":"text","text":"first"}]}}`,
 		`not json`,
-		`{"type":"turn_end","usage":{"input_tokens":20,"output_tokens":4},"message":{"role":"assistant","content":[{"type":"text","text":"` + strings.Repeat("x", 1200) + `"}]}}`,
+		`{"type":"turn_end","usage":{"input_tokens":20,"output_tokens":4,"cache_read_tokens":5,"cache_write_tokens":2,"reasoning_tokens":2,"cost_usd":0.003},"message":{"role":"assistant","content":[{"type":"text","text":"` + strings.Repeat("x", 1200) + `"}]}}`,
 	}, "\n")
 	parsed := parseEvents(strings.NewReader(stream), 1000)
-	if parsed.turns != 2 || parsed.input != 30 || parsed.outputTokens != 6 || !strings.Contains(parsed.output, "output truncated") {
+	cost := parsed.costUSD()
+	if parsed.turns != 2 || parsed.input != 30 || parsed.outputTokens != 6 || parsed.cacheRead != 8 || parsed.cacheWrite != 3 || parsed.reasoning != 3 || cost == nil || *cost != 0.005 || !strings.Contains(parsed.output, "output truncated") {
 		t.Fatalf("parsed = %#v", parsed)
 	}
 }
