@@ -22,6 +22,7 @@ import (
 
 	"github.com/trobrock/notch/internal/extension"
 	"github.com/trobrock/notch/internal/model"
+	sharedprocess "github.com/trobrock/notch/internal/process"
 )
 
 const (
@@ -394,7 +395,7 @@ func NewBash(cwd string) extension.Tool {
 			cmd.Dir = resolvedCWD
 			output := &cappedBuffer{limit: OutputLimit}
 			cmd.Stdout, cmd.Stderr = output, output
-			err = cmd.Run()
+			err = sharedprocess.RunCommand(runCtx, cmd)
 			result := extension.ToolResult{Content: output.String()}
 			details := map[string]any{}
 			if output.truncated {

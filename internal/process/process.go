@@ -23,6 +23,55 @@ const (
 	processWaitDelay      = time.Second
 )
 
+// configureCommand applies platform cancellation and bounds how long inherited
+// output pipes can delay Wait.
+func configureCommand(cmd *exec.Cmd) {
+	if cmd == nil {
+		return
+	}
+	cmd.WaitDelay = processWaitDelay
+	configureCancellation(cmd)
+}
+
+// RunCommand starts and waits for a context-backed command. Its own context
+// watcher remains active until Wait finishes, so cancellation still reaches a
+// process group when the original child has exited but a descendant holds an
+// output pipe open.
+func RunCommand(ctx context.Context, cmd *exec.Cmd) error {
+	if ctx == nil {
+		return errors.New("nil context")
+	}
+	if cmd == nil {
+		return errors.New("nil command")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	configureCommand(cmd)
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+
+	finished := make(chan struct{})
+	watcherDone := make(chan struct{})
+	go func() {
+		defer close(watcherDone)
+		select {
+		case <-ctx.Done():
+			if cmd.Cancel != nil {
+				_ = cmd.Cancel()
+			} else if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+			}
+		case <-finished:
+		}
+	}()
+	err := cmd.Wait()
+	close(finished)
+	<-watcherDone
+	return err
+}
+
 // Run executes command in cwd and captures independently bounded stdout and
 // stderr. A normal non-zero exit is returned as an *exec.ExitError with its
 // exit status; startup failures and context cancellation have exit status -1.
@@ -39,11 +88,9 @@ func Run(ctx context.Context, cwd, command string, args []string) (stdout, stder
 
 	cmd := exec.CommandContext(ctx, command, args...)
 	cmd.Dir = cwd
-	cmd.WaitDelay = processWaitDelay
-	configureCancellation(cmd)
 	var out, errOut cappedBuffer
 	cmd.Stdout, cmd.Stderr = &out, &errOut
-	err = cmd.Run()
+	err = RunCommand(ctx, cmd)
 	stdout, stderr = out.String(), errOut.String()
 	if err == nil {
 		return stdout, stderr, 0, nil
