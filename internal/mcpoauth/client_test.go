@@ -3,6 +3,8 @@ package mcpoauth
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -94,6 +96,84 @@ func TestLoginDiscoversRegistersAndExchangesWithPKCE(t *testing.T) {
 	}
 	if exchanged.Get("resource") != server.URL+"/mcp" || exchanged.Get("code") != "authorization-code" || exchanged.Get("code_verifier") == "" {
 		t.Fatalf("exchange = %#v", exchanged)
+	}
+}
+
+func TestLoginAllowsCrossOriginAuthorizationServerEndpoints(t *testing.T) {
+	var registered, exchanged bool
+	endpoints := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/register":
+			registered = true
+			writeJSON(t, w, map[string]any{"client_id": "notch-client", "token_endpoint_auth_method": "none"})
+		case "/token":
+			exchanged = true
+			writeJSON(t, w, map[string]any{"access_token": "access", "token_type": "Bearer"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer endpoints.Close()
+
+	var issuer *httptest.Server
+	issuer = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/oauth-protected-resource/mcp":
+			writeJSON(t, w, map[string]any{
+				"resource": "https://" + r.Host + "/mcp", "authorization_servers": []string{issuer.URL},
+			})
+		case "/.well-known/oauth-authorization-server":
+			writeJSON(t, w, map[string]any{
+				"issuer": issuer.URL, "authorization_endpoint": endpoints.URL + "/authorize",
+				"token_endpoint": endpoints.URL + "/token", "registration_endpoint": endpoints.URL + "/register",
+				"response_types_supported": []string{"code"}, "grant_types_supported": []string{"authorization_code"},
+				"code_challenge_methods_supported": []string{"S256"}, "token_endpoint_auth_methods_supported": []string{"none"},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer issuer.Close()
+
+	roots := x509.NewCertPool()
+	roots.AddCert(issuer.Certificate())
+	roots.AddCert(endpoints.Certificate())
+	httpClient := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots}}}
+	oauthClient := oauth.NewClient()
+	oauthClient.Browser = func(target string) error {
+		authorize, err := url.Parse(target)
+		if err != nil {
+			return err
+		}
+		callback, err := url.Parse(authorize.Query().Get("redirect_uri"))
+		if err != nil {
+			return err
+		}
+		query := callback.Query()
+		query.Set("code", "authorization-code")
+		query.Set("state", authorize.Query().Get("state"))
+		query.Set("iss", issuer.URL)
+		callback.RawQuery = query.Encode()
+		response, err := http.Get(strings.Replace(callback.String(), "localhost", "127.0.0.1", 1))
+		if err == nil {
+			response.Body.Close()
+		}
+		return err
+	}
+
+	client := &Client{HTTPClient: httpClient, OAuth: oauthClient, Now: time.Now}
+	credential, err := client.Login(context.Background(), issuer.URL+"/mcp", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !registered || !exchanged {
+		t.Fatalf("registered = %v, exchanged = %v", registered, exchanged)
+	}
+	if credential.AuthorizationServer != issuer.URL || credential.TokenEndpoint != endpoints.URL+"/token" {
+		t.Fatalf("credential = %#v", credential)
+	}
+	if err := validateCredential(credential); err != nil {
+		t.Fatalf("cross-origin credential rejected: %v", err)
 	}
 }
 
