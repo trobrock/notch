@@ -124,6 +124,18 @@ func reasoningForLevel(level string) *wireReasoning {
 	return &wireReasoning{Effort: level, Summary: "auto"}
 }
 
+func replayReasoningItem(signature string) (json.RawMessage, bool) {
+	raw := json.RawMessage(signature)
+	var item struct {
+		Type             string `json:"type"`
+		EncryptedContent string `json:"encrypted_content"`
+	}
+	if json.Unmarshal(raw, &item) != nil || item.Type != "reasoning" || item.EncryptedContent == "" {
+		return nil, false
+	}
+	return append(json.RawMessage(nil), raw...), true
+}
+
 func makeRequest(req model.Request) wireRequest {
 	input := make([]any, 0, len(req.Messages))
 	for _, message := range req.Messages {
@@ -140,6 +152,11 @@ func makeRequest(req model.Request) wireRequest {
 		}
 		for _, block := range message.Content {
 			switch block.Type {
+			case "thinking":
+				if item, ok := replayReasoningItem(block.Signature); ok {
+					flushText()
+					input = append(input, item)
+				}
 			case "text":
 				contentType := "input_text"
 				if message.Role == "assistant" {
@@ -154,10 +171,11 @@ func makeRequest(req model.Request) wireRequest {
 				}
 				input = append(input, struct {
 					Type      string `json:"type"`
+					ID        string `json:"id,omitempty"`
 					CallID    string `json:"call_id"`
 					Name      string `json:"name"`
 					Arguments string `json:"arguments"`
-				}{"function_call", block.ID, block.Name, arguments})
+				}{"function_call", block.Signature, block.ID, block.Name, arguments})
 			case "tool_result", "function_call_output":
 				flushText()
 				input = append(input, struct {
@@ -190,13 +208,15 @@ type outputSlot struct {
 }
 
 type outputItem struct {
-	ID        string `json:"id"`
-	Type      string `json:"type"`
-	CallID    string `json:"call_id"`
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"`
-	Output    string `json:"output"`
-	Content   []struct {
+	ID               string `json:"id"`
+	Type             string `json:"type"`
+	CallID           string `json:"call_id"`
+	Name             string `json:"name"`
+	Arguments        string `json:"arguments"`
+	Output           string `json:"output"`
+	EncryptedContent string `json:"encrypted_content"`
+	raw              json.RawMessage
+	Content          []struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	} `json:"content"`
@@ -204,6 +224,17 @@ type outputItem struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	} `json:"summary"`
+}
+
+func (i *outputItem) UnmarshalJSON(data []byte) error {
+	type wireOutputItem outputItem
+	var item wireOutputItem
+	if err := json.Unmarshal(data, &item); err != nil {
+		return err
+	}
+	*i = outputItem(item)
+	i.raw = append(i.raw[:0], data...)
+	return nil
 }
 
 type responseData struct {
@@ -490,6 +521,9 @@ func mergeOutputItem(slots map[int]*outputSlot, index int, item outputItem, done
 	case "reasoning":
 		block := reasoningPart(slots, index)
 		if done {
+			if item.EncryptedContent != "" && len(item.raw) != 0 {
+				block.Signature = string(item.raw)
+			}
 			var parts []string
 			for _, summary := range item.Summary {
 				if summary.Text != "" {
@@ -520,6 +554,7 @@ func mergeOutputItem(slots map[int]*outputSlot, index int, item outputItem, done
 		slot := functionSlot(slots, index)
 		slot.call.ID = item.CallID
 		slot.call.Name = item.Name
+		slot.call.Signature = item.ID
 		if done && item.Arguments != "" {
 			slot.args.Reset()
 			slot.args.WriteString(item.Arguments)

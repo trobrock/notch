@@ -48,6 +48,38 @@ func TestRequestBodyReasoningLevels(t *testing.T) {
 	}
 }
 
+func TestRequestReplaysEncryptedReasoningAndFunctionItemID(t *testing.T) {
+	reasoning := `{"type":"reasoning","id":"rs-1","encrypted_content":"cipher","summary":[]}`
+	body, err := json.Marshal(makeRequest(model.Request{Messages: []model.Message{
+		{Role: "assistant", Content: []model.Block{
+			{Type: "thinking", Text: "prior summary", Signature: reasoning},
+			{Type: "tool_use", ID: "call-1", Name: "lookup", Arguments: json.RawMessage(`{"id":1}`), Signature: "fc-1"},
+		}},
+		{Role: "user", Content: []model.Block{{Type: "tool_result", ToolUseID: "call-1", Text: "found"}}},
+	}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request struct {
+		Input []map[string]any `json:"input"`
+	}
+	if err := json.Unmarshal(body, &request); err != nil {
+		t.Fatal(err)
+	}
+	if len(request.Input) != 3 {
+		t.Fatalf("input = %#v", request.Input)
+	}
+	if item := request.Input[0]; item["type"] != "reasoning" || item["id"] != "rs-1" || item["encrypted_content"] != "cipher" {
+		t.Errorf("reasoning replay = %#v", item)
+	}
+	if item := request.Input[1]; item["type"] != "function_call" || item["id"] != "fc-1" || item["call_id"] != "call-1" {
+		t.Errorf("function replay = %#v", item)
+	}
+	if item := request.Input[2]; item["type"] != "function_call_output" || item["call_id"] != "call-1" {
+		t.Errorf("tool result replay = %#v", item)
+	}
+}
+
 func TestListModels(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/models" || r.Header.Get("Authorization") != "Bearer secret" {
@@ -146,7 +178,7 @@ func TestStreamTextFunctionCallAndUsage(t *testing.T) {
 		t.Fatalf("content = %#v", response.Content)
 	}
 	call := response.Content[1]
-	if call.Type != "tool_use" || call.ID != "call-1" || call.Name != "weather" || string(call.Arguments) != `{"city":"Paris"}` {
+	if call.Type != "tool_use" || call.ID != "call-1" || call.Signature != "fc-1" || call.Name != "weather" || string(call.Arguments) != `{"city":"Paris"}` {
 		t.Errorf("function call = %#v", call)
 	}
 	wantEvents := []model.StreamEvent{
@@ -165,7 +197,7 @@ func TestStreamReasoningSummary(t *testing.T) {
 			`{"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"r-1","summary":[]}}`,
 			`{"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"Checked "}`,
 			`{"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"the files."}`,
-			`{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"r-1","summary":[{"type":"summary_text","text":"Checked the files."}]}}`,
+			`{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"r-1","encrypted_content":"cipher","summary":[{"type":"summary_text","text":"Checked the files."}]}}`,
 			`{"type":"response.completed","response":{"status":"completed"}}`,
 		} {
 			fmt.Fprintf(w, "data: %s\n\n", data)
@@ -179,6 +211,9 @@ func TestStreamReasoningSummary(t *testing.T) {
 	}
 	if len(response.Content) != 1 || response.Content[0].Type != "thinking" || response.Content[0].Text != "Checked the files." {
 		t.Fatalf("content = %#v", response.Content)
+	}
+	if item, ok := replayReasoningItem(response.Content[0].Signature); !ok || !strings.Contains(string(item), `"encrypted_content":"cipher"`) {
+		t.Fatalf("reasoning signature = %q", response.Content[0].Signature)
 	}
 	if got := fmt.Sprint(events); got != fmt.Sprint([]model.StreamEvent{{Type: "thinking_delta", Text: "Checked "}, {Type: "thinking_delta", Text: "the files."}}) {
 		t.Fatalf("events = %#v", events)

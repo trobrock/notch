@@ -182,6 +182,13 @@ func thinkingBudget(level string, maxTokens int) int {
 	return desired
 }
 
+func isOpenAIReasoningSignature(signature string) bool {
+	var item struct {
+		Type string `json:"type"`
+	}
+	return json.Unmarshal([]byte(signature), &item) == nil && item.Type == "reasoning"
+}
+
 func makeRequest(req model.Request) wireRequest {
 	return makeRequestForMode(req, false)
 }
@@ -193,9 +200,9 @@ func makeRequestForMode(req model.Request, oauthMode bool) wireRequest {
 		for _, block := range message.Content {
 			switch block.Type {
 			case "thinking":
-				// Anthropic requires its opaque signature when replaying a thinking
-				// block. Unsigned summaries from another provider are display-only.
-				if block.Signature != "" {
+				// Anthropic requires its own opaque signature when replaying a
+				// thinking block. OpenAI reasoning items are display-only here.
+				if block.Signature != "" && !isOpenAIReasoningSignature(block.Signature) {
 					content = append(content, struct {
 						Type      string `json:"type"`
 						Thinking  string `json:"thinking"`

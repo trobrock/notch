@@ -241,6 +241,17 @@ func TestThinkingStreamAndReplay(t *testing.T) {
 		t.Fatalf("thinking replay missing: %s", body)
 	}
 
+	foreign := makeRequest(model.Request{Messages: []model.Message{{Role: "assistant", Content: []model.Block{{
+		Type: "thinking", Text: "OpenAI summary", Signature: `{"type":"reasoning","encrypted_content":"cipher"}`,
+	}}}}, MaxTokens: 4096})
+	foreignBody, err := json.Marshal(foreign)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(foreignBody), `"type":"thinking"`) {
+		t.Fatalf("OpenAI reasoning signature replayed to Anthropic: %s", foreignBody)
+	}
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		for _, data := range []string{
