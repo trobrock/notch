@@ -149,7 +149,7 @@ func TestStreamTextFunctionCallAndUsage(t *testing.T) {
 			`{"type":"response.function_call_arguments.delta","output_index":1,"delta":"{\"city\":"}`,
 			`{"type":"response.function_call_arguments.delta","output_index":1,"delta":"\"Paris\"}"}`,
 			`{"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","id":"fc-1","call_id":"call-1","name":"weather","arguments":"{\"city\":\"Paris\"}"}}`,
-			`{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":17,"output_tokens":8,"input_tokens_details":{"cached_tokens":6},"output_tokens_details":{"reasoning_tokens":4}}}}`,
+			`{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":17,"output_tokens":8,"input_tokens_details":{"cached_tokens":6,"cache_write_tokens":2},"output_tokens_details":{"reasoning_tokens":4}}}}`,
 		}
 		for _, data := range events {
 			fmt.Fprintf(w, "event: ignored-by-json-type\ndata: %s\n\n", data)
@@ -171,7 +171,7 @@ func TestStreamTextFunctionCallAndUsage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if response.InputTokens != 11 || response.CacheReadTokens != 6 || response.OutputTokens != 8 || response.ReasoningTokens != 4 || response.TotalTokens() != 25 || response.StopReason != "tool_use" {
+	if response.InputTokens != 9 || response.CacheReadTokens != 6 || response.CacheWriteTokens != 2 || response.OutputTokens != 8 || response.ReasoningTokens != 4 || response.TotalTokens() != 25 || response.StopReason != "tool_use" {
 		t.Errorf("response metadata = %#v", response)
 	}
 	if len(response.Content) != 2 || response.Content[0].Type != "text" || response.Content[0].Text != "hello world" {
@@ -299,5 +299,32 @@ func TestStreamCancellation(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("Stream did not return after cancellation")
+	}
+}
+
+func TestMakeRequestConfiguresPromptCaching(t *testing.T) {
+	key := strings.Repeat("k", 80)
+	wire := makeRequest(model.Request{Model: "gpt-5.4", CacheRetention: "long", CacheKey: key})
+	if len([]rune(wire.PromptCacheKey)) != 64 || wire.PromptCacheRetention != "24h" || wire.PromptCacheOptions != nil {
+		t.Fatalf("long cache config = %#v", wire)
+	}
+	uncached := makeRequest(model.Request{Model: "gpt-5.6-sol", CacheRetention: "none", CacheKey: key})
+	if uncached.PromptCacheKey != "" || uncached.PromptCacheRetention != "" || uncached.PromptCacheOptions == nil || uncached.PromptCacheOptions.Mode != "explicit" {
+		t.Fatalf("disabled cache config = %#v", uncached)
+	}
+}
+
+func TestCustomEndpointDisablesHostedCacheFieldsAndPricing(t *testing.T) {
+	custom := New(Config{BaseURL: "https://local.example"}).(*provider)
+	if custom.promptCacheFields {
+		t.Fatal("custom endpoint unexpectedly enables hosted cache fields")
+	}
+	official := New(Config{}).(*provider)
+	if !official.promptCacheFields {
+		t.Fatal("official endpoint disabled hosted cache fields")
+	}
+	wire := makeRequest(model.Request{Model: "other-model", CacheRetention: "long", CacheKey: "key"})
+	if wire.PromptCacheRetention != "" {
+		t.Fatalf("unsupported model retention = %q", wire.PromptCacheRetention)
 	}
 }

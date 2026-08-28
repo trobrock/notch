@@ -299,3 +299,35 @@ func TestStreamCancellation(t *testing.T) {
 		t.Fatal("Stream did not return after cancellation")
 	}
 }
+
+func TestMakeRequestConfiguresSessionAndExplicitCaching(t *testing.T) {
+	wire := makeRequest(model.Request{
+		Model: "anthropic/claude-sonnet-4.5", SystemPrompt: "stable", CacheRetention: "long", CacheKey: "session-1",
+		Messages: []model.Message{model.TextMessage("user", "hello")},
+		Tools:    []model.ToolDefinition{{Name: "read", InputSchema: map[string]any{"type": "object"}}},
+	})
+	if wire.SessionID != "session-1" {
+		t.Fatalf("session id = %q", wire.SessionID)
+	}
+	system, ok := wire.Messages[0].Content.([]wireTextBlock)
+	if !ok || system[0].CacheControl == nil || system[0].CacheControl.TTL != "1h" {
+		t.Fatalf("system cache = %#v", wire.Messages[0].Content)
+	}
+	user, ok := wire.Messages[1].Content.([]wireTextBlock)
+	if !ok || user[0].CacheControl == nil || wire.Tools[0].CacheControl == nil {
+		t.Fatalf("explicit cache fields = %#v / %#v", wire.Messages[1].Content, wire.Tools)
+	}
+
+	automatic := makeRequest(model.Request{Model: "openai/gpt-5", CacheRetention: "short", CacheKey: "session-2", Messages: []model.Message{model.TextMessage("user", "hi")}})
+	if automatic.SessionID != "session-2" || automatic.PromptCacheKey != "session-2" || automatic.Messages[0].Content != "hi" {
+		t.Fatalf("automatic cache request = %#v", automatic)
+	}
+	uncached := makeRequest(model.Request{Model: "anthropic/claude-sonnet-4.5", CacheRetention: "none", CacheKey: "session-3", Messages: []model.Message{model.TextMessage("user", "hi")}})
+	if uncached.SessionID != "" || uncached.Messages[0].Content != "hi" {
+		t.Fatalf("uncached request = %#v", uncached)
+	}
+	unsupported := makeRequest(model.Request{Model: "openai/other-model", CacheRetention: "long", CacheKey: "session-4"})
+	if unsupported.PromptCacheRetention != "" {
+		t.Fatalf("unsupported retention = %q", unsupported.PromptCacheRetention)
+	}
+}

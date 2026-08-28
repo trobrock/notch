@@ -37,12 +37,13 @@ type Config struct {
 }
 
 type provider struct {
-	apiKey     string
-	oauthToken string
-	oauthMode  bool
-	baseURL    string
-	version    string
-	httpClient *http.Client
+	apiKey             string
+	oauthToken         string
+	oauthMode          bool
+	baseURL            string
+	version            string
+	apiPricingEligible bool
+	httpClient         *http.Client
 }
 
 // New returns a provider backed by Anthropic's native Messages API.
@@ -61,19 +62,39 @@ func New(cfg Config) model.Provider {
 	}
 	return &provider{
 		apiKey: cfg.APIKey, oauthToken: cfg.OAuthToken, oauthMode: cfg.OAuthMode,
-		baseURL: baseURL, version: version, httpClient: client,
+		baseURL: baseURL, version: version,
+		apiPricingEligible: strings.TrimSpace(cfg.BaseURL) == "" || strings.EqualFold(baseURL, defaultBaseURL),
+		httpClient:         client,
 	}
 }
 
 type wireRequest struct {
-	Model        string                 `json:"model"`
-	System       any                    `json:"system,omitempty"`
-	Messages     []wireMessage          `json:"messages"`
-	Tools        []model.ToolDefinition `json:"tools,omitempty"`
-	MaxTokens    int                    `json:"max_tokens"`
-	Thinking     *wireThinking          `json:"thinking,omitempty"`
-	OutputConfig *wireOutputConfig      `json:"output_config,omitempty"`
-	Stream       bool                   `json:"stream"`
+	Model        string            `json:"model"`
+	System       any               `json:"system,omitempty"`
+	Messages     []wireMessage     `json:"messages"`
+	Tools        []wireTool        `json:"tools,omitempty"`
+	MaxTokens    int               `json:"max_tokens"`
+	Thinking     *wireThinking     `json:"thinking,omitempty"`
+	OutputConfig *wireOutputConfig `json:"output_config,omitempty"`
+	Stream       bool              `json:"stream"`
+}
+
+type wireCacheControl struct {
+	Type string `json:"type"`
+	TTL  string `json:"ttl,omitempty"`
+}
+
+type wireSystemBlock struct {
+	Type         string            `json:"type"`
+	Text         string            `json:"text"`
+	CacheControl *wireCacheControl `json:"cache_control,omitempty"`
+}
+
+type wireTool struct {
+	Name         string            `json:"name"`
+	Description  string            `json:"description"`
+	InputSchema  map[string]any    `json:"input_schema"`
+	CacheControl *wireCacheControl `json:"cache_control,omitempty"`
 }
 
 type wireThinking struct {
@@ -189,6 +210,17 @@ func isOpenAIReasoningSignature(signature string) bool {
 	return json.Unmarshal([]byte(signature), &item) == nil && item.Type == "reasoning"
 }
 
+func anthropicCacheControl(retention string) *wireCacheControl {
+	if retention != "short" && retention != "long" {
+		return nil
+	}
+	control := &wireCacheControl{Type: "ephemeral"}
+	if retention == "long" {
+		control.TTL = "1h"
+	}
+	return control
+}
+
 func makeRequest(req model.Request) wireRequest {
 	return makeRequestForMode(req, false)
 }
@@ -220,12 +252,7 @@ func makeRequestForMode(req model.Request, oauthMode bool) wireRequest {
 				if oauthMode {
 					name = canonicalToolName(name)
 				}
-				content = append(content, struct {
-					Type  string          `json:"type"`
-					ID    string          `json:"id"`
-					Name  string          `json:"name"`
-					Input json.RawMessage `json:"input"`
-				}{"tool_use", block.ID, name, input})
+				content = append(content, map[string]any{"type": "tool_use", "id": block.ID, "name": name, "input": input})
 			case "tool_result", "function_call_output":
 				resultText := block.Text
 				// Older sessions may contain an empty failed tool result. Anthropic
@@ -234,12 +261,11 @@ func makeRequestForMode(req model.Request, oauthMode bool) wireRequest {
 				if block.IsError && strings.TrimSpace(resultText) == "" {
 					resultText = "tool execution failed without an error message"
 				}
-				content = append(content, struct {
-					Type      string `json:"type"`
-					ToolUseID string `json:"tool_use_id"`
-					Content   string `json:"content"`
-					IsError   bool   `json:"is_error,omitempty"`
-				}{"tool_result", block.ToolUseID, resultText, block.IsError})
+				result := map[string]any{"type": "tool_result", "tool_use_id": block.ToolUseID, "content": resultText}
+				if block.IsError {
+					result["is_error"] = true
+				}
+				content = append(content, result)
 			}
 		}
 		messages = append(messages, wireMessage{Role: message.Role, Content: content})
@@ -248,22 +274,39 @@ func makeRequestForMode(req model.Request, oauthMode bool) wireRequest {
 	if maxTokens <= 0 {
 		maxTokens = 4096
 	}
-	tools := req.Tools
-	if oauthMode && len(req.Tools) != 0 {
-		tools = append([]model.ToolDefinition(nil), req.Tools...)
-		for i := range tools {
-			tools[i].Name = canonicalToolName(tools[i].Name)
+	cacheControl := anthropicCacheControl(req.CacheRetention)
+	tools := make([]wireTool, 0, len(req.Tools))
+	for _, tool := range req.Tools {
+		name := tool.Name
+		if oauthMode {
+			name = canonicalToolName(name)
 		}
+		tools = append(tools, wireTool{Name: name, Description: tool.Description, InputSchema: tool.InputSchema})
+	}
+	if cacheControl != nil && len(tools) != 0 {
+		tools[len(tools)-1].CacheControl = cacheControl
 	}
 	var system any
 	if oauthMode {
-		blocks := []map[string]string{{"type": "text", "text": claudeCodeSystemBlock}}
+		blocks := []wireSystemBlock{{Type: "text", Text: claudeCodeSystemBlock, CacheControl: cacheControl}}
 		if req.SystemPrompt != "" {
-			blocks = append(blocks, map[string]string{"type": "text", "text": req.SystemPrompt})
+			blocks = append(blocks, wireSystemBlock{Type: "text", Text: req.SystemPrompt, CacheControl: cacheControl})
 		}
 		system = blocks
 	} else if req.SystemPrompt != "" {
-		system = req.SystemPrompt
+		if cacheControl == nil {
+			system = req.SystemPrompt
+		} else {
+			system = []wireSystemBlock{{Type: "text", Text: req.SystemPrompt, CacheControl: cacheControl}}
+		}
+	}
+	if cacheControl != nil && len(messages) != 0 {
+		last := &messages[len(messages)-1]
+		if last.Role == "user" && len(last.Content) != 0 {
+			if block, ok := last.Content[len(last.Content)-1].(map[string]any); ok {
+				block["cache_control"] = cacheControl
+			}
+		}
 	}
 	wireReq := wireRequest{
 		Model: req.Model, System: system, Messages: messages,
@@ -366,6 +409,10 @@ func (p *provider) ListModels(ctx context.Context) ([]model.ModelInfo, error) {
 func (p *provider) Stream(ctx context.Context, req model.Request, onEvent func(model.StreamEvent)) (model.Response, error) {
 	if !validReasoningLevel(req.ReasoningLevel) {
 		return model.Response{}, fmt.Errorf("anthropic: invalid reasoning level %q", req.ReasoningLevel)
+	}
+	if !p.apiPricingEligible {
+		req.CacheRetention = "none"
+		req.CacheKey = ""
 	}
 	body, err := json.Marshal(makeRequestForMode(req, p.oauthMode))
 	if err != nil {
@@ -551,6 +598,7 @@ func (p *provider) Stream(ctx context.Context, req model.Request, onEvent func(m
 		}
 		result.Content = append(result.Content, b.block)
 	}
+	result.APIPricingEligible = p.apiPricingEligible
 	return result, nil
 }
 

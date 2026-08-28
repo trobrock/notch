@@ -265,11 +265,12 @@ Preserve exact paths, identifiers, commands, errors, user decisions, current imp
 		SystemPrompt: summaryPrompt,
 		Messages:     []model.Message{model.TextMessage("user", payload)},
 		Tools:        nil, MaxTokens: maxTokens, ReasoningLevel: a.ThinkingLevel(),
+		CacheRetention: "none", CacheKey: a.cacheKey,
 	}, func(model.StreamEvent) {})
 	if err != nil {
 		return fmt.Errorf("compact conversation: summarize: %w", err)
 	}
-	if err := a.appendUsage(response, delegation.Usage{}); err != nil {
+	if err := a.appendUsage(response, delegation.Usage{}, "none", a.providerName, a.model); err != nil {
 		return fmt.Errorf("compact conversation: persist usage: %w", err)
 	}
 	summary := responseText(response.Content)
@@ -277,7 +278,7 @@ Preserve exact paths, identifiers, commands, errors, user decisions, current imp
 		return errors.New("compact conversation: provider returned an empty summary")
 	}
 
-	return a.applyCompactionLocked(summary, recent, auto, before, Usage{InputTokens: response.InputTokens, OutputTokens: response.OutputTokens, CacheReadTokens: response.CacheReadTokens, CacheWriteTokens: response.CacheWriteTokens, ReasoningTokens: response.ReasoningTokens, CostUSD: response.CostUSD}, emit)
+	return a.applyCompactionLocked(summary, recent, auto, before, a.responseUsage(response, "none", a.providerName, a.model), emit)
 }
 
 func (a *Agent) applyCompactionLocked(summary string, recent []model.Message, auto bool, before ContextUsage, usage Usage, emit func(Event)) error {
@@ -415,6 +416,7 @@ func (a *Agent) ResumeSession(next *session.Session) (*session.Session, error) {
 		return nil, nil
 	}
 	a.session = next
+	a.cacheKey = "notch-" + next.Header.ID
 	a.messages = cloneMessages(next.Messages)
 	a.messageCount.Store(int64(len(a.messages)))
 	a.reportedInputTokens = 0
@@ -444,6 +446,7 @@ func (a *Agent) ResetConversation(newSession *session.Session) (*session.Session
 	}
 
 	a.session = newSession
+	a.cacheKey = "notch-" + newSession.Header.ID
 	a.messages = nil
 	a.messageCount.Store(0)
 	a.reportedInputTokens = 0

@@ -39,6 +39,8 @@ type Request struct {
 	Tools          []ToolDefinition `json:"tools,omitempty"`
 	MaxTokens      int              `json:"max_tokens,omitempty"`
 	ReasoningLevel string           `json:"reasoning_level,omitempty"`
+	CacheRetention string           `json:"cache_retention,omitempty"`
+	CacheKey       string           `json:"cache_key,omitempty"`
 }
 
 type StreamEvent struct {
@@ -47,14 +49,15 @@ type StreamEvent struct {
 }
 
 type Response struct {
-	Content          []Block  `json:"content"`
-	StopReason       string   `json:"stop_reason"`
-	InputTokens      int      `json:"input_tokens,omitempty"`
-	OutputTokens     int      `json:"output_tokens,omitempty"`
-	CacheReadTokens  int      `json:"cache_read_tokens,omitempty"`
-	CacheWriteTokens int      `json:"cache_write_tokens,omitempty"`
-	ReasoningTokens  int      `json:"reasoning_tokens,omitempty"`
-	CostUSD          *float64 `json:"cost_usd,omitempty"`
+	Content            []Block  `json:"content"`
+	StopReason         string   `json:"stop_reason"`
+	InputTokens        int      `json:"input_tokens,omitempty"`
+	OutputTokens       int      `json:"output_tokens,omitempty"`
+	CacheReadTokens    int      `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens   int      `json:"cache_write_tokens,omitempty"`
+	ReasoningTokens    int      `json:"reasoning_tokens,omitempty"`
+	CostUSD            *float64 `json:"cost_usd,omitempty"`
+	APIPricingEligible bool     `json:"-"`
 }
 
 func (r Response) TotalInputTokens() int {

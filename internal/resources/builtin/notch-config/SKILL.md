@@ -32,6 +32,7 @@ Before editing, read every existing applicable config file. Do not replace unrel
   "max_tokens": 8192,
   "theme": "dark",
   "thinking_level": "medium",
+  "cache_retention": "short",
   "presets": {
     "f1": {"provider": "openai-codex", "model": "gpt-5.6-sol", "thinking_level": "high"}
   },
@@ -56,7 +57,7 @@ Empty scalar values in later files do not erase earlier values. A non-empty dire
 
 The model registry ships with an offline fallback and refreshes stale selected-provider data from provider model-list APIs on startup or when `/model` is opened. `model_refresh_hours` controls staleness; no polling timer runs. Use `notch models [provider]` to list cached/discovered models, `notch models --refresh [provider]` to force discovery, and `/model refresh` to force it in the fullscreen selector. The mode-0600 JSON cache has a fixed path below the XDG data root.
 
-Valid thinking levels are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh`. Built-in themes are `dark`, `dracula`, and `catppuccin-mocha`. `/thinking LEVEL` and `/theme NAME` change only the running process. Fullscreen `presets` map `f1` through `f9` to provider/model/thinking combinations; omitted fields preserve current values, global and trusted project maps merge by key, and applying one changes only the running process. `mouse` defaults to `true`; set it to `false` to disable TUI mouse capture and restore terminal-native selection/scrolling.
+Valid thinking levels are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh`. `cache_retention` accepts `none`, `short`, or `long` and defaults to `short`; long requests extended provider retention where supported, while compaction summaries always disable cache writes. Built-in themes are `dark`, `dracula`, and `catppuccin-mocha`. `/thinking LEVEL` and `/theme NAME` change only the running process. Fullscreen `presets` map `f1` through `f9` to provider/model/thinking combinations; omitted fields preserve current values, global and trusted project maps merge by key, and applying one changes only the running process. `mouse` defaults to `true`; set it to `false` to disable TUI mouse capture and restore terminal-native selection/scrolling.
 
 Tool exposure is controlled per process with `--tools read,grep`, `--exclude-tools bash,write`, `--no-builtin-tools`, or `--no-tools`. The strict allowlist applies across built-in, extension, and MCP tools; unknown names fail startup. These are CLI controls rather than persistent config keys.
 

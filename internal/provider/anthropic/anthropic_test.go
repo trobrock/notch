@@ -355,3 +355,41 @@ func TestHTTPRetryableErrorPreservesRetryAfter(t *testing.T) {
 		t.Fatalf("error=%v retryable=%v delay=%v", err, retryable, delay)
 	}
 }
+
+func TestMakeRequestAddsPromptCacheBreakpoints(t *testing.T) {
+	wire := makeRequest(model.Request{
+		SystemPrompt: "stable", CacheRetention: "long",
+		Messages: []model.Message{model.TextMessage("user", "hello")},
+		Tools:    []model.ToolDefinition{{Name: "first"}, {Name: "last"}},
+	})
+	system, ok := wire.System.([]wireSystemBlock)
+	if !ok || len(system) != 1 || system[0].CacheControl == nil || system[0].CacheControl.TTL != "1h" {
+		t.Fatalf("system cache control = %#v", wire.System)
+	}
+	if len(wire.Tools) != 2 || wire.Tools[0].CacheControl != nil || wire.Tools[1].CacheControl == nil || wire.Tools[1].CacheControl.TTL != "1h" {
+		t.Fatalf("tool cache control = %#v", wire.Tools)
+	}
+	last, ok := wire.Messages[0].Content[0].(map[string]any)
+	if !ok || last["cache_control"] == nil {
+		t.Fatalf("message cache control = %#v", wire.Messages)
+	}
+
+	uncached := makeRequest(model.Request{SystemPrompt: "stable", CacheRetention: "none", Messages: []model.Message{model.TextMessage("user", "hello")}})
+	if _, ok := uncached.System.(string); !ok {
+		t.Fatalf("uncached system = %#v", uncached.System)
+	}
+	if block := uncached.Messages[0].Content[0].(map[string]any); block["cache_control"] != nil {
+		t.Fatalf("uncached message = %#v", block)
+	}
+}
+
+func TestCustomEndpointDisablesAPIPricingEligibility(t *testing.T) {
+	custom := New(Config{BaseURL: "https://local.example"}).(*provider)
+	if custom.apiPricingEligible {
+		t.Fatal("custom endpoint unexpectedly eligible for hosted API pricing")
+	}
+	official := New(Config{}).(*provider)
+	if !official.apiPricingEligible {
+		t.Fatal("official endpoint not eligible for API pricing")
+	}
+}

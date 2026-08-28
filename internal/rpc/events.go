@@ -236,12 +236,21 @@ func (a *eventAdapter) assistantMessage(message *model.Message, usage *agent.Usa
 func rpcUsage(usage *agent.Usage) map[string]any {
 	providerInput, providerOutput, cacheRead, cacheWrite, reasoning := 0, 0, 0, 0, 0
 	totalCost, costKnown := 0.0, false
+	var providerCost, estimatedCost any
+	costSource, pricingVersion := "", ""
 	if usage != nil {
 		providerInput, providerOutput = usage.InputTokens, usage.OutputTokens
 		cacheRead, cacheWrite, reasoning = usage.CacheReadTokens, usage.CacheWriteTokens, usage.ReasoningTokens
 		if usage.CostUSD != nil {
 			totalCost, costKnown = *usage.CostUSD, true
 		}
+		if usage.ProviderCostUSD != nil {
+			providerCost = *usage.ProviderCostUSD
+		}
+		if usage.EstimatedCostUSD != nil {
+			estimatedCost = *usage.EstimatedCostUSD
+		}
+		costSource, pricingVersion = usage.CostSource, usage.PricingVersion
 	}
 	providerTokens := providerInput + providerOutput + cacheRead + cacheWrite
 	return map[string]any{
@@ -252,7 +261,11 @@ func rpcUsage(usage *agent.Usage) map[string]any {
 		"cost": map[string]float64{
 			"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": totalCost,
 		},
-		"costKnown": costKnown,
+		"costKnown":        costKnown,
+		"costSource":       costSource,
+		"providerCostUSD":  providerCost,
+		"estimatedCostUSD": estimatedCost,
+		"pricingVersion":   pricingVersion,
 	}
 }
 

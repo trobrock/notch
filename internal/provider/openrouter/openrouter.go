@@ -53,13 +53,21 @@ func New(cfg Config) model.Provider {
 }
 
 type wireRequest struct {
-	Model         string         `json:"model"`
-	Messages      []wireMessage  `json:"messages"`
-	Tools         []wireTool     `json:"tools,omitempty"`
-	MaxTokens     int            `json:"max_tokens,omitempty"`
-	Reasoning     *wireReasoning `json:"reasoning,omitempty"`
-	Stream        bool           `json:"stream"`
-	StreamOptions streamOptions  `json:"stream_options"`
+	Model                string                  `json:"model"`
+	Messages             []wireMessage           `json:"messages"`
+	Tools                []wireTool              `json:"tools,omitempty"`
+	MaxTokens            int                     `json:"max_tokens,omitempty"`
+	Reasoning            *wireReasoning          `json:"reasoning,omitempty"`
+	Stream               bool                    `json:"stream"`
+	StreamOptions        streamOptions           `json:"stream_options"`
+	SessionID            string                  `json:"session_id,omitempty"`
+	PromptCacheKey       string                  `json:"prompt_cache_key,omitempty"`
+	PromptCacheRetention string                  `json:"prompt_cache_retention,omitempty"`
+	PromptCacheOptions   *wirePromptCacheOptions `json:"prompt_cache_options,omitempty"`
+}
+
+type wirePromptCacheOptions struct {
+	Mode string `json:"mode"`
 }
 
 type wireReasoning struct {
@@ -72,7 +80,7 @@ type streamOptions struct {
 
 type wireMessage struct {
 	Role       string         `json:"role"`
-	Content    string         `json:"content"`
+	Content    any            `json:"content"`
 	ToolCalls  []wireToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string         `json:"tool_call_id,omitempty"`
 }
@@ -89,8 +97,20 @@ type wireCallFunction struct {
 }
 
 type wireTool struct {
-	Type     string           `json:"type"`
-	Function wireToolFunction `json:"function"`
+	Type         string            `json:"type"`
+	Function     wireToolFunction  `json:"function"`
+	CacheControl *wireCacheControl `json:"cache_control,omitempty"`
+}
+
+type wireCacheControl struct {
+	Type string `json:"type"`
+	TTL  string `json:"ttl,omitempty"`
+}
+
+type wireTextBlock struct {
+	Type         string            `json:"type"`
+	Text         string            `json:"text"`
+	CacheControl *wireCacheControl `json:"cache_control,omitempty"`
 }
 
 type wireToolFunction struct {
@@ -115,6 +135,25 @@ func reasoningForLevel(level string) *wireReasoning {
 	return &wireReasoning{Effort: level}
 }
 
+func openRouterExplicitCache(modelID, retention string) *wireCacheControl {
+	if retention != "short" && retention != "long" {
+		return nil
+	}
+	id := strings.ToLower(modelID)
+	explicit := strings.HasPrefix(id, "anthropic/") || strings.HasPrefix(id, "~anthropic/") ||
+		strings.Contains(id, "qwen3-max") || strings.Contains(id, "qwen-plus") ||
+		strings.Contains(id, "qwen3.6-plus") || strings.Contains(id, "qwen3-coder-plus") ||
+		strings.Contains(id, "qwen3-coder-flash") || strings.Contains(id, "deepseek-v3.2")
+	if !explicit {
+		return nil
+	}
+	control := &wireCacheControl{Type: "ephemeral"}
+	if retention == "long" && (strings.HasPrefix(id, "anthropic/") || strings.HasPrefix(id, "~anthropic/")) {
+		control.TTL = "1h"
+	}
+	return control
+}
+
 func makeRequest(req model.Request) wireRequest {
 	messages := make([]wireMessage, 0, len(req.Messages)+1)
 	if req.SystemPrompt != "" {
@@ -128,7 +167,8 @@ func makeRequest(req model.Request) wireRequest {
 				switch block.Type {
 				case "text":
 					hasOutput = true
-					out.Content += block.Text
+					text, _ := out.Content.(string)
+					out.Content = text + block.Text
 				case "tool_use", "function_call":
 					hasOutput = true
 					arguments := string(block.Arguments)
@@ -189,9 +229,48 @@ func makeRequest(req model.Request) wireRequest {
 			Name: tool.Name, Description: tool.Description, Parameters: tool.InputSchema,
 		}})
 	}
+	cacheControl := openRouterExplicitCache(req.Model, req.CacheRetention)
+	if cacheControl != nil {
+		if len(messages) != 0 && messages[0].Role == "system" {
+			text, _ := messages[0].Content.(string)
+			messages[0].Content = []wireTextBlock{{Type: "text", Text: text, CacheControl: cacheControl}}
+		}
+		if len(tools) != 0 && (strings.HasPrefix(strings.ToLower(req.Model), "anthropic/") || strings.HasPrefix(strings.ToLower(req.Model), "~anthropic/")) {
+			tools[len(tools)-1].CacheControl = cacheControl
+		}
+		if len(messages) != 0 {
+			last := &messages[len(messages)-1]
+			if last.Role == "user" || last.Role == "tool" {
+				if text, ok := last.Content.(string); ok {
+					last.Content = []wireTextBlock{{Type: "text", Text: text, CacheControl: cacheControl}}
+				}
+			}
+		}
+	}
+	sessionID, promptCacheKey, promptCacheRetention := "", "", ""
+	var promptCacheOptions *wirePromptCacheOptions
+	if req.CacheRetention == "short" || req.CacheRetention == "long" {
+		sessionID = req.CacheKey
+	}
+	if strings.HasPrefix(strings.ToLower(req.Model), "openai/") {
+		if req.CacheRetention == "short" || req.CacheRetention == "long" {
+			promptCacheKey = req.CacheKey
+			if len([]rune(promptCacheKey)) > 64 {
+				promptCacheKey = string([]rune(promptCacheKey)[:64])
+			}
+		}
+		if req.CacheRetention == "long" && strings.HasPrefix(strings.ToLower(req.Model), "openai/gpt-5") {
+			promptCacheRetention = "24h"
+		}
+		if req.CacheRetention == "none" && strings.Contains(strings.ToLower(req.Model), "gpt-5.6") {
+			promptCacheOptions = &wirePromptCacheOptions{Mode: "explicit"}
+		}
+	}
 	return wireRequest{
 		Model: req.Model, Messages: messages, Tools: tools, MaxTokens: req.MaxTokens,
 		Reasoning: reasoningForLevel(req.ReasoningLevel), Stream: true, StreamOptions: streamOptions{IncludeUsage: true},
+		SessionID: sessionID, PromptCacheKey: promptCacheKey,
+		PromptCacheRetention: promptCacheRetention, PromptCacheOptions: promptCacheOptions,
 	}
 }
 

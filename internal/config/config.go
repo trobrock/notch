@@ -77,6 +77,7 @@ type Config struct {
 	MCPAuthFile       string                  `json:"-"`
 	Theme             string                  `json:"theme,omitempty"`
 	ThinkingLevel     string                  `json:"thinking_level,omitempty"`
+	CacheRetention    string                  `json:"cache_retention,omitempty"`
 	Presets           map[string]PresetConfig `json:"presets,omitempty"`
 	MouseCapture      *bool                   `json:"mouse,omitempty"`
 	ContextWindow     int                     `json:"context_window,omitempty"`
@@ -133,6 +134,7 @@ func defaults(home, cwd string, includeProject bool) (Config, error) {
 		MCPAuthFile:       filepath.Join(dataRoot, "mcp-auth.json"),
 		Theme:             defaultTheme,
 		ThinkingLevel:     defaultThinking,
+		CacheRetention:    "short",
 		MouseCapture:      &mouseEnabled,
 		ModelCache:        filepath.Join(dataRoot, "models.json"),
 		ModelRefreshHours: 24,
@@ -316,6 +318,9 @@ func merge(dst *Config, src Config) {
 	}
 	if src.ThinkingLevel != "" {
 		dst.ThinkingLevel = src.ThinkingLevel
+	}
+	if src.CacheRetention != "" {
+		dst.CacheRetention = strings.ToLower(strings.TrimSpace(src.CacheRetention))
 	}
 	if len(src.Presets) != 0 {
 		if dst.Presets == nil {

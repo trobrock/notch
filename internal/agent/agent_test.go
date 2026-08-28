@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"reflect"
 	"strings"
 	"sync"
@@ -165,7 +166,7 @@ func TestPromptPersistsProviderUsage(t *testing.T) {
 		t.Fatalf("usage entries = %#v", loaded.UsageEntries)
 	}
 	entry := loaded.UsageEntries[0]
-	if entry.Provider != "anthropic" || entry.Model != "model-a" || entry.Usage.InputTokens != 123 || entry.Usage.OutputTokens != 45 || entry.Usage.CacheReadTokens != 67 || entry.Usage.CacheWriteTokens != 8 || entry.Usage.ReasoningTokens != 12 || entry.Usage.CostUSD == nil || *entry.Usage.CostUSD != 0.0123 || entry.StopReason != "end_turn" {
+	if entry.Provider != "anthropic" || entry.Model != "model-a" || entry.Usage.InputTokens != 123 || entry.Usage.OutputTokens != 45 || entry.Usage.CacheReadTokens != 67 || entry.Usage.CacheWriteTokens != 8 || entry.Usage.ReasoningTokens != 12 || entry.Usage.CostUSD == nil || *entry.Usage.CostUSD != 0.0123 || entry.Usage.ProviderCostUSD == nil || *entry.Usage.ProviderCostUSD != 0.0123 || entry.Usage.EstimatedCostUSD != nil || entry.Usage.CostSource != "provider" || entry.StopReason != "end_turn" {
 		t.Fatalf("usage entry = %#v", entry)
 	}
 	if entry.Delegated != nil {
@@ -259,7 +260,7 @@ func (p *recordingProvider) Stream(ctx context.Context, req model.Request, _ fun
 	if len(req.Tools) == 0 && len(req.Messages) == 1 && req.SystemPrompt != "" {
 		text = "old work summarized"
 	}
-	return model.Response{Content: []model.Block{{Type: "text", Text: text}}, InputTokens: 20}, nil
+	return model.Response{Content: []model.Block{{Type: "text", Text: text}}, InputTokens: 20, APIPricingEligible: true}, nil
 }
 
 func TestSteeringAndFollowUpQueues(t *testing.T) {
@@ -444,6 +445,61 @@ func TestEstimatedTokensUsesUTF8Bytes(t *testing.T) {
 	}
 }
 
+func TestPromptUsesStableSessionCacheKeyAndEstimatesCost(t *testing.T) {
+	first, err := session.New(t.TempDir(), "/work", "anthropic", "claude-sonnet-4-5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	provider := &recordingProvider{}
+	a, err := New(Config{
+		Provider: provider, ProviderName: "anthropic", Registry: extension.NewRegistry(),
+		Session: first, Model: "claude-sonnet-4-5", CacheRetention: "long",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var turnUsage *Usage
+	if err := a.Prompt(context.Background(), "first", func(event Event) {
+		if event.Type == "turn_end" {
+			turnUsage = event.Usage
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	provider.mu.Lock()
+	request := provider.requests[0]
+	provider.mu.Unlock()
+	if request.CacheRetention != "long" || request.CacheKey != "notch-"+first.Header.ID {
+		t.Fatalf("cache request = %#v", request)
+	}
+	if turnUsage == nil || turnUsage.CostUSD == nil || turnUsage.EstimatedCostUSD == nil || turnUsage.ProviderCostUSD != nil || turnUsage.CostSource != "api_list_price_estimate" || turnUsage.PricingVersion == "" {
+		t.Fatalf("turn usage = %#v", turnUsage)
+	}
+	if got, want := *turnUsage.CostUSD, 0.00006; math.Abs(got-want) > 1e-12 {
+		t.Fatalf("estimated cost = %v, want %v", got, want)
+	}
+
+	second, err := session.New(t.TempDir(), "/work", "anthropic", "claude-sonnet-4-5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	old, err := a.ResumeSession(second)
+	if err != nil || old != first {
+		t.Fatalf("ResumeSession() = %#v, %v", old, err)
+	}
+	if err := a.Prompt(context.Background(), "second", nil); err != nil {
+		t.Fatal(err)
+	}
+	provider.mu.Lock()
+	secondRequest := provider.requests[1]
+	provider.mu.Unlock()
+	if secondRequest.CacheKey != "notch-"+second.Header.ID || secondRequest.CacheKey == request.CacheKey {
+		t.Fatalf("resumed cache key = %q", secondRequest.CacheKey)
+	}
+}
+
 func TestManualCompactionPersists(t *testing.T) {
 	store, err := session.New(t.TempDir(), t.TempDir(), "fake", "fake")
 	if err != nil {
@@ -478,6 +534,11 @@ func TestManualCompactionPersists(t *testing.T) {
 	}
 	if len(store.UsageEntries) != 1 || store.UsageEntries[0].Provider != "fake" || store.UsageEntries[0].Usage.InputTokens != 20 {
 		t.Fatalf("compaction usage = %#v", store.UsageEntries)
+	}
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	if len(provider.requests) != 1 || provider.requests[0].CacheRetention != "none" {
+		t.Fatalf("compaction cache config = %#v", provider.requests)
 	}
 }
 
@@ -677,7 +738,12 @@ func TestQueuedProviderSwitchAppliesAfterToolTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 	provider := &switchToolProvider{}
-	a, err := New(Config{Provider: provider, ProviderName: "old", Registry: registry, Model: "old-model"})
+	store, err := session.New(t.TempDir(), "/work", "old", "old-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	a, err := New(Config{Provider: provider, ProviderName: "old", Registry: registry, Session: store, Model: "old-model"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -687,6 +753,9 @@ func TestQueuedProviderSwitchAppliesAfterToolTurn(t *testing.T) {
 	}
 	if len(next.requests) != 1 || next.requests[0].Model != "next-model" {
 		t.Fatalf("next requests=%#v", next.requests)
+	}
+	if len(store.UsageEntries) != 2 || store.UsageEntries[0].Provider != "old" || store.UsageEntries[0].Model != "old-model" || store.UsageEntries[1].Provider != "next" || store.UsageEntries[1].Model != "next-model" {
+		t.Fatalf("usage attribution=%#v", store.UsageEntries)
 	}
 }
 

@@ -139,7 +139,7 @@ Text and thinking use Pi's delta envelope:
 }
 ```
 
-`message_end.message` is authoritative. `turn_end` contains the assistant message and tool results. Tool calls use `toolCallId` for correlation. Provider token counts include uncached input, output, cache reads, cache writes, and the reasoning-token subset. `cost.total` contains provider-reported USD cost when available (currently OpenRouter); `costKnown` distinguishes a reported value from the protocol-compatible zero placeholder. Notch does not guess from a potentially stale local pricing table.
+`message_end.message` is authoritative. `turn_end` contains the assistant message and tool results. Tool calls use `toolCallId` for correlation. Provider token counts include uncached input, output, cache reads, cache writes, and the reasoning-token subset. `cost.total` is the effective USD value; `costKnown` distinguishes it from the protocol-compatible zero placeholder. `costSource` is `provider` for provider-reported cost or `api_list_price_estimate` for a versioned local estimate. `providerCostUSD`, `estimatedCostUSD`, and `pricingVersion` preserve the attribution details.
 
 Failed commands use Pi's response envelope:
 

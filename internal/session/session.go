@@ -82,7 +82,7 @@ type ResetEntry struct {
 	Timestamp time.Time `json:"timestamp"`
 }
 
-// TokenUsage is the provider-reported token count for one model response.
+// TokenUsage is the normalized token and cost attribution for one model response.
 type TokenUsage struct {
 	InputTokens      int      `json:"input_tokens"`
 	OutputTokens     int      `json:"output_tokens"`
@@ -90,6 +90,10 @@ type TokenUsage struct {
 	CacheWriteTokens int      `json:"cache_write_tokens,omitempty"`
 	ReasoningTokens  int      `json:"reasoning_tokens,omitempty"`
 	CostUSD          *float64 `json:"cost_usd,omitempty"`
+	ProviderCostUSD  *float64 `json:"provider_cost_usd,omitempty"`
+	EstimatedCostUSD *float64 `json:"estimated_cost_usd,omitempty"`
+	CostSource       string   `json:"cost_source,omitempty"`
+	PricingVersion   string   `json:"pricing_version,omitempty"`
 }
 
 type DelegatedUsage struct {
@@ -517,6 +521,10 @@ func (s *Session) AppendReset() error {
 	})
 }
 
+func validCost(cost *float64) bool {
+	return cost == nil || (*cost >= 0 && !math.IsNaN(*cost) && !math.IsInf(*cost, 0))
+}
+
 // AppendUsage durably records provider-reported token usage for one model turn.
 func (s *Session) AppendUsage(provider, modelName string, usage TokenUsage, stopReason string, delegated ...DelegatedUsage) error {
 	if strings.TrimSpace(modelName) == "" {
@@ -525,8 +533,8 @@ func (s *Session) AppendUsage(provider, modelName string, usage TokenUsage, stop
 	if usage.InputTokens < 0 || usage.OutputTokens < 0 || usage.CacheReadTokens < 0 || usage.CacheWriteTokens < 0 || usage.ReasoningTokens < 0 {
 		return errors.New("append session usage: token counts cannot be negative")
 	}
-	if usage.CostUSD != nil && (*usage.CostUSD < 0 || math.IsNaN(*usage.CostUSD) || math.IsInf(*usage.CostUSD, 0)) {
-		return errors.New("append session usage: cost must be a finite non-negative number")
+	if !validCost(usage.CostUSD) || !validCost(usage.ProviderCostUSD) || !validCost(usage.EstimatedCostUSD) {
+		return errors.New("append session usage: costs must be finite non-negative numbers")
 	}
 	entry := UsageEntry{
 		Type: "usage", Timestamp: time.Now().UTC(), Provider: provider, Model: modelName,
@@ -810,7 +818,7 @@ func (s *Session) decode(r io.Reader) error {
 					if entry.Model == "" || entry.Usage.InputTokens < 0 || entry.Usage.OutputTokens < 0 || entry.Usage.CacheReadTokens < 0 || entry.Usage.CacheWriteTokens < 0 || entry.Usage.ReasoningTokens < 0 {
 						return fmt.Errorf("line %d: invalid usage entry values", lineNumber)
 					}
-					if entry.Usage.CostUSD != nil && (*entry.Usage.CostUSD < 0 || math.IsNaN(*entry.Usage.CostUSD) || math.IsInf(*entry.Usage.CostUSD, 0)) {
+					if !validCost(entry.Usage.CostUSD) || !validCost(entry.Usage.ProviderCostUSD) || !validCost(entry.Usage.EstimatedCostUSD) {
 						return fmt.Errorf("line %d: invalid usage entry cost", lineNumber)
 					}
 					if entry.Delegated != nil {

@@ -1344,7 +1344,11 @@ func formatProviderUsage(usage agent.Usage) string {
 		parts = append(parts, fmt.Sprintf("%d reasoning", usage.ReasoningTokens))
 	}
 	if usage.CostUSD != nil {
-		parts = append(parts, fmt.Sprintf("$%.4f", *usage.CostUSD))
+		cost := fmt.Sprintf("$%.4f", *usage.CostUSD)
+		if usage.CostSource == "api_list_price_estimate" {
+			cost += " est."
+		}
+		parts = append(parts, cost)
 	}
 	return strings.Join(parts, " / ")
 }

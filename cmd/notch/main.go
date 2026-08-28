@@ -245,6 +245,10 @@ func run(args []string) error {
 			return fmt.Errorf("invalid thinking level %q (expected off, minimal, low, medium, high, or xhigh)", opts.thinking)
 		}
 	}
+	cfg.CacheRetention = strings.ToLower(strings.TrimSpace(cfg.CacheRetention))
+	if cfg.CacheRetention != "none" && cfg.CacheRetention != "short" && cfg.CacheRetention != "long" {
+		return fmt.Errorf("invalid cache_retention %q (expected none, short, or long)", cfg.CacheRetention)
+	}
 	if opts.init {
 		return initialize(home, workspaceRoot, cfg)
 	}
@@ -470,7 +474,7 @@ func run(args []string) error {
 	}
 	runner, err := agent.New(agent.Config{
 		Provider: provider, ProviderName: normalizeProvider(cfg.Provider), Registry: registry, Session: store, Model: cfg.Model,
-		SystemPrompt: systemPrompt, MaxTokens: cfg.MaxTokens, ThinkingLevel: cfg.ThinkingLevel,
+		SystemPrompt: systemPrompt, MaxTokens: cfg.MaxTokens, ThinkingLevel: cfg.ThinkingLevel, CacheRetention: cfg.CacheRetention,
 		Compaction: agent.CompactionConfig{Enabled: compactionEnabled, ContextWindow: contextWindow, ReserveTokens: reserveTokens, KeepRecentTokens: keepRecentTokens},
 	})
 	if err != nil {

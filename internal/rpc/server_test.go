@@ -52,11 +52,13 @@ func (p *rpcTestProvider) Stream(ctx context.Context, _ model.Request, emit func
 
 func TestRPCUsageKeepsProviderAndDelegationMetricsSeparate(t *testing.T) {
 	cost, delegatedCost := 0.012, 0.004
+	estimated := 0.013
 	usage := rpcUsage(&agent.Usage{
 		InputTokens: 12, OutputTokens: 3, CacheReadTokens: 5, CacheWriteTokens: 2,
-		ReasoningTokens: 1, CostUSD: &cost,
+		ReasoningTokens: 1, CostUSD: &cost, ProviderCostUSD: &cost, EstimatedCostUSD: &estimated,
+		CostSource: "provider", PricingVersion: "test-v1",
 	})
-	if usage["providerTokens"] != 22 || usage["totalTokens"] != 22 || usage["cacheRead"] != 5 || usage["cacheWrite"] != 2 || usage["reasoning"] != 1 || usage["cost"].(map[string]float64)["total"] != cost || usage["costKnown"] != true {
+	if usage["providerTokens"] != 22 || usage["totalTokens"] != 22 || usage["cacheRead"] != 5 || usage["cacheWrite"] != 2 || usage["reasoning"] != 1 || usage["cost"].(map[string]float64)["total"] != cost || usage["costKnown"] != true || usage["costSource"] != "provider" || usage["providerCostUSD"] != cost || usage["estimatedCostUSD"] != estimated || usage["pricingVersion"] != "test-v1" {
 		t.Fatalf("usage = %#v", usage)
 	}
 	delegatedUsage := rpcDelegationUsage(&delegation.Usage{

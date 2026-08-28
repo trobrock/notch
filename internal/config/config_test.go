@@ -13,6 +13,9 @@ func TestDefaultSystemPromptGuidesCodebaseExploration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if cfg.CacheRetention != "short" {
+		t.Fatalf("default cache retention = %q", cfg.CacheRetention)
+	}
 	for _, text := range []string{"likely to save parent context", "Prefer direct grep", "avoid delegation", "exactly one of task", "never provide both"} {
 		if !strings.Contains(cfg.SystemPrompt, text) {
 			t.Fatalf("default system prompt missing %q: %q", text, cfg.SystemPrompt)
@@ -87,7 +90,7 @@ func TestLoadMergesUserThenProject(t *testing.T) {
 	writeJSON(t, filepath.Join(cwd, ".notch", "config.json"), `{
 		"model":"project-model", "max_tokens":456, "mcp_config":"project-mcp.json",
 		"extension_dirs":["project-ext"], "provider":"", "prompt_dirs":[], "theme_dirs":["project-theme"],
-		"thinking_level":"high", "presets":{"F2":{"provider":"openai-codex","model":"project-preset","thinking_level":"high"}},
+		"thinking_level":"high", "cache_retention":"long", "presets":{"F2":{"provider":"openai-codex","model":"project-preset","thinking_level":"high"}},
 		"compaction":{"keep_recent_tokens":3000}
 	}`)
 
@@ -101,7 +104,7 @@ func TestLoadMergesUserThenProject(t *testing.T) {
 	if cfg.SystemPrompt != "global prompt" || cfg.MCPConfig != filepath.Join(cwd, "project-mcp.json") || cfg.SessionDir != filepath.Join(home, ".local", "share", "notch", "sessions") {
 		t.Fatalf("scalar inheritance failed: %+v", cfg)
 	}
-	if cfg.Theme != "dracula" || cfg.ThinkingLevel != "high" || cfg.MouseCapture == nil || *cfg.MouseCapture || cfg.ContextWindow != 99999 || cfg.ModelCache != filepath.Join(home, ".local", "share", "notch", "models.json") || cfg.ModelRefreshHours != 12 || cfg.Compaction == nil || cfg.Compaction.Enabled == nil || *cfg.Compaction.Enabled || cfg.Compaction.ReserveTokens != 1000 || cfg.Compaction.KeepRecentTokens != 3000 {
+	if cfg.Theme != "dracula" || cfg.ThinkingLevel != "high" || cfg.CacheRetention != "long" || cfg.MouseCapture == nil || *cfg.MouseCapture || cfg.ContextWindow != 99999 || cfg.ModelCache != filepath.Join(home, ".local", "share", "notch", "models.json") || cfg.ModelRefreshHours != 12 || cfg.Compaction == nil || cfg.Compaction.Enabled == nil || *cfg.Compaction.Enabled || cfg.Compaction.ReserveTokens != 1000 || cfg.Compaction.KeepRecentTokens != 3000 {
 		t.Fatalf("theme/thinking/compaction merge failed: %+v", cfg)
 	}
 	if len(cfg.Presets) != 2 || cfg.Presets["f1"].Model != "global-preset" || cfg.Presets["f2"].Model != "project-preset" {

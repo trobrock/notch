@@ -39,6 +39,12 @@ The fullscreen UI displays OpenAI/Codex reasoning summaries, Anthropic thinking 
 
 See the [TUI thinking controls](tui.md#commands-and-thinking-level).
 
+## Prompt caching and cost attribution
+
+`cache_retention` accepts `none`, `short`, or `long` and defaults to `short`. Notch uses explicit system/tool/conversation breakpoints for Anthropic, `prompt_cache_key` for OpenAI and Codex, and `session_id` for OpenRouter sticky routing. Anthropic models routed through OpenRouter receive compatible explicit breakpoints; upstreams with automatic caching continue to use it. Long retention requests one hour from Anthropic and 24 hours from OpenAI where supported. Compaction summaries set retention to `none` because those prompts are normally used once.
+
+Every usage record stores an effective `cost_usd` and `cost_source` when cost is known. OpenRouter's reported cost wins and is retained as `provider_cost_usd`. For known direct Anthropic and OpenAI models, Notch computes `estimated_cost_usd` from a versioned built-in API-list-price table and records `pricing_version`; the TUI labels this value as estimated. Subscription/OAuth sessions therefore show API-list-price equivalents, not an assertion about the user's actual subscription bill. Unknown models remain without a cost instead of receiving a guessed rate.
+
 ## OAuth commands
 
 ```sh

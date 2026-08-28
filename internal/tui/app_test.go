@@ -1180,3 +1180,13 @@ func TestMonitorFollowUpSurvivesSettledAgentBeforePromptDone(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 }
+
+func TestFormatProviderUsageLabelsEstimatedCost(t *testing.T) {
+	cost := 0.0123
+	if got := formatProviderUsage(agent.Usage{InputTokens: 10, OutputTokens: 2, CostUSD: &cost, CostSource: "api_list_price_estimate"}); got != "10 in / 2 out / $0.0123 est." {
+		t.Fatalf("estimated usage = %q", got)
+	}
+	if got := formatProviderUsage(agent.Usage{InputTokens: 10, OutputTokens: 2, CostUSD: &cost, CostSource: "provider"}); got != "10 in / 2 out / $0.0123" {
+		t.Fatalf("provider usage = %q", got)
+	}
+}

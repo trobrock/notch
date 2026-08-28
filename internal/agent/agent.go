@@ -3,6 +3,8 @@ package agent
 
 import (
 	"context"
+	crand "crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +17,7 @@ import (
 	"github.com/trobrock/notch/internal/delegation"
 	"github.com/trobrock/notch/internal/extension"
 	"github.com/trobrock/notch/internal/model"
+	"github.com/trobrock/notch/internal/pricing"
 	"github.com/trobrock/notch/internal/session"
 )
 
@@ -53,6 +56,10 @@ type Usage struct {
 	CacheWriteTokens int      `json:"cache_write_tokens,omitempty"`
 	ReasoningTokens  int      `json:"reasoning_tokens,omitempty"`
 	CostUSD          *float64 `json:"cost_usd,omitempty"`
+	ProviderCostUSD  *float64 `json:"provider_cost_usd,omitempty"`
+	EstimatedCostUSD *float64 `json:"estimated_cost_usd,omitempty"`
+	CostSource       string   `json:"cost_source,omitempty"`
+	PricingVersion   string   `json:"pricing_version,omitempty"`
 }
 
 type CompactionConfig struct {
@@ -69,16 +76,17 @@ type RetryConfig struct {
 }
 
 type Config struct {
-	Provider      model.Provider
-	ProviderName  string
-	Registry      *extension.Registry
-	Session       *session.Session
-	Model         string
-	SystemPrompt  string
-	MaxTokens     int
-	ThinkingLevel string
-	Compaction    CompactionConfig
-	Retry         RetryConfig
+	Provider       model.Provider
+	ProviderName   string
+	Registry       *extension.Registry
+	Session        *session.Session
+	Model          string
+	SystemPrompt   string
+	MaxTokens      int
+	ThinkingLevel  string
+	CacheRetention string
+	Compaction     CompactionConfig
+	Retry          RetryConfig
 }
 
 type providerSwitch struct {
@@ -89,15 +97,17 @@ type providerSwitch struct {
 }
 
 type Agent struct {
-	provider     model.Provider
-	providerName string
-	registry     *extension.Registry
-	session      *session.Session
-	model        string
-	system       string
-	maxTokens    int
-	compaction   CompactionConfig
-	retry        RetryConfig
+	provider       model.Provider
+	providerName   string
+	registry       *extension.Registry
+	session        *session.Session
+	model          string
+	system         string
+	maxTokens      int
+	cacheRetention string
+	cacheKey       string
+	compaction     CompactionConfig
+	retry          RetryConfig
 
 	// mu serializes operations which mutate conversation or session state.
 	mu                  sync.Mutex
@@ -120,6 +130,26 @@ type Agent struct {
 	pendingSwitch *providerSwitch
 }
 
+func validCacheRetention(value string) bool {
+	switch value {
+	case "none", "short", "long":
+		return true
+	default:
+		return false
+	}
+}
+
+func newCacheKey(store *session.Session) (string, error) {
+	if store != nil && store.Header.ID != "" {
+		return "notch-" + store.Header.ID, nil
+	}
+	var value [16]byte
+	if _, err := crand.Read(value[:]); err != nil {
+		return "", fmt.Errorf("generate prompt cache key: %w", err)
+	}
+	return "notch-" + hex.EncodeToString(value[:]), nil
+}
+
 func New(cfg Config) (*Agent, error) {
 	if cfg.Provider == nil {
 		return nil, errors.New("agent requires a provider")
@@ -138,6 +168,17 @@ func New(cfg Config) (*Agent, error) {
 	}
 	if !validThinkingLevel(cfg.ThinkingLevel) {
 		return nil, fmt.Errorf("invalid thinking level %q", cfg.ThinkingLevel)
+	}
+	if cfg.CacheRetention == "" {
+		cfg.CacheRetention = "short"
+	}
+	cfg.CacheRetention = strings.ToLower(strings.TrimSpace(cfg.CacheRetention))
+	if !validCacheRetention(cfg.CacheRetention) {
+		return nil, fmt.Errorf("invalid cache retention %q", cfg.CacheRetention)
+	}
+	cacheKey, err := newCacheKey(cfg.Session)
+	if err != nil {
+		return nil, err
 	}
 	cfg.Compaction = defaultCompactionConfig(cfg.Compaction)
 	if cfg.Retry.MaxAttempts <= 0 {
@@ -159,7 +200,8 @@ func New(cfg Config) (*Agent, error) {
 	a := &Agent{
 		provider: cfg.Provider, providerName: providerName, registry: cfg.Registry, session: cfg.Session,
 		model: cfg.Model, system: cfg.SystemPrompt, maxTokens: cfg.MaxTokens,
-		thinkingLevel: cfg.ThinkingLevel, compaction: cfg.Compaction, retry: cfg.Retry,
+		thinkingLevel: cfg.ThinkingLevel, cacheRetention: cfg.CacheRetention, cacheKey: cacheKey,
+		compaction: cfg.Compaction, retry: cfg.Retry,
 	}
 	if cfg.Session != nil {
 		a.messages = cloneMessages(cfg.Session.Messages)
@@ -196,19 +238,45 @@ func (a *Agent) appendMessage(message model.Message) error {
 	return nil
 }
 
-func (a *Agent) appendUsage(response model.Response, delegated delegation.Usage) error {
+func (a *Agent) responseUsage(response model.Response, cacheRetention, providerName, modelName string) Usage {
+	usage := Usage{
+		InputTokens: response.InputTokens, OutputTokens: response.OutputTokens,
+		CacheReadTokens: response.CacheReadTokens, CacheWriteTokens: response.CacheWriteTokens,
+		ReasoningTokens: response.ReasoningTokens,
+	}
+	if response.CostUSD != nil {
+		providerCost := *response.CostUSD
+		usage.ProviderCostUSD = &providerCost
+		usage.CostUSD = &providerCost
+		usage.CostSource = "provider"
+	}
+	if estimated, ok := pricing.Estimate(providerName, modelName, cacheRetention, response); response.APIPricingEligible && ok {
+		usage.EstimatedCostUSD = &estimated
+		usage.PricingVersion = pricing.Version
+		if usage.CostUSD == nil {
+			usage.CostUSD = &estimated
+			usage.CostSource = "api_list_price_estimate"
+		}
+	}
+	return usage
+}
+
+func (a *Agent) appendUsage(response model.Response, delegated delegation.Usage, cacheRetention, providerName, modelName string) error {
 	if a.session == nil {
 		return nil
 	}
+	usage := a.responseUsage(response, cacheRetention, providerName, modelName)
 	entry := session.TokenUsage{
-		InputTokens: response.InputTokens, OutputTokens: response.OutputTokens,
-		CacheReadTokens: response.CacheReadTokens, CacheWriteTokens: response.CacheWriteTokens,
-		ReasoningTokens: response.ReasoningTokens, CostUSD: response.CostUSD,
+		InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens,
+		CacheReadTokens: usage.CacheReadTokens, CacheWriteTokens: usage.CacheWriteTokens,
+		ReasoningTokens: usage.ReasoningTokens, CostUSD: usage.CostUSD,
+		ProviderCostUSD: usage.ProviderCostUSD, EstimatedCostUSD: usage.EstimatedCostUSD,
+		CostSource: usage.CostSource, PricingVersion: usage.PricingVersion,
 	}
 	if delegated.Empty() {
-		return a.session.AppendUsage(a.providerName, a.model, entry, response.StopReason)
+		return a.session.AppendUsage(providerName, modelName, entry, response.StopReason)
 	}
-	return a.session.AppendUsage(a.providerName, a.model, entry, response.StopReason, session.DelegatedUsage{
+	return a.session.AppendUsage(providerName, modelName, entry, response.StopReason, session.DelegatedUsage{
 		Turns: delegated.Turns, InputTokens: delegated.InputTokens, OutputTokens: delegated.OutputTokens,
 		CacheReadTokens: delegated.CacheReadTokens, CacheWriteTokens: delegated.CacheWriteTokens,
 		ReasoningTokens: delegated.ReasoningTokens, CostUSD: delegated.CostUSD,
@@ -376,10 +444,11 @@ func (a *Agent) PromptWithStart(ctx context.Context, text string, emit func(Even
 		emit(Event{Type: "turn_start"})
 		_, _ = a.registry.RunHooks(ctx, "agent_start", map[string]any{"model": a.model, "turn": turn})
 		requestEstimate := a.estimatedContextTokensLocked()
+		requestProvider, requestModel := a.providerName, a.model
 		request := model.Request{
-			Model: a.model, SystemPrompt: system, Messages: requestMessages,
+			Model: requestModel, SystemPrompt: system, Messages: requestMessages,
 			Tools: a.registry.Definitions(), MaxTokens: a.maxTokens,
-			ReasoningLevel: a.ThinkingLevel(),
+			ReasoningLevel: a.ThinkingLevel(), CacheRetention: a.cacheRetention, CacheKey: a.cacheKey,
 		}
 		response, err := a.streamWithRetry(ctx, request, emit)
 		if err != nil {
@@ -399,11 +468,8 @@ func (a *Agent) PromptWithStart(ctx context.Context, text string, emit func(Even
 			return err
 		}
 
-		usage := &Usage{
-			InputTokens: response.InputTokens, OutputTokens: response.OutputTokens,
-			CacheReadTokens: response.CacheReadTokens, CacheWriteTokens: response.CacheWriteTokens,
-			ReasoningTokens: response.ReasoningTokens, CostUSD: response.CostUSD,
-		}
+		turnUsage := a.responseUsage(response, a.cacheRetention, requestProvider, requestModel)
+		usage := &turnUsage
 		contextUsage := a.contextUsageLocked()
 		emit(Event{Type: "turn_end", Usage: usage, ContextUsage: &contextUsage, Message: &assistant, StopReason: response.StopReason})
 		var delegatedTotals delegation.Usage
@@ -420,19 +486,19 @@ func (a *Agent) PromptWithStart(ctx context.Context, text string, emit func(Even
 				results = append(results, model.Block{Type: "tool_result", ToolUseID: call.ID, Text: result.Content, IsError: result.IsError})
 			}
 			if err := a.appendMessage(model.Message{Role: "user", Content: results}); err != nil {
-				if appendErr := a.appendUsage(response, delegatedTotals); appendErr != nil {
+				if appendErr := a.appendUsage(response, delegatedTotals, a.cacheRetention, requestProvider, requestModel); appendErr != nil {
 					return appendErr
 				}
 				return err
 			}
 			if err := a.applyPendingSwitchLocked(); err != nil {
-				if appendErr := a.appendUsage(response, delegatedTotals); appendErr != nil {
+				if appendErr := a.appendUsage(response, delegatedTotals, a.cacheRetention, requestProvider, requestModel); appendErr != nil {
 					return appendErr
 				}
 				return err
 			}
 		}
-		if err := a.appendUsage(response, delegatedTotals); err != nil {
+		if err := a.appendUsage(response, delegatedTotals, a.cacheRetention, requestProvider, requestModel); err != nil {
 			return err
 		}
 

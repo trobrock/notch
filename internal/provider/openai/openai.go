@@ -21,21 +21,23 @@ const defaultBaseURL = "https://api.openai.com"
 
 // Config configures an OpenAI provider.
 type Config struct {
-	APIKey     string
-	BaseURL    string
-	Endpoint   string
-	Headers    map[string]string
-	CodexMode  bool
-	HTTPClient *http.Client
+	APIKey           string
+	BaseURL          string
+	Endpoint         string
+	Headers          map[string]string
+	CodexMode        bool
+	OfficialEndpoint bool
+	HTTPClient       *http.Client
 }
 
 type provider struct {
-	apiKey     string
-	baseURL    string
-	endpoint   string
-	headers    map[string]string
-	codexMode  bool
-	httpClient *http.Client
+	apiKey            string
+	baseURL           string
+	endpoint          string
+	headers           map[string]string
+	codexMode         bool
+	promptCacheFields bool
+	httpClient        *http.Client
 }
 
 // New returns a provider backed by OpenAI's native Responses API.
@@ -64,32 +66,43 @@ func New(cfg Config) model.Provider {
 	}
 	return &provider{
 		apiKey: cfg.APIKey, baseURL: baseURL, endpoint: endpoint, headers: headers,
-		codexMode: cfg.CodexMode, httpClient: client,
+		codexMode:         cfg.CodexMode,
+		promptCacheFields: cfg.OfficialEndpoint || strings.TrimSpace(cfg.BaseURL) == "" || strings.EqualFold(baseURL, defaultBaseURL),
+		httpClient:        client,
 	}
 }
 
 type wireRequest struct {
-	Model           string         `json:"model"`
-	Instructions    string         `json:"instructions,omitempty"`
-	Input           []any          `json:"input"`
-	Tools           []wireTool     `json:"tools,omitempty"`
-	MaxOutputTokens int            `json:"max_output_tokens,omitempty"`
-	Reasoning       *wireReasoning `json:"reasoning,omitempty"`
-	Stream          bool           `json:"stream"`
+	Model                string                  `json:"model"`
+	Instructions         string                  `json:"instructions,omitempty"`
+	Input                []any                   `json:"input"`
+	Tools                []wireTool              `json:"tools,omitempty"`
+	MaxOutputTokens      int                     `json:"max_output_tokens,omitempty"`
+	Reasoning            *wireReasoning          `json:"reasoning,omitempty"`
+	PromptCacheKey       string                  `json:"prompt_cache_key,omitempty"`
+	PromptCacheRetention string                  `json:"prompt_cache_retention,omitempty"`
+	PromptCacheOptions   *wirePromptCacheOptions `json:"prompt_cache_options,omitempty"`
+	Stream               bool                    `json:"stream"`
 }
 
 type codexWireRequest struct {
-	Model             string         `json:"model"`
-	Store             bool           `json:"store"`
-	Stream            bool           `json:"stream"`
-	Instructions      string         `json:"instructions"`
-	Input             []any          `json:"input"`
-	Tools             []wireTool     `json:"tools"`
-	Text              wireText       `json:"text"`
-	Include           []string       `json:"include"`
-	ToolChoice        string         `json:"tool_choice"`
-	ParallelToolCalls bool           `json:"parallel_tool_calls"`
-	Reasoning         *wireReasoning `json:"reasoning,omitempty"`
+	Model              string                  `json:"model"`
+	Store              bool                    `json:"store"`
+	Stream             bool                    `json:"stream"`
+	Instructions       string                  `json:"instructions"`
+	Input              []any                   `json:"input"`
+	Tools              []wireTool              `json:"tools"`
+	Text               wireText                `json:"text"`
+	Include            []string                `json:"include"`
+	ToolChoice         string                  `json:"tool_choice"`
+	ParallelToolCalls  bool                    `json:"parallel_tool_calls"`
+	Reasoning          *wireReasoning          `json:"reasoning,omitempty"`
+	PromptCacheKey     string                  `json:"prompt_cache_key,omitempty"`
+	PromptCacheOptions *wirePromptCacheOptions `json:"prompt_cache_options,omitempty"`
+}
+
+type wirePromptCacheOptions struct {
+	Mode string `json:"mode"`
 }
 
 type wireReasoning struct {
@@ -134,6 +147,26 @@ func replayReasoningItem(signature string) (json.RawMessage, bool) {
 		return nil, false
 	}
 	return append(json.RawMessage(nil), raw...), true
+}
+
+func openAICacheKey(retention, key string) string {
+	if retention == "none" {
+		return ""
+	}
+	runes := []rune(key)
+	if len(runes) > 64 {
+		runes = runes[:64]
+	}
+	return string(runes)
+}
+
+func supportsLongPromptCache(modelID string) bool {
+	id := strings.ToLower(strings.TrimSpace(modelID))
+	return strings.HasPrefix(id, "gpt-5")
+}
+
+func supportsExplicitPromptCache(modelID string) bool {
+	return strings.Contains(strings.ToLower(modelID), "gpt-5.6")
 }
 
 func makeRequest(req model.Request) wireRequest {
@@ -193,9 +226,20 @@ func makeRequest(req model.Request) wireRequest {
 			Type: "function", Name: tool.Name, Description: tool.Description, Parameters: tool.InputSchema,
 		})
 	}
+	cacheKey := openAICacheKey(req.CacheRetention, req.CacheKey)
+	cacheRetention := ""
+	if req.CacheRetention == "long" && supportsLongPromptCache(req.Model) {
+		cacheRetention = "24h"
+	}
+	var cacheOptions *wirePromptCacheOptions
+	if req.CacheRetention == "none" && supportsExplicitPromptCache(req.Model) {
+		cacheOptions = &wirePromptCacheOptions{Mode: "explicit"}
+	}
 	return wireRequest{
 		Model: req.Model, Instructions: req.SystemPrompt, Input: input, Tools: tools,
-		MaxOutputTokens: req.MaxTokens, Reasoning: reasoningForLevel(req.ReasoningLevel), Stream: true,
+		MaxOutputTokens: req.MaxTokens, Reasoning: reasoningForLevel(req.ReasoningLevel),
+		PromptCacheKey: cacheKey, PromptCacheRetention: cacheRetention, PromptCacheOptions: cacheOptions,
+		Stream: true,
 	}
 }
 
@@ -247,7 +291,8 @@ type responseData struct {
 		InputTokens        int `json:"input_tokens"`
 		OutputTokens       int `json:"output_tokens"`
 		InputTokensDetails struct {
-			CachedTokens int `json:"cached_tokens"`
+			CachedTokens     int `json:"cached_tokens"`
+			CacheWriteTokens int `json:"cache_write_tokens"`
 		} `json:"input_tokens_details"`
 		OutputTokensDetails struct {
 			ReasoningTokens int `json:"reasoning_tokens"`
@@ -307,6 +352,11 @@ func (p *provider) Stream(ctx context.Context, req model.Request, onEvent func(m
 		return model.Response{}, fmt.Errorf("openai: invalid reasoning level %q", req.ReasoningLevel)
 	}
 	wireReq := makeRequest(req)
+	if !p.promptCacheFields {
+		wireReq.PromptCacheKey = ""
+		wireReq.PromptCacheRetention = ""
+		wireReq.PromptCacheOptions = nil
+	}
 	var requestBody any = wireReq
 	if p.codexMode {
 		requestBody = codexWireRequest{
@@ -314,6 +364,7 @@ func (p *provider) Stream(ctx context.Context, req model.Request, onEvent func(m
 			Instructions: wireReq.Instructions, Input: wireReq.Input, Tools: wireReq.Tools,
 			Text: wireText{Verbosity: "low"}, Include: []string{"reasoning.encrypted_content"},
 			ToolChoice: "auto", ParallelToolCalls: true, Reasoning: wireReq.Reasoning,
+			PromptCacheKey: wireReq.PromptCacheKey, PromptCacheOptions: wireReq.PromptCacheOptions,
 		}
 	}
 	body, err := json.Marshal(requestBody)
@@ -479,6 +530,7 @@ func (p *provider) Stream(ctx context.Context, req model.Request, onEvent func(m
 	}
 
 	result.Content = flattenSlots(slots)
+	result.APIPricingEligible = p.promptCacheFields
 	return result, nil
 }
 
@@ -578,7 +630,8 @@ func mergeOutputItem(slots map[int]*outputSlot, index int, item outputItem, done
 
 func applyResponse(result *model.Response, slots map[int]*outputSlot, response responseData) {
 	result.CacheReadTokens = response.Usage.InputTokensDetails.CachedTokens
-	result.InputTokens = response.Usage.InputTokens - result.CacheReadTokens
+	result.CacheWriteTokens = response.Usage.InputTokensDetails.CacheWriteTokens
+	result.InputTokens = response.Usage.InputTokens - result.CacheReadTokens - result.CacheWriteTokens
 	if result.InputTokens < 0 {
 		result.InputTokens = 0
 	}
