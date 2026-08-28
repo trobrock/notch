@@ -288,23 +288,23 @@ func (r *processRunner) Run(ctx context.Context, input Input, update func(string
 
 	parsedCh := make(chan parsedEvents, 1)
 	go func() { parsedCh <- parseEvents(stdout, input.MaxOutputChars) }()
-	waitCh := make(chan error, 1)
-	go func() { waitCh <- cmd.Wait() }()
-	var waitErr error
 	heartbeatPeriod := r.heartbeatPeriod
 	if heartbeatPeriod <= 0 {
 		heartbeatPeriod = defaultHeartbeat
 	}
 	heartbeat := time.NewTicker(heartbeatPeriod)
-	waiting := true
-	for waiting {
+	var parsed parsedEvents
+	streamDone := false
+	terminated := false
+	for !streamDone {
 		select {
-		case waitErr = <-waitCh:
-			waiting = false
+		case parsed = <-parsedCh:
+			streamDone = true
 		case <-runCtx.Done():
 			terminateProcessGroup(cmd)
-			waitErr = <-waitCh
-			waiting = false
+			terminated = true
+			parsed = <-parsedCh
+			streamDone = true
 		case <-heartbeat.C:
 			if update != nil {
 				update(fmt.Sprintf("subagent running (%s elapsed)", time.Since(start).Round(time.Second)))
@@ -312,7 +312,21 @@ func (r *processRunner) Run(ctx context.Context, input Input, update func(string
 		}
 	}
 	heartbeat.Stop()
-	parsed := <-parsedCh
+
+	// StdoutPipe requires all reads to finish before Wait closes the pipe. Waiting
+	// first races the parser and can turn an otherwise successful child into an
+	// "file already closed" event-stream failure under load or the race detector.
+	waitCh := make(chan error, 1)
+	go func() { waitCh <- cmd.Wait() }()
+	var waitErr error
+	select {
+	case waitErr = <-waitCh:
+	case <-runCtx.Done():
+		if !terminated {
+			terminateProcessGroup(cmd)
+		}
+		waitErr = <-waitCh
+	}
 	exitCode := 0
 	if waitErr != nil {
 		var exitErr *exec.ExitError
