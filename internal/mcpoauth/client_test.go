@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -139,6 +140,9 @@ func TestLoginAllowsCrossOriginAuthorizationServerEndpoints(t *testing.T) {
 	roots.AddCert(issuer.Certificate())
 	roots.AddCert(endpoints.Certificate())
 	httpClient := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots}}}
+	callbackInput, pasted := io.Pipe()
+	defer callbackInput.Close()
+	defer pasted.Close()
 	oauthClient := oauth.NewClient()
 	oauthClient.Browser = func(target string) error {
 		authorize, err := url.Parse(target)
@@ -154,14 +158,11 @@ func TestLoginAllowsCrossOriginAuthorizationServerEndpoints(t *testing.T) {
 		query.Set("state", authorize.Query().Get("state"))
 		query.Set("iss", issuer.URL)
 		callback.RawQuery = query.Encode()
-		response, err := http.Get(strings.Replace(callback.String(), "localhost", "127.0.0.1", 1))
-		if err == nil {
-			response.Body.Close()
-		}
+		_, err = io.WriteString(pasted, callback.String()+"\n")
 		return err
 	}
 
-	client := &Client{HTTPClient: httpClient, OAuth: oauthClient, Now: time.Now}
+	client := &Client{HTTPClient: httpClient, OAuth: oauthClient, CallbackInput: callbackInput, Now: time.Now}
 	credential, err := client.Login(context.Background(), issuer.URL+"/mcp", "", nil)
 	if err != nil {
 		t.Fatal(err)

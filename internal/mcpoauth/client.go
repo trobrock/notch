@@ -41,9 +41,10 @@ type Credential struct {
 // Client performs MCP OAuth discovery, dynamic client registration, PKCE
 // authorization, token exchange, and refresh.
 type Client struct {
-	HTTPClient *http.Client
-	OAuth      *oauth.Client
-	Now        func() time.Time
+	HTTPClient    *http.Client
+	OAuth         *oauth.Client
+	CallbackInput io.Reader
+	Now           func() time.Time
 }
 
 // NewClient returns a production MCP OAuth client.
@@ -193,6 +194,11 @@ func (c *Client) Login(ctx context.Context, resourceURL, requestedScope string, 
 	oauthClient := c.OAuth
 	if oauthClient == nil {
 		oauthClient = oauth.NewClient()
+	}
+	if c.CallbackInput != nil {
+		configuredOAuth := *oauthClient
+		configuredOAuth.CallbackInput = c.CallbackInput
+		oauthClient = &configuredOAuth
 	}
 	var registration clientRegistration
 	callback, err := oauthClient.Authorize(ctx, "http://localhost:0/oauth/callback", state, out, func(redirectURI string) (string, error) {

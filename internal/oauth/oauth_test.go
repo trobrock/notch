@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -120,6 +121,49 @@ func TestOpenRouterLoginEphemeralCallback(t *testing.T) {
 	}
 	if exchange["code"] != "test-code" || exchange["code_verifier"] == "" || exchange["code_challenge_method"] != "S256" {
 		t.Fatalf("exchange = %#v", exchange)
+	}
+}
+
+func TestAuthorizeAcceptsPastedRedirectURL(t *testing.T) {
+	input, pasted := io.Pipe()
+	defer input.Close()
+	defer pasted.Close()
+
+	client := NewClient()
+	client.CallbackInput = input
+	client.Browser = func(target string) error {
+		authorize, err := url.Parse(target)
+		if err != nil {
+			return err
+		}
+		redirect, err := url.Parse(authorize.Query().Get("redirect_uri"))
+		if err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintln(pasted, "http://localhost:1/wrong?code=wrong&state=expected"); err != nil {
+			return err
+		}
+		q := redirect.Query()
+		q.Set("code", "pasted-code")
+		q.Set("state", "expected")
+		q.Set("iss", "https://issuer.test")
+		redirect.RawQuery = q.Encode()
+		_, err = fmt.Fprintln(pasted, redirect.String())
+		return err
+	}
+
+	var out bytes.Buffer
+	callback, err := client.Authorize(context.Background(), "http://localhost:0/oauth/callback", "expected", &out, func(redirect string) (string, error) {
+		return "https://authorize.test/?redirect_uri=" + url.QueryEscape(redirect), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if callback.Code != "pasted-code" || callback.Query.Get("iss") != "https://issuer.test" {
+		t.Fatalf("callback = %#v", callback)
+	}
+	if !strings.Contains(out.String(), "paste the final redirect URL") || !strings.Contains(out.String(), "not the expected OAuth redirect URL") {
+		t.Fatalf("output = %q", out.String())
 	}
 }
 

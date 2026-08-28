@@ -35,8 +35,9 @@ const (
 // compatible server. Empty fields receive the production defaults in Login or
 // Refresh.
 type Client struct {
-	HTTPClient *http.Client
-	Browser    func(string) error
+	HTTPClient    *http.Client
+	Browser       func(string) error
+	CallbackInput io.Reader
 
 	CodexAuthorizeURL     string
 	CodexTokenURL         string
