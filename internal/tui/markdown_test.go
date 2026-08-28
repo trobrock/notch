@@ -59,6 +59,38 @@ func TestMarkdownWidthsUnicodeBreaksAndInjection(t *testing.T) {
 	}
 }
 
+func TestMarkdownTables(t *testing.T) {
+	theme := DefaultTheme()
+	source := "| Name | Count | Note |\n| :--- | ---: | :---: |\n| apples | 12 | **fresh** |\n| pears | 3 | ripe fruit |"
+
+	lines := renderMarkdown(source, 42, theme, theme.Text)
+	plain := markdownPlain(lines)
+	for _, want := range []string{"┌", "Name", "Count", "├", "apples", "12", "fresh", "└"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("rendered table missing %q:\n%s", want, plain)
+		}
+	}
+	if strings.Contains(plain, ":---") {
+		t.Fatalf("table delimiter row was rendered literally:\n%s", plain)
+	}
+	if !strings.Contains(strings.Join(lines, "\n"), "\x1b[1m") {
+		t.Fatal("table header is not bold")
+	}
+	for i, line := range lines {
+		if got := visibleWidth(line); got > 42 {
+			t.Fatalf("table line %d has %d cells: %q", i, got, line)
+		}
+	}
+
+	for _, width := range []int{1, 8, 12, 20} {
+		for i, line := range renderMarkdown(source, width, theme, theme.Text) {
+			if got := visibleWidth(line); got > width {
+				t.Fatalf("width %d table line %d has %d cells: %q", width, i, got, line)
+			}
+		}
+	}
+}
+
 func TestMarkdownStreamingIncompleteNeverPanics(t *testing.T) {
 	inputs := []string{"*", "**unfinished", "[label](", "```go\nfunc f() {", "> **", "1. item\n   - ["}
 	for _, input := range inputs {
