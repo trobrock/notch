@@ -54,11 +54,15 @@ func (a *eventAdapter) Handle(event agent.Event) {
 			"toolName": event.ToolName, "args": args,
 		})
 	case "tool_update":
-		_ = a.server.write(map[string]any{
+		update := map[string]any{
 			"type": "tool_execution_update", "toolCallId": event.ToolCallID,
 			"toolName":      event.ToolName,
 			"partialResult": map[string]any{"content": []map[string]any{{"type": "text", "text": event.Text}}},
-		})
+		}
+		if event.ToolUpdateMode != "" {
+			update["updateMode"] = event.ToolUpdateMode
+		}
+		_ = a.server.write(update)
 	case "tool_end":
 		a.endTool(event)
 	case "queue_update":

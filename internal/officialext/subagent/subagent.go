@@ -110,7 +110,8 @@ func RegisterWithRunner(registry *extension.Registry, runner Runner) error {
 		return errors.New("register subagent: registry and runner are required")
 	}
 	tool := extension.Tool{
-		Source: Source,
+		Source:     Source,
+		UpdateMode: "replace",
 		Definition: model.ToolDefinition{
 			Name:        ToolName,
 			Description: "Spawn a focused Notch subagent in an isolated process. Defaults to read-only tools; enable write-capable tools only when the user explicitly wants delegated implementation.",
@@ -307,7 +308,7 @@ func (r *processRunner) Run(ctx context.Context, input Input, update func(string
 			streamDone = true
 		case <-heartbeat.C:
 			if update != nil {
-				update(fmt.Sprintf("subagent running (%s elapsed)", time.Since(start).Round(time.Second)))
+				update(fmt.Sprintf("running · %s elapsed", time.Since(start).Round(time.Second)))
 			}
 		}
 	}

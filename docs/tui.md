@@ -12,7 +12,7 @@ The transcript is the upper, scrollable part of the screen. Its presentation mir
 
 - user messages are full-width background boxes with one-cell horizontal padding and blank padding rows above and below their content;
 - assistant responses are unboxed prose, offset by one cell rather than presented as chat bubbles;
-- tool calls/results are full-width cards whose background reflects pending, successful, or failed status;
+- tool calls/results are full-width cards whose background reflects pending, successful, or failed status; long-running official delegation tools keep one live progress line and replace its elapsed/count status instead of accumulating heartbeat lines;
 - notices, errors, and extension interactions use semantic theme colors.
 
 Exactly one normal blank row separates transcript entries, independent of the internal padding in user and tool cards. Markdown blocks likewise use one blank row of separation instead of preserving arbitrary runs of source blank lines. This keeps user, assistant, and tool spacing consistent while streaming and after resize.

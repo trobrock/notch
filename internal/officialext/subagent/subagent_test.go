@@ -35,6 +35,9 @@ func TestRunSubagentDefaultsAndReturnsDetails(t *testing.T) {
 		t.Fatal(err)
 	}
 	tool, _ := registry.Tool(ToolName)
+	if tool.UpdateMode != "replace" {
+		t.Fatalf("update mode = %q", tool.UpdateMode)
+	}
 	var updates []string
 	result, err := tool.Execute(context.Background(), json.RawMessage(`{"prompt":" inspect this "}`), func(s string) { updates = append(updates, s) })
 	if err != nil {

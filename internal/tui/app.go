@@ -1454,7 +1454,11 @@ func (a *App) handleAgentEvent(event agent.Event) bool {
 	case "tool_update":
 		i := a.toolEntry(event)
 		entry := &a.state.layout.Transcript[i]
-		if entry.Text == "" {
+		if event.ToolUpdateMode == "replace" {
+			if event.Text != "" {
+				entry.Text = event.Text
+			}
+		} else if entry.Text == "" {
 			entry.Text = event.Text
 		} else if event.Text != "" {
 			entry.Text += "\n" + event.Text

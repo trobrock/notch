@@ -554,6 +554,23 @@ func TestAppAgentEventsBuildTranscriptAndUsage(t *testing.T) {
 	}
 }
 
+func TestToolUpdatesCanReplaceTransientProgress(t *testing.T) {
+	a := NewApp(AppConfig{})
+	a.handleAgentEvent(agent.Event{Type: "tool_start", ToolName: "run_subagent", ToolCallID: "sub"})
+	a.handleAgentEvent(agent.Event{Type: "tool_update", ToolName: "run_subagent", ToolCallID: "sub", ToolUpdateMode: "replace", Text: "starting subagent"})
+	a.handleAgentEvent(agent.Event{Type: "tool_update", ToolName: "run_subagent", ToolCallID: "sub", ToolUpdateMode: "replace", Text: "running · 20s elapsed"})
+	if got := a.state.layout.Transcript[0].Text; got != "running · 20s elapsed" {
+		t.Fatalf("replace progress = %q", got)
+	}
+
+	a.handleAgentEvent(agent.Event{Type: "tool_start", ToolName: "custom", ToolCallID: "log"})
+	a.handleAgentEvent(agent.Event{Type: "tool_update", ToolName: "custom", ToolCallID: "log", Text: "phase one"})
+	a.handleAgentEvent(agent.Event{Type: "tool_update", ToolName: "custom", ToolCallID: "log", Text: "phase two"})
+	if got := a.state.layout.Transcript[1].Text; got != "phase one\nphase two" {
+		t.Fatalf("append progress = %q", got)
+	}
+}
+
 func TestAppThinkingSummaryAndFallbackIndicator(t *testing.T) {
 	a := NewApp(AppConfig{ThinkingLevel: "medium"})
 	a.handleAgentEvent(agent.Event{Type: "turn_start"})

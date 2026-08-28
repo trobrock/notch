@@ -59,6 +59,10 @@ type Tool struct {
 	Definition model.ToolDefinition
 	Execute    ToolHandler
 	Source     string
+	// UpdateMode controls how frontends present successive progress updates.
+	// Empty values append for backward compatibility; "replace" keeps only the
+	// latest transient status while the tool is running.
+	UpdateMode string
 }
 
 type HookHandler func(ctx context.Context, event map[string]any) (map[string]any, error)

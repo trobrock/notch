@@ -65,7 +65,8 @@ func RegisterWithRunner(registry *extension.Registry, runner subagent.Runner) er
 		return errors.New("register explore: registry and runner are required")
 	}
 	tool := extension.Tool{
-		Source: Source,
+		Source:     Source,
+		UpdateMode: "replace",
 		Definition: model.ToolDefinition{
 			Name:        ToolName,
 			Description: "Delegate broad or multi-file codebase discovery to isolated read-only Notch subagents when doing so is likely to save parent context or parallelize independent work. Prefer direct read/grep/find/ls calls for focused lookups, and avoid delegation when startup and duplicated context would likely cost more than a few direct tool calls. Always provide a tasks array: use one item for one focused question or multiple items for independent parallel questions. Normally omit model (or leave it empty) so Notch uses the configured explore model or current parent model. Never guess model IDs. If the selected model is unavailable, call list_models for that provider and retry once with the closest listed model in the same family and capability tier.",

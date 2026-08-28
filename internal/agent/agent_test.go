@@ -871,3 +871,43 @@ func TestDelegationToolsUseConfiguredDefaults(t *testing.T) {
 		t.Fatalf("ordinary tool changed: %s", ordinary.Arguments)
 	}
 }
+
+type progressUpdateProvider struct{ calls int }
+
+func (p *progressUpdateProvider) Stream(_ context.Context, _ model.Request, _ func(model.StreamEvent)) (model.Response, error) {
+	p.calls++
+	if p.calls == 1 {
+		return model.Response{Content: []model.Block{{Type: "tool_use", ID: "progress-1", Name: "progress", Arguments: json.RawMessage(`{}`)}}}, nil
+	}
+	return model.Response{Content: []model.Block{{Type: "text", Text: "done"}}, StopReason: "end_turn"}, nil
+}
+
+func TestToolUpdateModeIsEmittedToFrontends(t *testing.T) {
+	registry := extension.NewRegistry()
+	if err := registry.RegisterTool(extension.Tool{
+		Definition: model.ToolDefinition{Name: "progress"},
+		UpdateMode: "replace",
+		Execute: func(_ context.Context, _ json.RawMessage, update func(string)) (extension.ToolResult, error) {
+			update("first")
+			update("second")
+			return extension.ToolResult{Content: "done"}, nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	a, err := New(Config{Provider: &progressUpdateProvider{}, Registry: registry, Model: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var updates []Event
+	if err := a.Prompt(context.Background(), "go", func(event Event) {
+		if event.Type == "tool_update" {
+			updates = append(updates, event)
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(updates) != 2 || updates[0].ToolUpdateMode != "replace" || updates[1].ToolUpdateMode != "replace" || updates[1].Text != "second" {
+		t.Fatalf("updates = %#v", updates)
+	}
+}

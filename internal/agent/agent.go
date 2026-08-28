@@ -34,6 +34,7 @@ type Event struct {
 	Text            string                `json:"text,omitempty"`
 	ToolName        string                `json:"tool_name,omitempty"`
 	ToolCallID      string                `json:"tool_call_id,omitempty"`
+	ToolUpdateMode  string                `json:"tool_update_mode,omitempty"`
 	Arguments       json.RawMessage       `json:"arguments,omitempty"`
 	Result          *extension.ToolResult `json:"result,omitempty"`
 	Usage           *Usage                `json:"usage,omitempty"`
@@ -692,7 +693,7 @@ func (a *Agent) executeTool(ctx context.Context, call model.Block, emit func(Eve
 	emit(Event{Type: "tool_start", ToolName: call.Name, ToolCallID: call.ID, Arguments: append(json.RawMessage(nil), call.Arguments...)})
 	_, _ = a.registry.RunHooks(ctx, "tool_execution_start", map[string]any{"name": call.Name, "id": call.ID})
 	result, execErr := tool.Execute(ctx, call.Arguments, func(update string) {
-		emit(Event{Type: "tool_update", ToolName: call.Name, ToolCallID: call.ID, Text: update})
+		emit(Event{Type: "tool_update", ToolName: call.Name, ToolCallID: call.ID, ToolUpdateMode: tool.UpdateMode, Text: update})
 	})
 	if execErr != nil {
 		result = extension.ToolResult{Content: execErr.Error(), IsError: true}

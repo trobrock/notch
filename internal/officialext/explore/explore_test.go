@@ -46,6 +46,9 @@ func TestExploreSchemaAndDescriptionGuideCorrectUse(t *testing.T) {
 		t.Fatal(err)
 	}
 	tool, _ := registry.Tool(ToolName)
+	if tool.UpdateMode != "replace" {
+		t.Fatalf("update mode = %q", tool.UpdateMode)
+	}
 	for _, text := range []string{"save parent context", "tasks array", "avoid delegation", "Normally omit model", "Never guess model IDs", "call list_models"} {
 		if !strings.Contains(tool.Definition.Description, text) {
 			t.Fatalf("description missing %q: %q", text, tool.Definition.Description)
