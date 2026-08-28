@@ -383,10 +383,6 @@ func run(args []string) error {
 	if mcpManager != nil {
 		defer mcpManager.Close()
 	}
-	if err := applyToolPolicy(registry, opts); err != nil {
-		return err
-	}
-	terminal.SetRegistry(registry)
 
 	var catalog *resources.Catalog
 	if opts.noResources {
@@ -397,8 +393,29 @@ func run(args []string) error {
 			extensionHost.Notify(err.Error(), "warning")
 		}
 	}
+	skillToolAvailable := false
+	if !opts.noTools {
+		if !opts.noBuiltinTools {
+			registered, registerErr := catalog.RegisterSkillTool(registry)
+			if registerErr != nil {
+				return registerErr
+			}
+			skillToolAvailable = registered
+		}
+		if _, exists := registry.Tool("skill"); exists {
+			skillToolAvailable = true
+		}
+	}
+	if err := applyToolPolicy(registry, opts); err != nil {
+		return err
+	}
+	if _, active := registry.Tool("skill"); !active {
+		skillToolAvailable = false
+	}
+	terminal.SetRegistry(registry)
+
 	systemPrompt := cfg.SystemPrompt
-	if summary := catalog.SystemSummary(); summary != "" {
+	if summary := catalog.SystemSummary(skillToolAvailable); summary != "" {
 		systemPrompt += "\n\n" + summary
 	}
 

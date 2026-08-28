@@ -1,11 +1,15 @@
 package resources
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/trobrock/notch/internal/extension"
 )
 
 func writeResource(t *testing.T, path, content string) {
@@ -103,9 +107,35 @@ func TestSystemSummaryIsSorted(t *testing.T) {
 		},
 		Templates: map[string]Template{"repair": {Description: "repair it"}},
 	}
-	want := "Available skills:\n- /skill:alpha: first\n- /skill:zeta: last\n\nAvailable prompt templates:\n- /repair: repair it"
+	want := "Available user-invoked skills (`/skill:name` is a command, not a file path):\n- /skill:alpha: first\n- /skill:zeta: last\n\nAvailable prompt templates:\n- /repair: repair it"
 	if got := catalog.SystemSummary(); got != want {
 		t.Fatalf("summary:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestRegisterSkillToolLoadsInstructions(t *testing.T) {
+	catalog := &Catalog{Skills: map[string]Skill{
+		"review": {Name: "review", Description: "Review code", Content: "Review $ARGUMENTS carefully", Path: "/skills/review/SKILL.md"},
+	}}
+	registry := extension.NewRegistry()
+	available, err := catalog.RegisterSkillTool(registry)
+	if err != nil || !available {
+		t.Fatalf("RegisterSkillTool() = %v, %v", available, err)
+	}
+	tool, ok := registry.Tool("skill")
+	if !ok || tool.Source != "builtin:skills" || !strings.Contains(tool.Definition.Description, "review") {
+		t.Fatalf("skill tool = %#v, %v", tool, ok)
+	}
+	result, err := tool.Execute(context.Background(), json.RawMessage(`{"name":"REVIEW","arguments":"this diff"}`), nil)
+	if err != nil || result.IsError || result.Content != "Review this diff carefully" || result.Details["path"] != "/skills/review/SKILL.md" {
+		t.Fatalf("skill result = %#v, %v", result, err)
+	}
+	missing, err := tool.Execute(context.Background(), json.RawMessage(`{"name":"missing"}`), nil)
+	if err != nil || !missing.IsError || !strings.Contains(missing.Content, "skill not found") {
+		t.Fatalf("missing result = %#v, %v", missing, err)
+	}
+	if summary := catalog.SystemSummary(true); !strings.Contains(summary, "load with the `skill` tool") || !strings.Contains(summary, "not a file path") {
+		t.Fatalf("tool summary = %q", summary)
 	}
 }
 

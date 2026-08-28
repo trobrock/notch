@@ -2,6 +2,8 @@
 package resources
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -9,6 +11,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/trobrock/notch/internal/extension"
+	"github.com/trobrock/notch/internal/model"
 )
 
 var (
@@ -232,7 +237,7 @@ func parseMetadata(metadata string) map[string]string {
 
 // SystemSummary describes the commands available in the catalog. Entries are
 // sorted so the generated system prompt is stable.
-func (c *Catalog) SystemSummary() string {
+func (c *Catalog) SystemSummary(skillToolAvailable ...bool) string {
 	if c == nil {
 		return ""
 	}
@@ -240,7 +245,11 @@ func (c *Catalog) SystemSummary() string {
 	if len(c.Skills) != 0 {
 		names := sortedSkillNames(c.Skills)
 		var b strings.Builder
-		b.WriteString("Available skills:\n")
+		if len(skillToolAvailable) != 0 && skillToolAvailable[0] {
+			b.WriteString("Available skills (load with the `skill` tool by name; `/skill:name` is a user command, not a file path):\n")
+		} else {
+			b.WriteString("Available user-invoked skills (`/skill:name` is a command, not a file path):\n")
+		}
 		for _, name := range names {
 			fmt.Fprintf(&b, "- /skill:%s", name)
 			if description := strings.TrimSpace(c.Skills[name].Description); description != "" {
@@ -266,6 +275,68 @@ func (c *Catalog) SystemSummary() string {
 	return strings.Join(sections, "\n\n")
 }
 
+// RegisterSkillTool lets the model load skill instructions without mistaking
+// the user-facing /skill:name command for a filesystem path.
+func (c *Catalog) RegisterSkillTool(registry *extension.Registry) (bool, error) {
+	if c == nil || registry == nil || len(c.Skills) == 0 {
+		return false, nil
+	}
+	if _, exists := registry.Tool("skill"); exists {
+		return true, nil
+	}
+	names := sortedSkillNames(c.Skills)
+	description := "Load the instructions for an available skill by name. Available skills: " + strings.Join(names, ", ") + ". Do not try to read /skill:name as a file path."
+	err := registry.RegisterTool(extension.Tool{
+		Definition: model.ToolDefinition{
+			Name: "skill", Description: description,
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"name":      map[string]any{"type": "string", "enum": names, "description": "Skill name to load"},
+					"arguments": map[string]any{"type": "string", "description": "Optional arguments substituted for $ARGUMENTS"},
+				},
+				"required": []string{"name"}, "additionalProperties": false,
+			},
+		},
+		Source: "builtin:skills",
+		Execute: func(_ context.Context, raw json.RawMessage, _ func(string)) (extension.ToolResult, error) {
+			var input struct {
+				Name      string `json:"name"`
+				Arguments string `json:"arguments"`
+			}
+			if err := json.Unmarshal(raw, &input); err != nil {
+				return extension.ToolResult{Content: "invalid skill input: " + err.Error(), IsError: true}, nil
+			}
+			skill, ok := c.lookupSkill(input.Name)
+			if !ok {
+				return extension.ToolResult{Content: "skill not found: " + input.Name, IsError: true}, nil
+			}
+			content := strings.ReplaceAll(skill.Content, "$ARGUMENTS", strings.TrimSpace(input.Arguments))
+			return extension.ToolResult{Content: content, Details: map[string]any{"skill": skill.Name, "path": skill.Path}}, nil
+		},
+	})
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (c *Catalog) lookupSkill(name string) (Skill, bool) {
+	name = strings.TrimSpace(name)
+	if c == nil || name == "" {
+		return Skill{}, false
+	}
+	if skill, ok := c.Skills[name]; ok {
+		return skill, true
+	}
+	for key, skill := range c.Skills {
+		if strings.EqualFold(key, name) {
+			return skill, true
+		}
+	}
+	return Skill{}, false
+}
+
 // ExpandInput expands a leading resource slash command. Ordinary input is
 // returned unchanged. The text following the command replaces every
 // $ARGUMENTS marker in the selected markdown file.
@@ -282,7 +353,7 @@ func (c *Catalog) ExpandInput(input string) (string, error) {
 		if c == nil {
 			return "", fmt.Errorf("%w: %s", ErrSkillNotFound, name)
 		}
-		skill, ok := c.Skills[name]
+		skill, ok := c.lookupSkill(name)
 		if !ok {
 			return "", fmt.Errorf("%w: %s", ErrSkillNotFound, name)
 		}
