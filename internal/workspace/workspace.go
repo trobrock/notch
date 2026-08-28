@@ -17,10 +17,12 @@ import (
 const trustFileName = "trusted-workspaces.json"
 
 // Info separates the active worktree root, where project inputs are loaded,
-// from the repository-wide trust key shared by all linked worktrees.
+// from the repository-wide trust key shared by all linked worktrees. Branch is
+// the current symbolic branch, or empty outside Git and in detached HEAD mode.
 type Info struct {
 	Root     string
 	TrustKey string
+	Branch   string
 }
 
 // Resolve identifies the workspace containing cwd. Git worktrees use their
@@ -31,12 +33,12 @@ func Resolve(cwd string) (Info, error) {
 	if err != nil {
 		return Info{}, fmt.Errorf("canonicalize workspace: %w", err)
 	}
-	cmd := exec.Command("git", "-C", canonicalCWD, "rev-parse", "--show-toplevel", "--git-common-dir")
+	cmd := exec.Command("git", "-C", canonicalCWD, "rev-parse", "--show-toplevel", "--git-common-dir", "--git-path", "HEAD")
 	cmd.Env = gitDiscoveryEnv(os.Environ())
 	cmd.Stderr = io.Discard
 	if output, runErr := cmd.Output(); runErr == nil {
 		lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-		if len(lines) == 2 && strings.TrimSpace(lines[0]) != "" && strings.TrimSpace(lines[1]) != "" {
+		if len(lines) == 3 && strings.TrimSpace(lines[0]) != "" && strings.TrimSpace(lines[1]) != "" {
 			root, canonicalErr := canonicalPath(strings.TrimSpace(lines[0]))
 			if canonicalErr != nil {
 				return Info{}, fmt.Errorf("canonicalize Git workspace: %w", canonicalErr)
@@ -49,7 +51,18 @@ func Resolve(cwd string) (Info, error) {
 			if canonicalErr != nil {
 				return Info{}, fmt.Errorf("canonicalize Git common directory: %w", canonicalErr)
 			}
-			return Info{Root: root, TrustKey: trustKey}, nil
+			branch := ""
+			headPath := strings.TrimSpace(lines[2])
+			if !filepath.IsAbs(headPath) {
+				headPath = filepath.Join(canonicalCWD, headPath)
+			}
+			if head, readErr := os.ReadFile(headPath); readErr == nil {
+				const branchPrefix = "ref: refs/heads/"
+				if ref := strings.TrimSpace(string(head)); strings.HasPrefix(ref, branchPrefix) {
+					branch = strings.TrimPrefix(ref, branchPrefix)
+				}
+			}
+			return Info{Root: root, TrustKey: trustKey, Branch: branch}, nil
 		}
 	}
 

@@ -43,34 +43,66 @@ func ConnectConfigured(ctx context.Context, cfg Config, registry *extension.Regi
 	}
 	sort.Strings(names)
 
+	enabledNames := names[:0]
 	for _, name := range names {
-		server := cfg.MCPServers[name]
-		if !server.isEnabled() {
+		if !cfg.MCPServers[name].isEnabled() {
 			continue
 		}
 		if name == "" {
-			_ = manager.Close()
 			return nil, errors.New("MCP server name is empty")
 		}
-		client, err := connectServer(ctx, name, server, authorizer)
-		if err != nil {
-			_ = manager.Close()
-			return nil, fmt.Errorf("connect MCP server %q: %w", name, err)
+		enabledNames = append(enabledNames, name)
+	}
+
+	// MCP handshakes are independent and often involve process startup or
+	// network round trips. Prepare them concurrently, then register their tools
+	// in sorted order so duplicate handling and hook order stay deterministic.
+	type preparedServer struct {
+		client          rpcClient
+		tools           []listedTool
+		connectionIndex int
+		err             error
+	}
+	prepared := make([]preparedServer, len(enabledNames))
+	var wg sync.WaitGroup
+	for i, name := range enabledNames {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			server := cfg.MCPServers[name]
+			client, err := connectServer(ctx, name, server, authorizer)
+			if err != nil {
+				prepared[i].err = fmt.Errorf("connect MCP server %q: %w", name, err)
+				return
+			}
+			prepared[i].client = client
+			if err := initialize(ctx, client); err != nil {
+				prepared[i].err = fmt.Errorf("MCP server %q: %w", name, err)
+				return
+			}
+			prepared[i].tools, err = listTools(ctx, client)
+			if err != nil {
+				prepared[i].err = fmt.Errorf("MCP server %q: %w", name, err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	manager.connections = make([]clientConnection, 0, len(prepared))
+	for i := range prepared {
+		if prepared[i].client != nil {
+			prepared[i].connectionIndex = len(manager.connections)
+			manager.connections = append(manager.connections, clientConnection{client: prepared[i].client})
 		}
-		connection := clientConnection{client: client}
-		manager.connections = append(manager.connections, connection)
-		connectionIndex := len(manager.connections) - 1
-		if err := initialize(ctx, client); err != nil {
+	}
+	for i, server := range prepared {
+		if server.err != nil {
 			_ = manager.Close()
-			return nil, fmt.Errorf("MCP server %q: %w", name, err)
+			return nil, server.err
 		}
-		tools, err := listTools(ctx, client)
-		if err != nil {
-			_ = manager.Close()
-			return nil, fmt.Errorf("MCP server %q: %w", name, err)
-		}
-		serverTools := make([]extension.Tool, 0, len(tools))
-		for _, remote := range tools {
+		name := enabledNames[i]
+		serverTools := make([]extension.Tool, 0, len(server.tools))
+		for _, remote := range server.tools {
 			if remote.Name == "" {
 				_ = manager.Close()
 				return nil, fmt.Errorf("MCP server %q returned a tool with no name", name)
@@ -79,7 +111,7 @@ func ConnectConfigured(ctx context.Context, cfg Config, registry *extension.Regi
 			if inputSchema == nil {
 				inputSchema = map[string]any{"type": "object"}
 			}
-			clientForTool := client
+			clientForTool := server.client
 			remoteName := remote.Name
 			tool := extension.Tool{
 				Definition: model.ToolDefinition{
@@ -113,7 +145,7 @@ func ConnectConfigured(ctx context.Context, cfg Config, registry *extension.Regi
 			_ = manager.Close()
 			return nil, fmt.Errorf("register MCP server %q tools: %w", name, err)
 		}
-		manager.connections[connectionIndex].lease = lease
+		manager.connections[server.connectionIndex].lease = lease
 	}
 	return manager, nil
 }

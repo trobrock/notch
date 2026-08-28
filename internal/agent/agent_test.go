@@ -318,6 +318,75 @@ func TestSteeringAndFollowUpQueues(t *testing.T) {
 	}
 }
 
+type parallelToolProvider struct {
+	calls    int
+	requests []model.Request
+}
+
+func (p *parallelToolProvider) Stream(_ context.Context, request model.Request, _ func(model.StreamEvent)) (model.Response, error) {
+	p.calls++
+	p.requests = append(p.requests, request)
+	if p.calls == 1 {
+		return model.Response{Content: []model.Block{
+			{Type: "tool_use", ID: "call-1", Name: "parallel_test", Arguments: json.RawMessage(`{"value":"one"}`)},
+			{Type: "tool_use", ID: "call-2", Name: "parallel_test", Arguments: json.RawMessage(`{"value":"two"}`)},
+			{Type: "tool_use", ID: "call-3", Name: "parallel_test", Arguments: json.RawMessage(`{"value":"three"}`)},
+		}, StopReason: "tool_use"}, nil
+	}
+	return model.Response{Content: []model.Block{{Type: "text", Text: "done"}}, StopReason: "end_turn"}, nil
+}
+
+func TestPromptExecutesParallelToolCallsConcurrentlyAndPreservesOrder(t *testing.T) {
+	started := make(chan struct{}, 3)
+	release := make(chan struct{})
+	registry := extension.NewRegistry()
+	if err := registry.RegisterTool(extension.Tool{
+		Definition: model.ToolDefinition{Name: "parallel_test", InputSchema: map[string]any{"type": "object"}},
+		Execute: func(_ context.Context, args json.RawMessage, _ func(string)) (extension.ToolResult, error) {
+			started <- struct{}{}
+			<-release
+			var input struct {
+				Value string `json:"value"`
+			}
+			if err := json.Unmarshal(args, &input); err != nil {
+				return extension.ToolResult{}, err
+			}
+			return extension.ToolResult{Content: input.Value}, nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	provider := &parallelToolProvider{}
+	runner, err := New(Config{Provider: provider, Registry: registry, Model: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- runner.Prompt(context.Background(), "run", nil) }()
+	for range 3 {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			close(release)
+			<-done
+			t.Fatal("tool calls did not execute concurrently")
+		}
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+
+	if len(provider.requests) != 2 {
+		t.Fatalf("provider requests = %d, want 2", len(provider.requests))
+	}
+	messages := provider.requests[1].Messages
+	results := messages[len(messages)-1].Content
+	if len(results) != 3 || results[0].ToolUseID != "call-1" || results[0].Text != "one" || results[1].ToolUseID != "call-2" || results[1].Text != "two" || results[2].ToolUseID != "call-3" || results[2].Text != "three" {
+		t.Fatalf("tool results = %#v", results)
+	}
+}
+
 type longToolLoopProvider struct{ calls int }
 
 func (p *longToolLoopProvider) Stream(context.Context, model.Request, func(model.StreamEvent)) (model.Response, error) {

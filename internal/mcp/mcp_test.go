@@ -10,9 +10,75 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/trobrock/notch/internal/extension"
 )
+
+func TestConfiguredServersHandshakeConcurrently(t *testing.T) {
+	arrived := make(chan struct{}, 3)
+	release := make(chan struct{})
+	servers := make([]*httptest.Server, 0, 3)
+	configured := make(map[string]ServerConfig, 3)
+	for i := range 3 {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var request struct {
+				ID     int64  `json:"id"`
+				Method string `json:"method"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Errorf("decode request: %v", err)
+				return
+			}
+			switch request.Method {
+			case "initialize":
+				arrived <- struct{}{}
+				<-release
+				writeRPCResult(t, w, request.ID, map[string]any{"protocolVersion": protocolVersion, "capabilities": map[string]any{}})
+			case "notifications/initialized":
+				w.WriteHeader(http.StatusAccepted)
+			case "tools/list":
+				writeRPCResult(t, w, request.ID, map[string]any{"tools": []any{}})
+			default:
+				http.Error(w, "unexpected method", http.StatusBadRequest)
+			}
+		}))
+		servers = append(servers, server)
+		configured[fmt.Sprintf("server-%d", i)] = ServerConfig{URL: server.URL}
+	}
+	defer func() {
+		for _, server := range servers {
+			server.Close()
+		}
+	}()
+
+	type connectResult struct {
+		manager *Manager
+		err     error
+	}
+	result := make(chan connectResult, 1)
+	go func() {
+		manager, err := ConnectConfigured(context.Background(), Config{MCPServers: configured}, extension.NewRegistry())
+		result <- connectResult{manager: manager, err: err}
+	}()
+	for range 3 {
+		select {
+		case <-arrived:
+		case <-time.After(time.Second):
+			close(release)
+			<-result
+			t.Fatal("MCP handshakes did not run concurrently")
+		}
+	}
+	close(release)
+	connected := <-result
+	if connected.err != nil {
+		t.Fatal(connected.err)
+	}
+	if err := connected.manager.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestHTTPServerHandshakeAndTool(t *testing.T) {
 	var mu sync.Mutex

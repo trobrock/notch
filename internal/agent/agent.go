@@ -446,11 +446,12 @@ func (a *Agent) PromptWithStart(ctx context.Context, text string, emit func(Even
 		}
 		emit(Event{Type: "turn_start"})
 		_, _ = a.registry.RunHooks(ctx, "agent_start", map[string]any{"model": a.model, "turn": turn})
-		requestEstimate := a.estimatedContextTokensLocked()
+		definitions := a.registry.Definitions()
+		requestEstimate := a.estimatedContextTokensWithDefinitionsLocked(definitions)
 		requestProvider, requestModel := a.providerName, a.model
 		request := model.Request{
 			Model: requestModel, SystemPrompt: system, Messages: requestMessages,
-			Tools: a.registry.Definitions(), MaxTokens: a.maxTokens,
+			Tools: definitions, MaxTokens: a.maxTokens,
 			ReasoningLevel: a.ThinkingLevel(), CacheRetention: a.cacheRetention, CacheKey: a.cacheKey,
 		}
 		response, err := a.streamWithRetry(ctx, request, emit)
@@ -479,14 +480,20 @@ func (a *Agent) PromptWithStart(ctx context.Context, text string, emit func(Even
 		calls := toolCalls(response.Content)
 		if len(calls) != 0 {
 			results := make([]model.Block, 0, len(calls))
-			for _, call := range calls {
-				result := a.executeTool(ctx, call, emit)
+			recordToolResult := func(call model.Block, result extension.ToolResult) {
 				if delegated, ok := delegation.FromDetails(result.Details); ok {
 					delegatedTotals = delegatedTotals.Add(delegated)
 					running := delegatedTotals
 					emit(Event{Type: "delegation_usage", DelegationUsage: &running})
 				}
 				results = append(results, model.Block{Type: "tool_result", ToolUseID: call.ID, Text: result.Content, IsError: result.IsError})
+			}
+			if len(calls) == 1 {
+				recordToolResult(calls[0], a.executeTool(ctx, calls[0], emit))
+			} else {
+				for _, executed := range a.executeTools(ctx, calls, emit) {
+					recordToolResult(executed.call, executed.result)
+				}
 			}
 			if err := a.appendMessage(model.Message{Role: "user", Content: results}); err != nil {
 				if appendErr := a.appendUsage(response, delegatedTotals, a.cacheRetention, requestProvider, requestModel); appendErr != nil {
@@ -655,6 +662,35 @@ func (a *Agent) applyDelegationModelDefault(call *model.Block) {
 	if raw, err := json.Marshal(arguments); err == nil {
 		call.Arguments = raw
 	}
+}
+
+type executedTool struct {
+	call   model.Block
+	result extension.ToolResult
+}
+
+// executeTools honors providers' parallel tool-call responses while preserving
+// result order for the next model request. Event callbacks are serialized so
+// existing terminal and RPC consumers never need to handle concurrent calls.
+func (a *Agent) executeTools(ctx context.Context, calls []model.Block, emit func(Event)) []executedTool {
+	results := make([]executedTool, len(calls))
+
+	var emitMu sync.Mutex
+	serializedEmit := func(event Event) {
+		emitMu.Lock()
+		emit(event)
+		emitMu.Unlock()
+	}
+	var wg sync.WaitGroup
+	for i, call := range calls {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results[i] = executedTool{call: call, result: a.executeTool(ctx, call, serializedEmit)}
+		}()
+	}
+	wg.Wait()
+	return results
 }
 
 func (a *Agent) executeTool(ctx context.Context, call model.Block, emit func(Event)) extension.ToolResult {

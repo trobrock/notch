@@ -7,6 +7,23 @@ import (
 	"github.com/trobrock/notch/internal/model"
 )
 
+func TestEstimateContextMessagesMatchesCompactedMessages(t *testing.T) {
+	largeUnicode := strings.Repeat("é", 10000)
+	messages := []model.Message{
+		{Role: "user", Content: []model.Block{{Type: "text", Text: "run tools"}}},
+		{Role: "assistant", Content: []model.Block{{Type: "tool_use", ID: "1", Name: "read", Arguments: []byte(`{"path":"one"}`)}}},
+		{Role: "user", Content: []model.Block{{Type: "tool_result", Text: largeUnicode, ToolUseID: "1"}}},
+		{Role: "user", Content: []model.Block{{Type: "tool_result", Text: largeUnicode + "a", ToolUseID: "2"}}},
+		{Role: "user", Content: []model.Block{{Type: "tool_result", Text: largeUnicode + "ab", ToolUseID: "3"}}},
+		{Role: "user", Content: []model.Block{{Type: "tool_result", Text: largeUnicode + "abc", ToolUseID: "4"}}},
+	}
+	got := estimateContextMessages(messages)
+	want := estimateMessages(contextMessages(messages))
+	if got != want {
+		t.Fatalf("estimateContextMessages() = %d, want %d", got, want)
+	}
+}
+
 func TestContextMessagesTrimOlderToolResults(t *testing.T) {
 	large := strings.Repeat("x", 20000)
 	messages := []model.Message{

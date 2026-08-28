@@ -29,6 +29,33 @@ func TestRootCanonicalizesGitWorkspace(t *testing.T) {
 	}
 }
 
+func TestResolveReportsUnbornAndDetachedBranches(t *testing.T) {
+	root := t.TempDir()
+	if err := exec.Command("git", "-c", "init.defaultBranch=initial", "init", "-q", root).Run(); err != nil {
+		t.Skipf("git unavailable: %v", err)
+	}
+	info, err := Resolve(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Branch != "initial" {
+		t.Fatalf("unborn branch = %q, want initial", info.Branch)
+	}
+	if err := exec.Command("git", "-C", root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-q", "-m", "initial").Run(); err != nil {
+		t.Fatal(err)
+	}
+	if err := exec.Command("git", "-C", root, "checkout", "--detach", "-q").Run(); err != nil {
+		t.Fatal(err)
+	}
+	info, err = Resolve(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Branch != "" {
+		t.Fatalf("detached branch = %q, want empty", info.Branch)
+	}
+}
+
 func TestResolveSharesTrustAcrossLinkedWorktrees(t *testing.T) {
 	parent := t.TempDir()
 	mainRoot := filepath.Join(parent, "main")
@@ -61,6 +88,9 @@ func TestResolveSharesTrustAcrossLinkedWorktrees(t *testing.T) {
 	}
 	if mainInfo.TrustKey != linkedInfo.TrustKey {
 		t.Fatalf("trust keys differ: main=%q linked=%q", mainInfo.TrustKey, linkedInfo.TrustKey)
+	}
+	if mainInfo.Branch == "" || linkedInfo.Branch != "linked" {
+		t.Fatalf("branches: main=%q linked=%q", mainInfo.Branch, linkedInfo.Branch)
 	}
 
 	store := NewStore(filepath.Join(t.TempDir(), "notch-home"))

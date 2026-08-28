@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -147,6 +148,40 @@ func estimateMessages(messages []model.Message) int {
 	return total
 }
 
+func estimateContextMessages(messages []model.Message) int {
+	total, seenToolResults := 0, 0
+	for i := len(messages) - 1; i >= 0; i-- {
+		message := messages[i]
+		total += 6 + estimatedTokens([]byte(message.Role))
+		for j := len(message.Content) - 1; j >= 0; j-- {
+			block := message.Content[j]
+			total += 5 + estimatedTokens([]byte(block.Type))
+			if block.Type == "tool_result" {
+				seenToolResults++
+				limit := maxOldToolResultBytes
+				if seenToolResults <= recentToolResultsToKeep {
+					limit = maxRecentToolResultBytes
+				}
+				total += estimatedTokensForLength(compactToolResultLength(block.Text, limit))
+			} else {
+				total += estimatedTokens([]byte(block.Text))
+			}
+			total += estimatedTokens([]byte(block.ID))
+			total += estimatedTokens([]byte(block.Name))
+			total += estimatedTokens([]byte(block.ToolUseID))
+			total += estimatedTokens(block.Arguments)
+		}
+	}
+	return total
+}
+
+func estimatedTokensForLength(length int) int {
+	if length == 0 {
+		return 0
+	}
+	return (length + 2) / 3
+}
+
 func contextMessages(messages []model.Message) []model.Message {
 	out := cloneMessages(messages)
 	seen := 0
@@ -167,6 +202,21 @@ func contextMessages(messages []model.Message) []model.Message {
 	return out
 }
 
+func compactToolResultLength(value string, limit int) int {
+	if len(value) <= limit {
+		return len(value)
+	}
+	head := limit * 65 / 100
+	tail := limit - head
+	for head > 0 && !utf8.ValidString(value[:head]) {
+		head--
+	}
+	for tail > 0 && !utf8.ValidString(value[len(value)-tail:]) {
+		tail--
+	}
+	return head + len("\n\n[older tool result trimmed: ") + len(strconv.Itoa(len(value))) + len(" bytes total]\n\n") + tail
+}
+
 func compactToolResultText(value string, limit int) string {
 	if len(value) <= limit {
 		return value
@@ -183,8 +233,12 @@ func compactToolResultText(value string, limit int) string {
 }
 
 func (a *Agent) estimatedContextTokensLocked() int {
-	total := 8 + estimatedTokens([]byte(a.system)) + estimateMessages(contextMessages(a.messages))
-	if tools, err := json.Marshal(a.registry.Definitions()); err == nil {
+	return a.estimatedContextTokensWithDefinitionsLocked(a.registry.Definitions())
+}
+
+func (a *Agent) estimatedContextTokensWithDefinitionsLocked(definitions []model.ToolDefinition) int {
+	total := 8 + estimatedTokens([]byte(a.system)) + estimateContextMessages(a.messages)
+	if tools, err := json.Marshal(definitions); err == nil {
 		total += estimatedTokens(tools)
 	}
 	return total

@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -200,6 +199,7 @@ func run(args []string) error {
 	}
 	workspaceRoot := cwd
 	workspaceTrustKey := cwd
+	gitBranch := ""
 	var cfg config.Config
 	switch {
 	case opts.init:
@@ -217,6 +217,7 @@ func run(args []string) error {
 		}
 		workspaceRoot = workspaceInfo.Root
 		workspaceTrustKey = workspaceInfo.TrustKey
+		gitBranch = workspaceInfo.Branch
 		var trusted bool
 		trusted, err = resolveWorkspaceTrust(home, workspaceRoot, workspaceTrustKey, opts, os.Stdin, os.Stderr, terminalsInteractive(os.Stdin, os.Stdout))
 		if err == nil {
@@ -318,7 +319,7 @@ func run(args []string) error {
 			Theme: selectedTheme, ThemeName: cfg.Theme, Themes: themeCatalog, ThinkingLevel: cfg.ThinkingLevel,
 			Presets:       tuiPresets(cfg.Presets),
 			InitialPrompt: opts.prompt, MouseCapture: cfg.MouseCapture,
-			GitBranch: currentGitBranch(cwd), In: os.Stdin, Out: os.Stdout,
+			GitBranch: gitBranch, In: os.Stdin, Out: os.Stdout,
 		})
 		extensionHost = fullscreen
 		for _, warning := range themeWarnings {
@@ -1142,15 +1143,6 @@ func contextWindowFor(provider, modelName string) int {
 	default:
 		return 128000
 	}
-}
-
-func currentGitBranch(cwd string) string {
-	command := exec.Command("git", "-C", cwd, "branch", "--show-current")
-	output, err := command.Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(output))
 }
 
 func resolveCredential(ctx context.Context, store *credentials.Store, provider string) (credentials.Credential, error) {
