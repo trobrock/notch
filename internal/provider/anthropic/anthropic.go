@@ -220,12 +220,19 @@ func makeRequestForMode(req model.Request, oauthMode bool) wireRequest {
 					Input json.RawMessage `json:"input"`
 				}{"tool_use", block.ID, name, input})
 			case "tool_result", "function_call_output":
+				resultText := block.Text
+				// Older sessions may contain an empty failed tool result. Anthropic
+				// rejects that payload, so repair it while serializing and allow the
+				// append-only session to remain resumable without manual editing.
+				if block.IsError && strings.TrimSpace(resultText) == "" {
+					resultText = "tool execution failed without an error message"
+				}
 				content = append(content, struct {
 					Type      string `json:"type"`
 					ToolUseID string `json:"tool_use_id"`
 					Content   string `json:"content"`
 					IsError   bool   `json:"is_error,omitempty"`
-				}{"tool_result", block.ToolUseID, block.Text, block.IsError})
+				}{"tool_result", block.ToolUseID, resultText, block.IsError})
 			}
 		}
 		messages = append(messages, wireMessage{Role: message.Role, Content: content})

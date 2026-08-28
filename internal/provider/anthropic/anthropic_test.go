@@ -72,6 +72,31 @@ func TestRequestBodyReasoningLevels(t *testing.T) {
 	}
 }
 
+func TestRequestRepairsEmptyErrorToolResult(t *testing.T) {
+	body, err := json.Marshal(makeRequest(model.Request{Messages: []model.Message{{
+		Role:    "user",
+		Content: []model.Block{{Type: "tool_result", ToolUseID: "tool-1", IsError: true}},
+	}}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request struct {
+		Messages []struct {
+			Content []struct {
+				Content string `json:"content"`
+				IsError bool   `json:"is_error"`
+			} `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &request); err != nil {
+		t.Fatal(err)
+	}
+	result := request.Messages[0].Content[0]
+	if !result.IsError || strings.TrimSpace(result.Content) == "" {
+		t.Fatalf("empty error tool result was not repaired: %s", body)
+	}
+}
+
 func TestListModels(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/models" || r.URL.Query().Get("limit") != "1000" || r.Header.Get("x-api-key") != "secret" {

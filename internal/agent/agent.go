@@ -594,6 +594,12 @@ func (a *Agent) executeTool(ctx context.Context, call model.Block, emit func(Eve
 	if hookErr != nil {
 		result = extension.ToolResult{Content: hookErr.Error(), IsError: true}
 	}
+	// Anthropic rejects error tool results with empty content. Preserve a useful
+	// failure marker in provider-neutral history so new sessions are portable
+	// across providers and can always be resumed.
+	if result.IsError && strings.TrimSpace(result.Content) == "" {
+		result.Content = "tool execution failed without an error message"
+	}
 	emit(Event{Type: "tool_end", ToolName: call.Name, ToolCallID: call.ID, Result: &result})
 	return result
 }
