@@ -122,10 +122,6 @@ func (c *Client) Discover(ctx context.Context, resourceURL string) (Discovery, e
 	if _, err := parseHTTPSURL(metadata.TokenEndpoint, "token endpoint"); err != nil {
 		return Discovery{}, err
 	}
-	tokenEndpoint, _ := url.Parse(metadata.TokenEndpoint)
-	if !strings.EqualFold(tokenEndpoint.Host, authorizationServer.Host) {
-		return Discovery{}, errors.New("OAuth token endpoint is not on the authorization server origin")
-	}
 	return Discovery{
 		Resource: resourceMetadata.Resource, AuthorizationServer: authorizationServer.String(),
 		TokenEndpoint: metadata.TokenEndpoint, Scopes: append([]string(nil), resourceMetadata.ScopesSupported...),
@@ -182,17 +178,6 @@ func (c *Client) Login(ctx context.Context, resourceURL, requestedScope string, 
 	if _, err := parseHTTPSURL(metadata.RegistrationEndpoint, "registration endpoint"); err != nil {
 		return Credential{}, err
 	}
-	for label, endpoint := range map[string]string{
-		"authorization": metadata.AuthorizationEndpoint,
-		"token":         metadata.TokenEndpoint,
-		"registration":  metadata.RegistrationEndpoint,
-	} {
-		parsed, _ := url.Parse(endpoint)
-		if !strings.EqualFold(parsed.Host, authorizationServer.Host) {
-			return Credential{}, fmt.Errorf("OAuth %s endpoint is not on the authorization server origin", label)
-		}
-	}
-
 	scope := strings.TrimSpace(requestedScope)
 	if scope == "" {
 		scope = strings.Join(resourceMetadata.ScopesSupported, " ")
@@ -551,13 +536,6 @@ func validateCredential(credential Credential) error {
 	authorizationURL, err := url.Parse(credential.AuthorizationServer)
 	if err != nil {
 		return err
-	}
-	tokenURL, err := url.Parse(credential.TokenEndpoint)
-	if err != nil {
-		return err
-	}
-	if !strings.EqualFold(authorizationURL.Host, tokenURL.Host) {
-		return errors.New("MCP OAuth token endpoint is not on the authorization server origin")
 	}
 	if !strings.EqualFold(resourceURL.Scheme, "https") || !strings.EqualFold(authorizationURL.Scheme, "https") {
 		return errors.New("MCP OAuth resource and authorization server must use HTTPS")
