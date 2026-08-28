@@ -560,9 +560,6 @@ func (a *App) Run(ctx context.Context) (retErr error) {
 				dirty = flushDelta(false) || dirty
 			}
 			for _, key := range keys {
-				if key.Mouse == nil && key.Key != KeyCtrlY {
-					dirty = a.clearSelection() || dirty
-				}
 				keyChanged, exit := a.handleKey(ctx, key)
 				dirty = keyChanged || dirty
 				if exit {
@@ -596,15 +593,12 @@ func (a *App) Run(ctx context.Context) (retErr error) {
 				dirty = true
 			}
 		case <-deltaC:
-			dirty = a.clearSelection() || dirty
 			dirty = flushDelta(true)
 		case <-thinkingC:
-			dirty = a.clearSelection() || dirty
 			thinkingTimer, thinkingC = nil, nil
 			a.state.layout.ThinkingFrame++
 			dirty = true
 		case event := <-a.events:
-			dirty = a.clearSelection() || dirty
 			isStreamDelta := event.agent != nil && (event.agent.Type == "text_delta" || event.agent.Type == "thinking_delta")
 			if isStreamDelta {
 				if delta.Len() != 0 && deltaType != event.agent.Type {
@@ -906,6 +900,11 @@ func (a *App) handleGlobalInput(runCtx context.Context, key KeyEvent) (changed, 
 }
 
 func (a *App) handleKey(runCtx context.Context, key KeyEvent) (changed, exit bool) {
+	// Selection is tied to the visible viewport. Clear it for deliberate
+	// keyboard input (including scrolling), but preserve it across background
+	// redraws while model output and activity indicators continue to update.
+	selectionCleared := key.Mouse == nil && key.Key != KeyCtrlY && a.clearSelection()
+	defer func() { changed = changed || selectionCleared }()
 	if changed, exit, handled := a.handleGlobalInput(runCtx, key); handled {
 		return changed, exit
 	}
@@ -1073,7 +1072,6 @@ func (a *App) handleMouse(event MouseEvent) bool {
 		}
 	case MouseRelease:
 		if a.state.selecting && a.state.selection != nil {
-			a.state.selection.End = point
 			a.state.selection.End = point
 			frame := a.state.lastFrame
 			frame.Selection = a.state.selection

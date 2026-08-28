@@ -176,10 +176,38 @@ func TestInputBatchSelectionLifecycle(t *testing.T) {
 	}
 	a.handleKey(context.Background(), press)
 	a.handleKey(context.Background(), release)
-	a.clearSelection()
 	a.handleKey(context.Background(), KeyEvent{Text: "x"})
 	if a.state.selection != nil {
 		t.Fatal("normal input retained selection")
+	}
+}
+
+func TestSelectionSurvivesBackgroundOutputWhileScrolled(t *testing.T) {
+	a := NewApp(AppConfig{})
+	a.state.layout.Width, a.state.layout.Height = 30, 10
+	a.state.layout.ThinkingLevel = "off"
+	for i := 0; i < 30; i++ {
+		a.state.layout.Transcript = append(a.state.layout.Transcript, TranscriptEntry{Kind: TranscriptAssistant, Text: fmt.Sprintf("line %02d", i)})
+	}
+	a.state.layout.ScrollOffset = 5
+	a.state.activeModel = true
+	a.state.lastFrame = BuildFrame(&a.state.layout)
+
+	press := MouseEvent{Action: MousePress, Button: 0, Row: 1, Col: 0}
+	if !a.handleMouse(press) || a.state.selection == nil || !a.state.selecting {
+		t.Fatal("selection did not start")
+	}
+	event := agent.Event{Type: "text_delta", Text: "streamed output"}
+	if !a.applyEvent(context.Background(), appEvent{agent: &event}) {
+		t.Fatal("background output did not update frame state")
+	}
+	if a.state.selection == nil || !a.state.selecting {
+		t.Fatal("background output cleared in-progress selection")
+	}
+	a.state.lastFrame = BuildFrame(&a.state.layout)
+	release := MouseEvent{Action: MouseRelease, Button: 0, Row: 1, Col: 4}
+	if !a.handleMouse(release) || a.state.selection == nil || a.state.selecting || a.state.selectionText == "" {
+		t.Fatalf("selection did not finish after background output: selection=%#v text=%q selecting=%v", a.state.selection, a.state.selectionText, a.state.selecting)
 	}
 }
 
