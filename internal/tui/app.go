@@ -1316,6 +1316,7 @@ func (a *App) finishPrompt(err error) bool {
 	}
 	a.state.cancel = nil
 	a.state.activeModel = false
+	a.finishPendingTools(err)
 	if a.state.assistant >= 0 && a.state.assistant < len(a.state.layout.Transcript) {
 		a.state.layout.Transcript[a.state.assistant].Pending = false
 	}
@@ -1517,6 +1518,28 @@ func (a *App) ensureThinking() int {
 	a.state.layout.Transcript = append(a.state.layout.Transcript, TranscriptEntry{Kind: KindThinking, Pending: true})
 	a.state.thinking = len(a.state.layout.Transcript) - 1
 	return a.state.thinking
+}
+
+func (a *App) finishPendingTools(err error) {
+	for i := range a.state.layout.Transcript {
+		entry := &a.state.layout.Transcript[i]
+		if entry.Kind != KindTool || !entry.Pending {
+			continue
+		}
+		entry.Pending = false
+		if err != nil {
+			entry.Error, entry.IsError = true, true
+			if entry.Text == "" {
+				if errors.Is(err, context.Canceled) {
+					entry.Text = "canceled"
+				} else {
+					entry.Text = err.Error()
+				}
+			}
+		}
+	}
+	a.state.pendingTools = 0
+	a.state.tools = make(map[string]int)
 }
 
 func (a *App) finishThinking(removeEmpty bool) {

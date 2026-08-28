@@ -560,6 +560,24 @@ func TestAppThinkingSummaryAndFallbackIndicator(t *testing.T) {
 	}
 }
 
+func TestCanceledPromptFinalizesPendingTool(t *testing.T) {
+	a := NewApp(AppConfig{})
+	a.state.activeModel = true
+	a.handleAgentEvent(agent.Event{Type: "tool_start", ToolCallID: "call-1", ToolName: "bash"})
+	if !a.pendingAnimatedActivity() {
+		t.Fatal("pending tool did not start animation")
+	}
+
+	a.finishPrompt(context.Canceled)
+	entry := a.state.layout.Transcript[0]
+	if entry.Pending || !entry.Error || entry.Text != "canceled" {
+		t.Fatalf("canceled tool entry = %#v", entry)
+	}
+	if a.pendingAnimatedActivity() || a.state.pendingTools != 0 || len(a.state.tools) != 0 {
+		t.Fatalf("canceled prompt kept tool animation active: count=%d tools=%#v", a.state.pendingTools, a.state.tools)
+	}
+}
+
 func TestPendingAnimatedActivityTracksToolsAndCompaction(t *testing.T) {
 	a := NewApp(AppConfig{})
 	if a.pendingAnimatedActivity() {
