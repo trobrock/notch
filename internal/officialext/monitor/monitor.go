@@ -20,13 +20,15 @@ import (
 )
 
 const (
-	Source       = "official:monitor"
-	maxOutput    = 16000
-	maxCompleted = 25
+	Source            = "official:monitor"
+	maxOutput         = 16000
+	maxCompleted      = 25
+	lifecycleHookWait = 5 * time.Second
 )
 
 type state struct {
 	host     extension.Host
+	registry *extension.Registry
 	cwd      string
 	mu       sync.Mutex
 	next     int
@@ -60,7 +62,7 @@ func Register(registry *extension.Registry, host extension.Host) error {
 	if registry == nil || host == nil {
 		return errors.New("register monitor: registry and host are required")
 	}
-	s := &state{host: host, cwd: host.CWD(), monitors: map[string]*Monitor{}}
+	s := &state{host: host, registry: registry, cwd: host.CWD(), monitors: map[string]*Monitor{}}
 	for _, tool := range []extension.Tool{s.commandTool(), s.githubTool(), s.listTool(), s.stopTool()} {
 		if err := registry.RegisterTool(tool); err != nil {
 			return fmt.Errorf("register monitor: %w", err)
@@ -248,6 +250,7 @@ func (s *state) startArgv(name, command string, args []string, prompt string) (*
 	s.monitors[id] = m
 	s.mu.Unlock()
 	s.render()
+	s.emitLifecycle("monitor_start", m)
 	go s.watch(m, &output, 0)
 	return m, nil
 }
@@ -275,6 +278,7 @@ func (s *state) start(input commandInput) (*Monitor, error) {
 	s.monitors[id] = m
 	s.mu.Unlock()
 	s.render()
+	s.emitLifecycle("monitor_start", m)
 	go s.watch(m, &output, input.TimeoutSeconds)
 	return m, nil
 }
@@ -331,6 +335,7 @@ func (s *state) trigger(m *Monitor, reason, output string) {
 }
 func (s *state) finish(m *Monitor, err error, output, reason string) {
 	s.mu.Lock()
+	emitEnd := m.CompletedAt.IsZero()
 	m.CompletedAt = time.Now()
 	m.Output = tail(output, maxOutput)
 	m.ExitCode = 0
@@ -353,6 +358,9 @@ func (s *state) finish(m *Monitor, err error, output, reason string) {
 	m.triggered = m.triggered || notify
 	s.pruneLocked()
 	s.mu.Unlock()
+	if emitEnd {
+		s.emitLifecycle("monitor_end", m)
+	}
 	if notify {
 		s.wakeup(m, reason, m.Output)
 	}
@@ -390,6 +398,7 @@ func (s *state) stop(id string) error {
 	m.CompletedAt = time.Now()
 	s.mu.Unlock()
 	m.cancel()
+	s.emitLifecycle("monitor_end", m)
 	s.render()
 	return nil
 }
@@ -435,18 +444,60 @@ func (s *state) render() {
 		s.host.SetPanel("monitor", "Monitors", lines)
 	}
 }
+func (s *state) emitLifecycle(event string, changed *Monitor) {
+	s.mu.Lock()
+	monitor := monitorPayload(changed)
+	active := make([]map[string]any, 0, len(s.monitors))
+	for _, m := range s.monitors {
+		if m.Status == "running" {
+			active = append(active, monitorPayload(m))
+		}
+	}
+	s.mu.Unlock()
+	sort.Slice(active, func(i, j int) bool { return active[i]["id"].(string) < active[j]["id"].(string) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), lifecycleHookWait)
+	defer cancel()
+	if _, err := s.registry.RunHooksBestEffort(ctx, event, map[string]any{
+		"monitor":  monitor,
+		"active":   len(active) > 0,
+		"monitors": active,
+	}); err != nil {
+		s.host.Notify(fmt.Sprintf("%s hook failed: %v", event, err), "warning")
+	}
+}
+
+func monitorPayload(m *Monitor) map[string]any {
+	payload := map[string]any{
+		"id":         m.ID,
+		"name":       m.Name,
+		"command":    m.Command,
+		"trigger":    m.Trigger,
+		"status":     m.Status,
+		"started_at": m.StartedAt.Format(time.RFC3339Nano),
+	}
+	if !m.CompletedAt.IsZero() {
+		payload["completed_at"] = m.CompletedAt.Format(time.RFC3339Nano)
+		payload["exit_code"] = m.ExitCode
+	}
+	return payload
+}
+
 func (s *state) close() {
 	s.mu.Lock()
 	var active []*Monitor
+	now := time.Now()
 	for _, m := range s.monitors {
 		if m.Status == "running" {
 			m.Status = "cancelled"
+			m.CompletedAt = now
 			active = append(active, m)
 		}
 	}
 	s.mu.Unlock()
 	for _, m := range active {
 		m.cancel()
+		s.emitLifecycle("monitor_end", m)
 	}
 	s.host.SetStatus("monitor", "")
 	s.host.SetPanel("monitor", "", nil)

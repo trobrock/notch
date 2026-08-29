@@ -205,6 +205,34 @@ Runs after execution:
 
 Return fields are currently ignored. A hook error replaces the tool result with an error.
 
+### `monitor_start` and `monitor_end`
+
+The official background monitor emits `monitor_start` after a process starts and
+`monitor_end` when it exits or is cancelled. Both hooks receive the changed
+monitor plus a snapshot of monitors that are still running:
+
+```json
+{
+  "monitor": {
+    "id": "mon-1",
+    "name": "tests",
+    "command": "make test",
+    "trigger": "exit",
+    "status": "running",
+    "started_at": "2026-05-20T12:00:00Z"
+  },
+  "active": true,
+  "monitors": [{"id":"mon-1","name":"tests","command":"make test","trigger":"exit","status":"running","started_at":"2026-05-20T12:00:00Z"}]
+}
+```
+
+On `monitor_end`, `monitor.status` is `completed`, `failed`, or `cancelled` and
+also includes `completed_at` and `exit_code`. `active` and `monitors` describe
+the remaining running monitors, so extensions can publish external activity
+state without maintaining their own monitor registry. These observational hooks
+are best-effort: failures are reported as warnings and do not change monitor
+behavior.
+
 ### `agent_end`
 
 Runs when a model response has no tool calls:

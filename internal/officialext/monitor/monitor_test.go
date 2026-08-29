@@ -69,6 +69,53 @@ func waitFor(t *testing.T, condition func() bool) {
 	}
 }
 
+func TestMonitorLifecycleHooks(t *testing.T) {
+	r, _ := setup(t)
+	started := make(chan map[string]any, 1)
+	ended := make(chan map[string]any, 1)
+	r.On("monitor_start", "test", func(_ context.Context, event map[string]any) (map[string]any, error) {
+		started <- event
+		return nil, nil
+	})
+	r.On("monitor_end", "test", func(_ context.Context, event map[string]any) (map[string]any, error) {
+		ended <- event
+		return nil, nil
+	})
+
+	tool, _ := r.Tool("monitor_command")
+	if _, err := tool.Execute(context.Background(), json.RawMessage(`{"command":"printf done","name":"lifecycle"}`), nil); err != nil {
+		t.Fatal(err)
+	}
+
+	startEvent := <-started
+	if active, _ := startEvent["active"].(bool); !active {
+		t.Fatalf("monitor_start active = %#v", startEvent["active"])
+	}
+	startMonitor, _ := startEvent["monitor"].(map[string]any)
+	if startMonitor["id"] != "mon-1" || startMonitor["status"] != "running" {
+		t.Fatalf("monitor_start monitor = %#v", startMonitor)
+	}
+	if monitors, _ := startEvent["monitors"].([]map[string]any); len(monitors) != 1 {
+		t.Fatalf("monitor_start monitors = %#v", startEvent["monitors"])
+	}
+
+	select {
+	case endEvent := <-ended:
+		if active, _ := endEvent["active"].(bool); active {
+			t.Fatalf("monitor_end active = %#v", endEvent["active"])
+		}
+		endMonitor, _ := endEvent["monitor"].(map[string]any)
+		if endMonitor["id"] != "mon-1" || endMonitor["status"] != "completed" {
+			t.Fatalf("monitor_end monitor = %#v", endMonitor)
+		}
+		if endMonitor["completed_at"] == nil {
+			t.Fatalf("monitor_end missing completed_at: %#v", endMonitor)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("monitor_end hook was not emitted")
+	}
+}
+
 func TestMonitorCommandExitAndList(t *testing.T) {
 	r, h := setup(t)
 	tool, _ := r.Tool("monitor_command")
