@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestDefaultSystemPromptGuidesCodebaseExploration(t *testing.T) {
+func TestDefaultSystemPromptGuidesAgentBehavior(t *testing.T) {
 	cfg, err := Defaults(t.TempDir(), t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -16,7 +16,16 @@ func TestDefaultSystemPromptGuidesCodebaseExploration(t *testing.T) {
 	if cfg.CacheRetention != "short" {
 		t.Fatalf("default cache retention = %q", cfg.CacheRetention)
 	}
-	for _, text := range []string{"likely to save parent context", "Prefer direct grep", "avoid delegation", "always provide a tasks array", "Normally omit model", "Never invent a model ID", "call list_models"} {
+	for _, text := range []string{
+		"Inspect relevant context before acting",
+		"Preserve unrelated user changes",
+		"distinguish verified facts from hypotheses",
+		"beyond the checks actually performed",
+		"Complete every requested step",
+		"what remains",
+		"Delegate selectively",
+		"verify delegated findings",
+	} {
 		if !strings.Contains(cfg.SystemPrompt, text) {
 			t.Fatalf("default system prompt missing %q: %q", text, cfg.SystemPrompt)
 		}
