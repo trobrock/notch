@@ -86,19 +86,18 @@ type wireRequest struct {
 }
 
 type codexWireRequest struct {
-	Model              string                  `json:"model"`
-	Store              bool                    `json:"store"`
-	Stream             bool                    `json:"stream"`
-	Instructions       string                  `json:"instructions"`
-	Input              []any                   `json:"input"`
-	Tools              []wireTool              `json:"tools"`
-	Text               wireText                `json:"text"`
-	Include            []string                `json:"include"`
-	ToolChoice         string                  `json:"tool_choice"`
-	ParallelToolCalls  bool                    `json:"parallel_tool_calls"`
-	Reasoning          *wireReasoning          `json:"reasoning,omitempty"`
-	PromptCacheKey     string                  `json:"prompt_cache_key,omitempty"`
-	PromptCacheOptions *wirePromptCacheOptions `json:"prompt_cache_options,omitempty"`
+	Model             string         `json:"model"`
+	Store             bool           `json:"store"`
+	Stream            bool           `json:"stream"`
+	Instructions      string         `json:"instructions"`
+	Input             []any          `json:"input"`
+	Tools             []wireTool     `json:"tools"`
+	Text              wireText       `json:"text"`
+	Include           []string       `json:"include"`
+	ToolChoice        string         `json:"tool_choice"`
+	ParallelToolCalls bool           `json:"parallel_tool_calls"`
+	Reasoning         *wireReasoning `json:"reasoning,omitempty"`
+	PromptCacheKey    string         `json:"prompt_cache_key,omitempty"`
 }
 
 type wirePromptCacheOptions struct {
@@ -364,7 +363,7 @@ func (p *provider) Stream(ctx context.Context, req model.Request, onEvent func(m
 			Instructions: wireReq.Instructions, Input: wireReq.Input, Tools: wireReq.Tools,
 			Text: wireText{Verbosity: "low"}, Include: []string{"reasoning.encrypted_content"},
 			ToolChoice: "auto", ParallelToolCalls: true, Reasoning: wireReq.Reasoning,
-			PromptCacheKey: wireReq.PromptCacheKey, PromptCacheOptions: wireReq.PromptCacheOptions,
+			PromptCacheKey: wireReq.PromptCacheKey,
 		}
 	}
 	body, err := json.Marshal(requestBody)

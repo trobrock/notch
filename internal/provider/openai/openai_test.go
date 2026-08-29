@@ -314,6 +314,31 @@ func TestMakeRequestConfiguresPromptCaching(t *testing.T) {
 	}
 }
 
+func TestCodexRequestOmitsUnsupportedPromptCacheOptions(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		if _, present := request["prompt_cache_options"]; present {
+			t.Errorf("prompt_cache_options must be omitted from Codex requests: %#v", request)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
+	}))
+	defer server.Close()
+
+	provider := New(Config{
+		BaseURL: server.URL, Endpoint: "/codex/responses", CodexMode: true,
+		OfficialEndpoint: true, HTTPClient: server.Client(),
+	})
+	if _, err := provider.Stream(context.Background(), model.Request{
+		Model: "gpt-5.6-sol", CacheRetention: "none",
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestCustomEndpointDisablesHostedCacheFieldsAndPricing(t *testing.T) {
 	custom := New(Config{BaseURL: "https://local.example"}).(*provider)
 	if custom.promptCacheFields {
