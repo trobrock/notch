@@ -13,6 +13,7 @@ import (
 
 type testHost struct {
 	selected string
+	prompts  []string
 	active   [][]string
 	statuses [][2]string
 	handoffs []handoff
@@ -26,10 +27,13 @@ func (*testHost) CWD() string { return "/work" }
 func (*testHost) Exec(context.Context, string, []string) (string, string, int, error) {
 	return "", "", 0, errors.New("unused")
 }
-func (*testHost) Input(context.Context, string, string) (string, error)      { return "", nil }
-func (h *testHost) Select(context.Context, string, []string) (string, error) { return h.selected, nil }
-func (*testHost) Notify(string, string)                                      {}
-func (*testHost) FollowUp(string) error                                      { return nil }
+func (*testHost) Input(context.Context, string, string) (string, error) { return "", nil }
+func (h *testHost) Select(_ context.Context, prompt string, _ []string) (string, error) {
+	h.prompts = append(h.prompts, prompt)
+	return h.selected, nil
+}
+func (*testHost) Notify(string, string) {}
+func (*testHost) FollowUp(string) error { return nil }
 func (h *testHost) Handoff(m string, f bool) error {
 	h.handoffs = append(h.handoffs, handoff{m, f})
 	return nil
@@ -94,6 +98,9 @@ func TestPlanApprovalFreshContextDefault(t *testing.T) {
 	result, err := tool.Execute(context.Background(), json.RawMessage(`{"plan":"1. Edit x\n2. Test"}`), nil)
 	if err != nil || result.Details["fresh"] != true {
 		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	if len(h.prompts) != 1 || !strings.Contains(h.prompts[0], "1. Edit x\n2. Test") || !strings.HasSuffix(h.prompts[0], "How should implementation start?") {
+		t.Fatalf("approval prompt=%#v", h.prompts)
 	}
 	if _, err := r.RunHooks(context.Background(), "agent_end", nil); err != nil {
 		t.Fatal(err)
