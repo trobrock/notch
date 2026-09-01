@@ -108,7 +108,8 @@ func (s *state) exitTool() extension.Tool {
 		if input.Plan == "" {
 			return extension.ToolResult{}, errors.New("plan must not be empty")
 		}
-		choice, err := s.host.Select(ctx, "Plan complete. How should implementation start?", []string{"Implement in fresh context (recommended)", "Implement with current context", "Stay in plan mode"})
+		prompt := "Review the implementation plan below.\n\n" + input.Plan + "\n\nPlan complete. How should implementation start?"
+		choice, err := s.host.Select(ctx, prompt, []string{"Implement in fresh context (recommended)", "Implement with current context", "Stay in plan mode"})
 		if err != nil {
 			return extension.ToolResult{}, err
 		}
