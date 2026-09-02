@@ -90,6 +90,7 @@ type Config struct {
 	ContextWindow     int                     `json:"context_window,omitempty"`
 	ModelCache        string                  `json:"-"`
 	ModelRefreshHours int                     `json:"model_refresh_hours,omitempty"`
+	AutoUpdate        *bool                   `json:"auto_update,omitempty"`
 	Compaction        *CompactionConfig       `json:"compaction,omitempty"`
 	configRoot        string
 	dataRoot          string
@@ -145,6 +146,7 @@ func defaults(home, cwd string, includeProject bool) (Config, error) {
 		MouseCapture:      &mouseEnabled,
 		ModelCache:        filepath.Join(dataRoot, "models.json"),
 		ModelRefreshHours: 24,
+		AutoUpdate:        &enabled,
 		Compaction:        &CompactionConfig{Enabled: &enabled, ReserveTokens: 16384, KeepRecentTokens: 20000},
 		configRoot:        configRoot,
 		dataRoot:          dataRoot,
@@ -275,14 +277,16 @@ func read(path string) (Config, error) {
 }
 
 func mergeProject(dst *Config, src Config) {
-	// These values choose remote endpoints or credential/session/cache files and
-	// therefore remain global-only even after the workspace is trusted.
+	// These values choose remote endpoints, executable-update policy, or
+	// credential/session/cache files and therefore remain global-only even
+	// after the workspace is trusted.
 	providerChanged := src.Provider != "" && src.Provider != dst.Provider
 	src.BaseURL = ""
 	src.AuthFile = ""
 	src.MCPAuthFile = ""
 	src.SessionDir = ""
 	src.ModelCache = ""
+	src.AutoUpdate = nil
 	if providerChanged {
 		// A global custom endpoint is provider-specific. Do not carry it across a
 		// project provider override; the newly selected provider should use its
@@ -352,6 +356,10 @@ func merge(dst *Config, src Config) {
 	}
 	if src.ModelRefreshHours > 0 {
 		dst.ModelRefreshHours = src.ModelRefreshHours
+	}
+	if src.AutoUpdate != nil {
+		value := *src.AutoUpdate
+		dst.AutoUpdate = &value
 	}
 	if src.Compaction != nil {
 		if dst.Compaction == nil {

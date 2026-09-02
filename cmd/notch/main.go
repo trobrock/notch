@@ -291,6 +291,33 @@ func run(args []string) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	interactiveTerminal := terminalsInteractive(os.Stdin, os.Stdout)
+	type startupNotice struct{ message, level string }
+	var startupNotices []startupNotice
+	if interactiveTerminal && !rpcMode && (cfg.AutoUpdate == nil || *cfg.AutoUpdate) {
+		dataRoot, rootErr := config.DataDir(home)
+		if rootErr != nil {
+			startupNotices = append(startupNotices, startupNotice{rootErr.Error(), "warning"})
+		} else {
+			updateCtx, cancelUpdate := context.WithTimeout(ctx, 30*time.Second)
+			result, checked, updateErr := upgrade.Automatic(updateCtx, upgrade.AutomaticOptions{
+				Upgrade:   upgrade.Options{CurrentVersion: currentBuildInfo().Version},
+				StatePath: filepath.Join(dataRoot, "auto-update.json"),
+			})
+			cancelUpdate()
+			switch {
+			case updateErr != nil && !errors.Is(updateErr, context.Canceled):
+				startupNotices = append(startupNotices, startupNotice{"Automatic update failed: " + updateErr.Error(), "warning"})
+			case checked && result.Updated:
+				restarted, restartErr := restartSelf()
+				if restartErr != nil {
+					startupNotices = append(startupNotices, startupNotice{"Updated Notch, but could not restart automatically: " + restartErr.Error(), "warning"})
+				} else if restarted {
+					return nil
+				}
+			}
+		}
+	}
 	terminal := ui.DefaultTerminal(cwd)
 	themeCatalog, themeWarnings := tui.LoadThemeCatalog(cfg.ThemeDirs...)
 	selectedTheme, selectedThemeName, ok := themeCatalog.Lookup(cfg.Theme)
@@ -301,7 +328,6 @@ func run(args []string) error {
 		return fmt.Errorf("unknown theme %q (available: %s)", cfg.Theme, strings.Join(themeCatalog.Names(), ", "))
 	}
 	cfg.Theme = selectedThemeName
-	interactiveTerminal := terminalsInteractive(os.Stdin, os.Stdout)
 	useFullscreen, _ := selectRunMode(opts, interactiveTerminal)
 	sessionDir := cfg.SessionDir
 	if opts.noSession {
@@ -329,6 +355,9 @@ func run(args []string) error {
 		for _, warning := range themeWarnings {
 			terminal.Notify(warning.Error(), "warning")
 		}
+	}
+	for _, notice := range startupNotices {
+		extensionHost.Notify(notice.message, notice.level)
 	}
 	registry := extension.NewRegistry()
 	if !opts.noTools {
@@ -1341,7 +1370,7 @@ func initialize(home, cwd string, cfg config.Config) error {
 	}
 	data, _ := json.MarshalIndent(map[string]any{
 		"provider": cfg.Provider, "model": cfg.Model, "explore_model": cfg.ExploreModel, "max_tokens": cfg.MaxTokens,
-		"theme": cfg.Theme, "thinking_level": cfg.ThinkingLevel, "compaction": cfg.Compaction,
+		"theme": cfg.Theme, "thinking_level": cfg.ThinkingLevel, "auto_update": cfg.AutoUpdate, "compaction": cfg.Compaction,
 	}, "", "  ")
 	data = append(data, '\n')
 	if err := os.MkdirAll(root, 0o700); err != nil {
