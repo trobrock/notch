@@ -9,12 +9,13 @@ Notch is one Go program with a deliberately small provider-independent agent loo
 1. Dispatch standalone authentication, model-list, extension-package, version, and upgrade commands. Authentication and model-list commands load global configuration only. Otherwise parse agent flags, determine the current directory and home directory, and resolve both the active worktree's canonical Git root and the repository-wide Git common directory used as its trust identity (falling back to the current directory outside Git).
 2. Resolve one-time persisted repository trust, shared across linked worktrees. Prompt only when the active worktree has project inputs and stdin/stdout are terminals; noninteractive untrusted and `--safe` runs skip project `.notch`/`.agents` inputs, while `--trust-workspace` persists trust for automation. Load defaults and user config, add trusted project config/discovery paths from the active worktree, apply `NOTCH_PROVIDER`, `NOTCH_MODEL`, `NOTCH_EXPLORE_MODEL`, and `NOTCH_THINKING_LEVEL`, then CLI overrides. Project `base_url` is ignored as global-only. Auth, MCP auth, session, and model-cache paths are fixed under the XDG data root and cannot be configured in JSON.
 3. Recover any interrupted package transaction, validate installed package manifests, append their exported extension directories, and create configured extension, skill, prompt, theme, and session directories.
-4. Load built-in and custom theme JSON, select the configured theme, then create the terminal and extension registry and register built-in tools and official extensions.
-5. Discover and start executable plugins, then load top-level Lua files.
-6. If the MCP config file exists, connect configured servers and register their tools.
-7. Load skills and prompt templates and add their catalog summary to the system prompt.
-8. Resolve the selected provider's environment or stored credential (refreshing expiring OAuth when needed), create the provider, refresh its model cache in the background when stale, create or resume a session, and construct the agent.
-9. Run RPC mode, one prompt, the fullscreen TUI when both interactive streams are terminals, or the line-oriented fallback loop.
+4. For interactive release builds with automatic updates enabled, perform the rate-limited daily GitHub release check, install a newer verified binary when available, and relaunch with the original process arguments and environment before opening the UI or session. Development builds, standalone commands, RPC, and noninteractive runs skip this step.
+5. Load built-in and custom theme JSON, select the configured theme, then create the terminal and extension registry and register built-in tools and official extensions.
+6. Discover and start executable plugins, then load top-level Lua files.
+7. If the MCP config file exists, connect configured servers and register their tools.
+8. Load skills and prompt templates and add their catalog summary to the system prompt.
+9. Resolve the selected provider's environment or stored credential (refreshing expiring OAuth when needed), create the provider, refresh its model cache in the background when stale, create or resume a session, and construct the agent.
+10. Run RPC mode, one prompt, the fullscreen TUI when both interactive streams are terminals, or the line-oriented fallback loop.
 
 Malformed custom themes and plugin, Lua, and MCP load failures are generally shown as warnings so startup can continue. Extension registry batches make each plugin, Lua file, or MCP server registration atomic and remove its tools, commands, and hooks on close. A Lua load call rolls back all files loaded by that call on failure; a failure while connecting a configured MCP set closes connections and unregisters their tools. Duplicate tool or command names are rejected; built-ins therefore cannot be silently replaced.
 

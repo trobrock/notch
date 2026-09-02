@@ -16,6 +16,9 @@ func TestDefaultSystemPromptGuidesAgentBehavior(t *testing.T) {
 	if cfg.CacheRetention != "short" {
 		t.Fatalf("default cache retention = %q", cfg.CacheRetention)
 	}
+	if cfg.AutoUpdate == nil || !*cfg.AutoUpdate {
+		t.Fatalf("automatic updates are not enabled by default: %+v", cfg.AutoUpdate)
+	}
 	for _, text := range []string{
 		"Inspect relevant context before acting",
 		"Preserve unrelated user changes",
@@ -92,14 +95,14 @@ func TestLoadMergesUserThenProject(t *testing.T) {
 		"provider":"openai", "model":"global-model", "base_url":"https://global.test",
 		"max_tokens":123, "system_prompt":"global prompt", "extension_dirs":["global-ext"],
 		"skill_dirs":["global-skill"], "prompt_dirs":["global-prompt"], "theme_dirs":["global-theme"], "session_dir":"global-sessions",
-		"theme":"dracula", "thinking_level":"low", "mouse":false, "context_window":99999, "model_cache":"custom-models.json", "model_refresh_hours":12,
+		"theme":"dracula", "thinking_level":"low", "mouse":false, "context_window":99999, "model_cache":"custom-models.json", "model_refresh_hours":12, "auto_update":false,
 		"presets":{"f1":{"provider":"anthropic","model":"global-preset","thinking_level":"low"}},
 		"compaction":{"enabled":false,"reserve_tokens":1000,"keep_recent_tokens":2000}
 	}`)
 	writeJSON(t, filepath.Join(cwd, ".notch", "config.json"), `{
 		"model":"project-model", "max_tokens":456, "mcp_config":"project-mcp.json",
 		"extension_dirs":["project-ext"], "provider":"", "prompt_dirs":[], "theme_dirs":["project-theme"],
-		"thinking_level":"high", "cache_retention":"long", "presets":{"F2":{"provider":"openai-codex","model":"project-preset","thinking_level":"high"}},
+		"thinking_level":"high", "cache_retention":"long", "auto_update":true, "presets":{"F2":{"provider":"openai-codex","model":"project-preset","thinking_level":"high"}},
 		"compaction":{"keep_recent_tokens":3000}
 	}`)
 
@@ -113,7 +116,7 @@ func TestLoadMergesUserThenProject(t *testing.T) {
 	if cfg.SystemPrompt != "global prompt" || cfg.MCPConfig != filepath.Join(cwd, "project-mcp.json") || cfg.SessionDir != filepath.Join(home, ".local", "share", "notch", "sessions") {
 		t.Fatalf("scalar inheritance failed: %+v", cfg)
 	}
-	if cfg.Theme != "dracula" || cfg.ThinkingLevel != "high" || cfg.CacheRetention != "long" || cfg.MouseCapture == nil || *cfg.MouseCapture || cfg.ContextWindow != 99999 || cfg.ModelCache != filepath.Join(home, ".local", "share", "notch", "models.json") || cfg.ModelRefreshHours != 12 || cfg.Compaction == nil || cfg.Compaction.Enabled == nil || *cfg.Compaction.Enabled || cfg.Compaction.ReserveTokens != 1000 || cfg.Compaction.KeepRecentTokens != 3000 {
+	if cfg.Theme != "dracula" || cfg.ThinkingLevel != "high" || cfg.CacheRetention != "long" || cfg.MouseCapture == nil || *cfg.MouseCapture || cfg.ContextWindow != 99999 || cfg.ModelCache != filepath.Join(home, ".local", "share", "notch", "models.json") || cfg.ModelRefreshHours != 12 || cfg.AutoUpdate == nil || *cfg.AutoUpdate || cfg.Compaction == nil || cfg.Compaction.Enabled == nil || *cfg.Compaction.Enabled || cfg.Compaction.ReserveTokens != 1000 || cfg.Compaction.KeepRecentTokens != 3000 {
 		t.Fatalf("theme/thinking/compaction merge failed: %+v", cfg)
 	}
 	if len(cfg.Presets) != 2 || cfg.Presets["f1"].Model != "global-preset" || cfg.Presets["f2"].Model != "project-preset" {
@@ -206,8 +209,8 @@ func TestLoadWorkspaceUntrustedSkipsAllProjectInputs(t *testing.T) {
 	clearRuntimeConfigEnv(t)
 	home, root := t.TempDir(), t.TempDir()
 	t.Setenv("NOTCH_HOME", "")
-	writeJSON(t, filepath.Join(home, ".config", "notch", "config.json"), `{"model":"global","extension_dirs":["global-ext"]}`)
-	writeJSON(t, filepath.Join(root, ".notch", "config.json"), `{"model":"project","extension_dirs":["project-ext"]}`)
+	writeJSON(t, filepath.Join(home, ".config", "notch", "config.json"), `{"model":"global","extension_dirs":["global-ext"],"auto_update":false}`)
+	writeJSON(t, filepath.Join(root, ".notch", "config.json"), `{"model":"project","extension_dirs":["project-ext"],"auto_update":true}`)
 
 	cfg, err := LoadWorkspace(home, root, false)
 	if err != nil {
@@ -215,6 +218,9 @@ func TestLoadWorkspaceUntrustedSkipsAllProjectInputs(t *testing.T) {
 	}
 	if cfg.Model != "global" || !reflect.DeepEqual(cfg.ExtensionDirs, []string{filepath.Join(home, ".config", "notch", "global-ext")}) {
 		t.Fatalf("project config loaded without trust: %+v", cfg)
+	}
+	if cfg.AutoUpdate == nil || *cfg.AutoUpdate {
+		t.Fatalf("global automatic update opt-out was not preserved: %+v", cfg.AutoUpdate)
 	}
 	paths := append([]string{}, cfg.SkillDirs...)
 	paths = append(paths, cfg.PromptDirs...)

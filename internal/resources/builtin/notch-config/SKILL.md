@@ -40,6 +40,7 @@ Before editing, read every existing applicable config file. Do not replace unrel
   "mouse": true,
   "context_window": 0,
   "model_refresh_hours": 24,
+  "auto_update": true,
   "compaction": {
     "enabled": true,
     "reserveTokens": 16384,
@@ -56,7 +57,7 @@ Before editing, read every existing applicable config file. Do not replace unrel
 
 Empty scalar values in later files do not erase earlier values. A non-empty directory array replaces the complete earlier array; it is not appended. `context_window: 0` lets the provider/model default apply. `explore_model` (or `NOTCH_EXPLORE_MODEL`) is the provider-qualified default for `explore_codebase`. Explicit batch and per-task overrides still win; normally omit them. If the configured model is unavailable, use `list_models` for that provider and retry once with a returned closest-family/capability model rather than guessing an ID.
 
-The model registry ships with an offline fallback and refreshes stale selected-provider data from provider model-list APIs on startup or when `/model` is opened. `model_refresh_hours` controls staleness; no polling timer runs. Use `notch models [provider]` to list cached/discovered models, `notch models --refresh [provider]` to force discovery, and `/model refresh` to force it in the fullscreen selector. The mode-0600 JSON cache has a fixed path below the XDG data root.
+The model registry ships with an offline fallback and refreshes stale selected-provider data from provider model-list APIs on startup or when `/model` is opened. `model_refresh_hours` controls staleness; no polling timer runs. Use `notch models [provider]` to list cached/discovered models, `notch models --refresh [provider]` to force discovery, and `/model refresh` to force it in the fullscreen selector. The mode-0600 JSON cache has a fixed path below the XDG data root. Interactive release builds install newer verified stable releases at most once per day by default and relaunch immediately before opening a session; set `auto_update` to `false` in the global config to disable this. Project config cannot control executable updates.
 
 Valid thinking levels are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh`. `cache_retention` accepts `none`, `short`, or `long` and defaults to `short`; long requests extended provider retention where supported, while compaction summaries always disable cache writes. Built-in themes are `dark`, `dracula`, and `catppuccin-mocha`. `/thinking LEVEL` and `/theme NAME` change only the running process. Fullscreen `presets` map `f1` through `f9` to provider/model/thinking combinations; omitted fields preserve current values, global and trusted project maps merge by key, and applying one changes only the running process. `mouse` defaults to `true`; set it to `false` to disable TUI mouse capture and restore terminal-native selection/scrolling.
 

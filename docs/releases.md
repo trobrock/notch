@@ -4,6 +4,20 @@ Notch uses semantic versions with a leading `v`, such as `v0.1.0`. `notch --vers
 
 Release binaries embed their tag, commit, and UTC build time. Builds made with `go install module@version` fall back to Go's embedded module version when linker metadata is unavailable. Local `make build` binaries use `git describe`, so a checkout build may report a commit or a `-dirty` version instead of a release tag.
 
+## Automatic updates
+
+Release builds check for updates at most once every 24 hours when Notch starts in an interactive terminal. When a newer stable release is available, Notch downloads it, verifies it with the published SHA-256 checksum, replaces the executable using the same safe path as `notch upgrade`, and immediately relaunches with the original arguments and environment. This happens before the TUI or session starts. If relaunching fails after a successful installation, Notch continues with the old in-memory version and shows a warning. Checks do not run for development/dirty builds, noninteractive and RPC invocations, or standalone commands.
+
+Automatic updates are enabled by default. They can be disabled globally in `$XDG_CONFIG_HOME/notch/config.json` (default `~/.config/notch/config.json`):
+
+```json
+{
+  "auto_update": false
+}
+```
+
+This setting is global-only; repository configuration cannot enable or disable executable updates. The last attempt is recorded in `$XDG_DATA_HOME/notch/auto-update.json`, so a network or installation failure is reported but is not retried on every startup. Package-manager installations should disable automatic updates and continue upgrading through their package manager.
+
 ## Upgrade commands
 
 ```sh
