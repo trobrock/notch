@@ -90,6 +90,7 @@ notch.register_tool({
 notch.register_command({
   name = "required-name",
   description = "optional",
+  allow_while_streaming = false, -- opt in when safe to run during a model response
   execute = function(argument_string)
     return "output" -- string or nil
   end,
@@ -101,6 +102,8 @@ end)
 ```
 
 Hooks receive a table and return fields to merge into that event before the next hook. JSON-compatible Lua values are supported. Each file has its own Lua state, and calls into one state are serialized.
+
+Commands are idle-only by default. Set `allow_while_streaming = true` only for commands that are safe to run concurrently with an active model response, such as commands that capture a note. These commands run without interrupting the response; their completion does not replace the model's status or cancellation handler.
 
 ### Host API
 

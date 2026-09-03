@@ -985,6 +985,109 @@ func TestStartupResourceCommandConflictsUseDispatchPrecedence(t *testing.T) {
 	}
 }
 
+func TestStreamingCommandRunsWhenOptedIn(t *testing.T) {
+	a := NewApp(AppConfig{})
+	a.state.activeModel = true
+	a.state.layout.Status = "responding"
+	modelCanceled := make(chan struct{}, 1)
+	a.state.cancel = func() { modelCanceled <- struct{}{} }
+	a.mu.Lock()
+	a.running = true
+	a.runDone = make(chan struct{})
+	a.mu.Unlock()
+	defer close(a.runDone)
+
+	executed := make(chan string, 1)
+	registry := extension.NewRegistry()
+	if err := registry.RegisterCommand(extension.Command{
+		Name: "note", AllowWhileStreaming: true,
+		Execute: func(_ context.Context, args string) (string, error) {
+			executed <- args
+			return "saved", nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	a.registry = registry
+	a.state.editor.SetText("/note remember this")
+
+	if !a.queueComposerMessage(context.Background(), "steer") {
+		t.Fatal("streaming command was not handled")
+	}
+	if got := <-executed; got != "remember this" {
+		t.Fatalf("command args = %q", got)
+	}
+	if !a.state.activeCommand {
+		t.Fatal("running streaming command was not tracked")
+	}
+	select {
+	case event := <-a.events:
+		if event.command == nil || !event.command.concurrent {
+			t.Fatalf("command event = %#v", event)
+		}
+		a.applyEvent(context.Background(), event)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for command result")
+	}
+	if a.state.editor.Text() != "" || !a.state.activeModel || a.state.activeCommand || a.state.layout.Status != "responding" {
+		t.Fatalf("streaming state changed = %#v", a.state)
+	}
+	select {
+	case <-modelCanceled:
+		t.Fatal("streaming command canceled the model")
+	default:
+	}
+}
+
+func TestStreamingCommandRemainsCancelableAfterModelFinishes(t *testing.T) {
+	a := NewApp(AppConfig{})
+	a.state.activeModel = true
+	a.mu.Lock()
+	a.running = true
+	a.runDone = make(chan struct{})
+	a.mu.Unlock()
+	defer close(a.runDone)
+
+	started := make(chan struct{})
+	registry := extension.NewRegistry()
+	if err := registry.RegisterCommand(extension.Command{
+		Name: "note", AllowWhileStreaming: true,
+		Execute: func(ctx context.Context, _ string) (string, error) {
+			close(started)
+			<-ctx.Done()
+			return "", ctx.Err()
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	a.registry = registry
+	a.state.editor.SetText("/note remember this")
+	if !a.queueComposerMessage(context.Background(), "steer") {
+		t.Fatal("streaming command was not handled")
+	}
+	<-started
+
+	// Model completion must not make the still-running command look idle.
+	a.state.activeModel = false
+	a.state.cancel = nil
+	changed, exit := a.handleKey(context.Background(), KeyEvent{Key: KeyCtrlC})
+	if !changed || exit {
+		t.Fatalf("Ctrl-C result = changed %v, exit %v", changed, exit)
+	}
+	select {
+	case event := <-a.events:
+		if event.command == nil || !errors.Is(event.command.err, context.Canceled) {
+			t.Fatalf("command event = %#v", event)
+		}
+		a.applyEvent(context.Background(), event)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for canceled command")
+	}
+	if a.state.activeCommand || a.state.layout.Status != "ready" {
+		t.Fatalf("command cancellation state = %#v", a.state)
+	}
+}
+
 func TestQueuedCommandsRespectIdleDispatchPrecedence(t *testing.T) {
 	a := NewApp(AppConfig{})
 	registry := extension.NewRegistry()
@@ -994,7 +1097,7 @@ func TestQueuedCommandsRespectIdleDispatchPrecedence(t *testing.T) {
 	a.registry = registry
 	a.catalog = &resources.Catalog{Skills: map[string]resources.Skill{}, Templates: map[string]resources.Template{"fix": {Content: "expanded"}}}
 	a.state.editor.SetText("/fix")
-	if !a.queueComposerMessage("steer") {
+	if !a.queueComposerMessage(context.Background(), "steer") {
 		t.Fatal("extension command conflict was not handled")
 	}
 	if len(a.state.layout.Transcript) == 0 || !strings.Contains(a.state.layout.Transcript[len(a.state.layout.Transcript)-1].Text, "extension command") {

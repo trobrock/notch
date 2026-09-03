@@ -63,7 +63,10 @@ func installAPI(L *lua.LState, decls *declarations, host extension.Host) {
 			L.RaiseError("command %q requires an execute function", name)
 		}
 		decls.commands = append(decls.commands, commandDecl{
-			name: name, description: optionalStringField(L, t, "description"), fn: fn,
+			name:                name,
+			description:         optionalStringField(L, t, "description"),
+			allowWhileStreaming: optionalBoolField(L, t, "allow_while_streaming"),
+			fn:                  fn,
 		})
 		return 0
 	}))
@@ -293,6 +296,18 @@ func optionalStringField(L *lua.LState, table *lua.LTable, field string) string 
 		L.RaiseError("field %q must be a string", field)
 	}
 	return string(s)
+}
+
+func optionalBoolField(L *lua.LState, table *lua.LTable, field string) bool {
+	value := L.GetField(table, field)
+	if value == lua.LNil {
+		return false
+	}
+	b, ok := value.(lua.LBool)
+	if !ok {
+		L.RaiseError("field %q must be a boolean", field)
+	}
+	return bool(b)
 }
 
 func toolResult(value lua.LValue) (extension.ToolResult, error) {

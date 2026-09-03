@@ -94,8 +94,9 @@ type initializeResult struct {
 }
 
 type commandDefinition struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
+	Name                string `json:"name"`
+	Description         string `json:"description"`
+	AllowWhileStreaming bool   `json:"allow_while_streaming,omitempty"`
 }
 
 // DiscoverAndLoad finds plugin.json files below dirs, starts enabled plugins,
@@ -288,7 +289,7 @@ func (p *Plugin) register(registry *Registry, initialized initializeResult) erro
 			return fmt.Errorf("initialize returned duplicate command %q", definition.Name)
 		}
 		seenCommands[definition.Name] = true
-		commands = append(commands, Command{Name: definition.Name, Description: definition.Description, Source: p.Name, Execute: func(ctx context.Context, args string) (string, error) {
+		commands = append(commands, Command{Name: definition.Name, Description: definition.Description, AllowWhileStreaming: definition.AllowWhileStreaming, Source: p.Name, Execute: func(ctx context.Context, args string) (string, error) {
 			params := struct {
 				Name string `json:"name"`
 				Args string `json:"args"`

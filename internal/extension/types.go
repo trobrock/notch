@@ -70,10 +70,11 @@ type HookHandler func(ctx context.Context, event map[string]any) (map[string]any
 type CommandHandler func(ctx context.Context, args string) (string, error)
 
 type Command struct {
-	Name        string
-	Description string
-	Execute     CommandHandler
-	Source      string
+	Name                string
+	Description         string
+	AllowWhileStreaming bool
+	Execute             CommandHandler
+	Source              string
 }
 
 // Host contains privileged operations available to extensions. Implementations may
