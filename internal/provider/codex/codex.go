@@ -3,6 +3,7 @@
 package codex
 
 import (
+	"context"
 	"net/http"
 	"strings"
 
@@ -18,6 +19,10 @@ type Config struct {
 	AccountID   string
 	BaseURL     string
 	HTTPClient  *http.Client
+
+	// Authorize supplies the access token per request and refreshes it after
+	// an unauthorized response. See openai.Config.Authorize.
+	Authorize func(ctx context.Context, stale string) (string, error)
 }
 
 // New returns a provider backed by ChatGPT's Codex Responses endpoint.
@@ -29,6 +34,7 @@ func New(cfg Config) model.Provider {
 	}
 	return openai.New(openai.Config{
 		APIKey:           cfg.AccessToken,
+		Authorize:        cfg.Authorize,
 		BaseURL:          baseURL,
 		Endpoint:         "/codex/responses",
 		CodexMode:        true,

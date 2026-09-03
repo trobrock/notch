@@ -393,3 +393,40 @@ func TestCustomEndpointDisablesAPIPricingEligibility(t *testing.T) {
 		t.Fatal("official endpoint not eligible for API pricing")
 	}
 }
+
+func TestStreamRefreshesExpiredOAuthTokenAndRetriesOnce(t *testing.T) {
+	var authorizations []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorizations = append(authorizations, r.Header.Get("Authorization"))
+		if r.Header.Get("Authorization") != "Bearer fresh" {
+			w.WriteHeader(http.StatusUnauthorized)
+			fmt.Fprint(w, `{"error":{"type":"authentication_error","message":"OAuth token has expired."}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, data := range []string{
+			`{"type":"message_start","message":{"usage":{"input_tokens":1}}}`,
+			`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`,
+			`{"type":"message_stop"}`,
+		} {
+			fmt.Fprintf(w, "data: %s\n\n", data)
+		}
+	}))
+	defer server.Close()
+
+	provider := New(Config{
+		OAuthMode: true, BaseURL: server.URL, HTTPClient: server.Client(),
+		Authorize: func(_ context.Context, stale string) (string, error) {
+			if stale == "" {
+				return "expired", nil
+			}
+			return "fresh", nil
+		},
+	})
+	if _, err := provider.Stream(context.Background(), model.Request{Model: "claude-test", MaxTokens: 16, ReasoningLevel: "off"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(authorizations) != 2 || authorizations[0] != "Bearer expired" || authorizations[1] != "Bearer fresh" {
+		t.Fatalf("authorization headers = %#v", authorizations)
+	}
+}

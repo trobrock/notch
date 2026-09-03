@@ -28,10 +28,17 @@ type Config struct {
 	CodexMode        bool
 	OfficialEndpoint bool
 	HTTPClient       *http.Client
+
+	// Authorize supplies the bearer token for each request, superseding
+	// APIKey. It is called with an empty string before a request and with a
+	// rejected token after HTTP 401, which asks it to refresh. Providers
+	// configured with Authorize retry an unauthorized request once.
+	Authorize func(ctx context.Context, stale string) (string, error)
 }
 
 type provider struct {
 	apiKey            string
+	authorize         func(ctx context.Context, stale string) (string, error)
 	baseURL           string
 	endpoint          string
 	headers           map[string]string
@@ -65,7 +72,8 @@ func New(cfg Config) model.Provider {
 		headers[name] = value
 	}
 	return &provider{
-		apiKey: cfg.APIKey, baseURL: baseURL, endpoint: endpoint, headers: headers,
+		apiKey: cfg.APIKey, authorize: cfg.Authorize,
+		baseURL: baseURL, endpoint: endpoint, headers: headers,
 		codexMode:         cfg.CodexMode,
 		promptCacheFields: cfg.OfficialEndpoint || strings.TrimSpace(cfg.BaseURL) == "" || strings.EqualFold(baseURL, defaultBaseURL),
 		httpClient:        client,
@@ -303,22 +311,75 @@ type responseData struct {
 	} `json:"error"`
 }
 
+// send performs an authorized request. When the provider refreshes its own
+// credential and the service reports the token unauthorized, the token is
+// refreshed and the request is retried exactly once, so a long-running session
+// survives access-token expiry without a restart.
+func (p *provider) send(ctx context.Context, build func(token string) (*http.Request, error)) (*http.Response, error) {
+	token, err := p.token(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	httpReq, err := build(token)
+	if err != nil {
+		return nil, err
+	}
+	httpResp, err := p.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	if httpResp.StatusCode != http.StatusUnauthorized || p.authorize == nil {
+		return httpResp, nil
+	}
+
+	unauthorized := httpStatusError(httpResp)
+	httpResp.Body.Close()
+	refreshed, refreshErr := p.token(ctx, token)
+	if refreshErr != nil {
+		unauthorized.Message = fmt.Sprintf("%s (token refresh failed: %v)", unauthorized.Message, refreshErr)
+		return nil, unauthorized
+	}
+	if refreshed == token {
+		return nil, unauthorized
+	}
+	retry, err := build(refreshed)
+	if err != nil {
+		return nil, err
+	}
+	return p.httpClient.Do(retry)
+}
+
+// token returns the bearer token for a request. A non-empty stale token
+// reports a token the service just rejected.
+func (p *provider) token(ctx context.Context, stale string) (string, error) {
+	if p.authorize == nil {
+		return p.apiKey, nil
+	}
+	return p.authorize(ctx, stale)
+}
+
 func (p *provider) ListModels(ctx context.Context) ([]model.ModelInfo, error) {
 	if p.codexMode {
 		return nil, errors.New("openai-codex: model listing is unavailable; using bundled registry")
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+"/v1/models", nil)
+	httpResp, err := p.send(ctx, func(token string) (*http.Request, error) {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+"/v1/models", nil)
+		if err != nil {
+			return nil, fmt.Errorf("openai: create model-list request: %w", err)
+		}
+		if token != "" {
+			httpReq.Header.Set("Authorization", "Bearer "+token)
+		}
+		for name, value := range p.headers {
+			httpReq.Header.Set(name, value)
+		}
+		return httpReq, nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("openai: create model-list request: %w", err)
-	}
-	if p.apiKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
-	}
-	for name, value := range p.headers {
-		httpReq.Header.Set(name, value)
-	}
-	httpResp, err := p.httpClient.Do(httpReq)
-	if err != nil {
+		var providerErr *model.ProviderError
+		if errors.As(err, &providerErr) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("openai: list models: %w", err)
 	}
 	defer httpResp.Body.Close()
@@ -370,23 +431,28 @@ func (p *provider) Stream(ctx context.Context, req model.Request, onEvent func(m
 	if err != nil {
 		return model.Response{}, fmt.Errorf("openai: encode request: %w", err)
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+p.endpoint, bytes.NewReader(body))
-	if err != nil {
-		return model.Response{}, fmt.Errorf("openai: create request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "text/event-stream")
-	if p.apiKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
-	}
-	for name, value := range p.headers {
-		httpReq.Header.Set(name, value)
-	}
-
-	httpResp, err := p.httpClient.Do(httpReq)
+	httpResp, err := p.send(ctx, func(token string) (*http.Request, error) {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+p.endpoint, bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("openai: create request: %w", err)
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Accept", "text/event-stream")
+		if token != "" {
+			httpReq.Header.Set("Authorization", "Bearer "+token)
+		}
+		for name, value := range p.headers {
+			httpReq.Header.Set(name, value)
+		}
+		return httpReq, nil
+	})
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return model.Response{}, ctxErr
+		}
+		var providerErr *model.ProviderError
+		if errors.As(err, &providerErr) {
+			return model.Response{}, err
 		}
 		return model.Response{}, fmt.Errorf("openai: send request: %w", err)
 	}
@@ -737,7 +803,7 @@ func readSSE(r io.Reader, handle func(event, data string) (bool, error)) error {
 	return errors.New("openai: SSE stream ended before a completion event")
 }
 
-func httpStatusError(response *http.Response) error {
+func httpStatusError(response *http.Response) *model.ProviderError {
 	body, _ := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	message := strings.TrimSpace(string(body))
 	var envelope struct {

@@ -34,6 +34,7 @@ import (
 	"github.com/trobrock/notch/internal/provider/codex"
 	"github.com/trobrock/notch/internal/provider/openai"
 	"github.com/trobrock/notch/internal/provider/openrouter"
+	"github.com/trobrock/notch/internal/providerauth"
 	"github.com/trobrock/notch/internal/resources"
 	notchrpc "github.com/trobrock/notch/internal/rpc"
 	"github.com/trobrock/notch/internal/session"
@@ -1012,17 +1013,18 @@ func makeProvider(ctx context.Context, cfg config.Config, store *credentials.Sto
 		if token := os.Getenv("ANTHROPIC_OAUTH_TOKEN"); token != "" {
 			return anthropic.New(anthropic.Config{OAuthToken: token, OAuthMode: true, BaseURL: cfg.BaseURL}), nil
 		}
-		credential, err := resolveCredential(ctx, store, provider)
-		if err != nil {
+		authorizer := newAuthorizer(store, provider)
+		if _, err := authorizer.Credential(ctx); err != nil {
 			return nil, err
 		}
-		return anthropic.New(anthropic.Config{OAuthToken: credential.Access, OAuthMode: true, BaseURL: cfg.BaseURL}), nil
+		return anthropic.New(anthropic.Config{Authorize: authorizer.Token, OAuthMode: true, BaseURL: cfg.BaseURL}), nil
 	case "openai-codex":
-		credential, err := resolveCredential(ctx, store, provider)
+		authorizer := newAuthorizer(store, provider)
+		credential, err := authorizer.Credential(ctx)
 		if err != nil {
 			return nil, err
 		}
-		return codex.New(codex.Config{AccessToken: credential.Access, AccountID: credential.AccountID, BaseURL: cfg.BaseURL}), nil
+		return codex.New(codex.Config{Authorize: authorizer.Token, AccountID: credential.AccountID, BaseURL: cfg.BaseURL}), nil
 	case "openrouter":
 		key := os.Getenv("OPENROUTER_API_KEY")
 		if key == "" {
@@ -1174,33 +1176,19 @@ func contextWindowFor(provider, modelName string) int {
 	}
 }
 
-func resolveCredential(ctx context.Context, store *credentials.Store, provider string) (credentials.Credential, error) {
-	var (
-		credential credentials.Credential
-		ok         bool
-		err        error
-	)
+// newAuthorizer returns the OAuth token source for provider. The authorizer
+// re-reads and refreshes the stored credential for the life of the process, so
+// a session outliving its access token recovers without a restart.
+func newAuthorizer(store *credentials.Store, provider string) *providerauth.Authorizer {
+	legacyProvider := ""
 	if provider == credentials.AnthropicClaudeCodeProvider {
-		credential, ok, err = store.GetWithLegacyFallback(provider, credentials.LegacyAnthropicProvider)
-	} else {
-		credential, ok, err = store.Get(provider)
+		legacyProvider = credentials.LegacyAnthropicProvider
 	}
-	if err != nil {
-		return credentials.Credential{}, err
-	}
-	if !ok || credential.Access == "" {
-		return credentials.Credential{}, fmt.Errorf("no %s credential; run: notch login %s", provider, provider)
-	}
-	if credential.Refresh != "" && credential.Expires > 0 && credential.Expires <= time.Now().Add(5*time.Minute).UnixMilli() {
-		credential, err = oauth.Refresh(ctx, provider, credential)
-		if err != nil {
-			return credentials.Credential{}, fmt.Errorf("refresh %s login: %w", provider, err)
-		}
-		if err := store.Put(provider, credential); err != nil {
-			return credentials.Credential{}, err
-		}
-	}
-	return credential, nil
+	return providerauth.New(store, provider, legacyProvider, oauth.Refresh)
+}
+
+func resolveCredential(ctx context.Context, store *credentials.Store, provider string) (credentials.Credential, error) {
+	return newAuthorizer(store, provider).Credential(ctx)
 }
 
 func runAuth(args []string) error {

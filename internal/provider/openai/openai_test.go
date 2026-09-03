@@ -353,3 +353,88 @@ func TestCustomEndpointDisablesHostedCacheFieldsAndPricing(t *testing.T) {
 		t.Fatalf("unsupported model retention = %q", wire.PromptCacheRetention)
 	}
 }
+
+func TestStreamRefreshesExpiredTokenAndRetriesOnce(t *testing.T) {
+	var authorizations []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorizations = append(authorizations, r.Header.Get("Authorization"))
+		if r.Header.Get("Authorization") != "Bearer fresh" {
+			w.WriteHeader(http.StatusUnauthorized)
+			fmt.Fprint(w, `{"error":{"code":"token_expired","message":"Provided authentication token is expired."}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
+	}))
+	defer server.Close()
+
+	var stales []string
+	provider := New(Config{
+		BaseURL: server.URL, HTTPClient: server.Client(),
+		Authorize: func(_ context.Context, stale string) (string, error) {
+			stales = append(stales, stale)
+			if stale == "" {
+				return "expired", nil
+			}
+			return "fresh", nil
+		},
+	})
+	if _, err := provider.Stream(context.Background(), model.Request{ReasoningLevel: "medium"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(authorizations) != 2 || authorizations[0] != "Bearer expired" || authorizations[1] != "Bearer fresh" {
+		t.Fatalf("authorization headers = %#v", authorizations)
+	}
+	if len(stales) != 2 || stales[0] != "" || stales[1] != "expired" {
+		t.Fatalf("authorize calls = %#v", stales)
+	}
+}
+
+func TestStreamUnauthorizedReturnsProviderErrorWhenRefreshFails(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprint(w, `{"error":{"code":"token_expired","message":"Provided authentication token is expired."}}`)
+	}))
+	defer server.Close()
+
+	provider := New(Config{
+		BaseURL: server.URL, HTTPClient: server.Client(),
+		Authorize: func(_ context.Context, stale string) (string, error) {
+			if stale == "" {
+				return "expired", nil
+			}
+			return "", errors.New("refresh openai-codex login: no network")
+		},
+	})
+	_, err := provider.Stream(context.Background(), model.Request{ReasoningLevel: "medium"}, nil)
+	var providerErr *model.ProviderError
+	if !errors.As(err, &providerErr) || providerErr.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("err = %v", err)
+	}
+	if !strings.Contains(providerErr.Message, "token refresh failed") {
+		t.Fatalf("message = %q", providerErr.Message)
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d", requests)
+	}
+}
+
+func TestStreamUnauthorizedWithoutAuthorizeDoesNotRetry(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprint(w, `{"error":{"code":"invalid_api_key","message":"bad key"}}`)
+	}))
+	defer server.Close()
+
+	provider := New(Config{APIKey: "static", BaseURL: server.URL, HTTPClient: server.Client()})
+	if _, err := provider.Stream(context.Background(), model.Request{ReasoningLevel: "medium"}, nil); err == nil {
+		t.Fatal("unauthorized stream unexpectedly succeeded")
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d", requests)
+	}
+}
