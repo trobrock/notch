@@ -104,7 +104,7 @@ notch.register_tool({
             details = {input = notch.ui.input("prompt", "placeholder")}}
   end,
 })
-notch.register_command({name = "greet", description = "greets", execute = function(args)
+notch.register_command({name = "greet", description = "greets", allow_while_streaming = true, execute = function(args)
   return "hello " .. args
 end})
 notch.on("before", function(event)
@@ -153,6 +153,9 @@ end)
 	command, ok := registry.Command("greet")
 	if !ok {
 		t.Fatal("greet command was not registered")
+	}
+	if !command.AllowWhileStreaming {
+		t.Fatal("greet command did not retain allow_while_streaming")
 	}
 	if got, err := command.Execute(context.Background(), "world"); err != nil || got != "hello world" {
 		t.Fatalf("command result = %q, %v", got, err)

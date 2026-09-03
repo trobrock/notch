@@ -133,6 +133,9 @@ func TestDiscoverRegisterAndExecutePlugin(t *testing.T) {
 	if !ok {
 		t.Fatal("say command was not registered")
 	}
+	if !command.AllowWhileStreaming {
+		t.Fatal("say command did not retain allow_while_streaming")
+	}
 	large := strings.Repeat("x", 100_000)
 	output, err := command.Execute(ctx, large)
 	if err != nil || output != large {
@@ -304,7 +307,7 @@ func TestPluginHelper(t *testing.T) {
 			write(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": map[string]any{
 				"tools":    []any{map[string]any{"name": "echo", "description": "echo text", "input_schema": map[string]any{"type": "object"}}},
 				"hooks":    []any{"before"},
-				"commands": []any{map[string]any{"name": "say", "description": "say text"}},
+				"commands": []any{map[string]any{"name": "say", "description": "say text", "allow_while_streaming": true}},
 			}})
 		case "tool.execute":
 			var params struct {

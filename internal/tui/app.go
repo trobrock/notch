@@ -102,6 +102,8 @@ type appState struct {
 	activeModel         bool
 	activeCommand       bool
 	cancel              context.CancelFunc
+	commandCancels      map[uint64]context.CancelFunc
+	nextCommandID       uint64
 	assistant           int
 	thinking            int
 	compaction          int
@@ -173,6 +175,8 @@ type modelSelectionResult struct {
 }
 type commandResult struct {
 	name, text string
+	id         uint64
+	concurrent bool
 	err        error
 }
 type hostResponse struct {
@@ -941,7 +945,7 @@ func (a *App) handleKey(runCtx context.Context, key KeyEvent) (changed, exit boo
 			if key.Key == KeyAltEnter {
 				mode = "follow_up"
 			}
-			return a.queueComposerMessage(mode), false
+			return a.queueComposerMessage(runCtx, mode), false
 		}
 		if a.state.activeCommand {
 			return false, false
@@ -1019,9 +1023,19 @@ func (a *App) handleKey(runCtx context.Context, key KeyEvent) (changed, exit boo
 			return true, false
 		}
 	case KeyCtrlC:
-		if a.state.activeModel || a.state.activeCommand {
+		if a.state.activeModel {
 			if a.state.cancel != nil {
 				a.state.cancel()
+			}
+			a.state.layout.Status = "canceling"
+			return true, false
+		}
+		if a.state.activeCommand {
+			if a.state.cancel != nil {
+				a.state.cancel()
+			}
+			for _, cancel := range a.state.commandCancels {
+				cancel()
 			}
 			a.state.layout.Status = "canceling"
 			return true, false
@@ -1162,20 +1176,26 @@ func transcriptScrollLimit(state *LayoutState) int {
 	return max(0, len(renderTranscript(state, state.Width, theme))-viewport)
 }
 
-func (a *App) queueComposerMessage(mode string) bool {
+func (a *App) queueComposerMessage(runCtx context.Context, mode string) bool {
 	text := a.state.editor.Text()
 	if strings.TrimSpace(text) == "" {
 		return false
 	}
 	trimmed := strings.TrimSpace(text)
 	if strings.HasPrefix(trimmed, "/") {
-		name, _ := slashParts(trimmed)
+		name, args := slashParts(trimmed)
 		if _, builtin := builtinCommandNames()[name]; builtin {
 			a.addNotice("cannot queue command while streaming: /"+name+" requires the agent to be idle", "error")
 			return true
 		}
-		if _, extensionCommand := a.extensionCommand(name); extensionCommand {
-			a.addNotice("cannot queue extension command while streaming: /"+name, "error")
+		if command, ok := a.extensionCommand(name); ok {
+			if !command.AllowWhileStreaming {
+				a.addNotice("cannot queue extension command while streaming: /"+name, "error")
+				return true
+			}
+			a.state.editor.AddHistory(text)
+			a.state.editor.Clear()
+			a.startCommand(runCtx, name, args, command, true)
 			return true
 		}
 	}
@@ -1261,7 +1281,7 @@ func (a *App) submit(runCtx context.Context, input string) bool {
 			return true
 		}
 		if command, ok := a.extensionCommand(name); ok {
-			a.startCommand(runCtx, name, args, command)
+			a.startCommand(runCtx, name, args, command, false)
 			return true
 		}
 	}
@@ -2195,24 +2215,46 @@ func (a *App) extensionCommand(name string) (extension.Command, bool) {
 	return registry.Command(name)
 }
 
-func (a *App) startCommand(runCtx context.Context, name, args string, command extension.Command) {
+func (a *App) startCommand(runCtx context.Context, name, args string, command extension.Command, concurrent bool) {
 	commandCtx, cancel := context.WithCancel(runCtx)
-	a.state.activeCommand = true
-	a.state.cancel = cancel
-	a.state.layout.Status = "/" + name
+	var commandID uint64
+	if concurrent {
+		a.state.nextCommandID++
+		commandID = a.state.nextCommandID
+		if a.state.commandCancels == nil {
+			a.state.commandCancels = make(map[uint64]context.CancelFunc)
+		}
+		a.state.commandCancels[commandID] = cancel
+		a.state.activeCommand = true
+	} else {
+		a.state.activeCommand = true
+		a.state.cancel = cancel
+		a.state.layout.Status = "/" + name
+	}
 	go func() {
 		text, err := command.Execute(commandCtx, args)
-		a.post(runCtx, appEvent{command: &commandResult{name: name, text: text, err: err}}, false)
+		a.post(runCtx, appEvent{command: &commandResult{name: name, text: text, id: commandID, concurrent: concurrent, err: err}}, false)
 	}()
 }
 
 func (a *App) finishCommand(result commandResult) bool {
-	if a.state.cancel != nil {
-		a.state.cancel()
+	if result.concurrent {
+		if cancel := a.state.commandCancels[result.id]; cancel != nil {
+			cancel()
+			delete(a.state.commandCancels, result.id)
+		}
+		a.state.activeCommand = len(a.state.commandCancels) != 0
+		if !a.state.activeCommand && !a.state.activeModel {
+			a.state.layout.Status = "ready"
+		}
+	} else {
+		if a.state.cancel != nil {
+			a.state.cancel()
+		}
+		a.state.cancel = nil
+		a.state.activeCommand = false
+		a.state.layout.Status = "ready"
 	}
-	a.state.cancel = nil
-	a.state.activeCommand = false
-	a.state.layout.Status = "ready"
 	if result.text != "" {
 		a.state.layout.Transcript = append(a.state.layout.Transcript, TranscriptEntry{Kind: KindNotice, Label: result.name, Text: result.text})
 	}

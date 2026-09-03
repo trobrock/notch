@@ -113,7 +113,7 @@ func TestProtocolInitializeToolProgressAndHostCalls(t *testing.T) {
 		Hooks: []Hook{{Name: "before", Handle: func(_ context.Context, event map[string]any) (map[string]any, error) {
 			return map[string]any{"seen": event["value"]}, nil
 		}}},
-		Commands: []Command{{Name: "say", Description: "say text", Execute: func(_ context.Context, args string) (string, error) {
+		Commands: []Command{{Name: "say", Description: "say text", AllowWhileStreaming: true, Execute: func(_ context.Context, args string) (string, error) {
 			return strings.ToUpper(args), nil
 		}}},
 	}
@@ -127,12 +127,15 @@ func TestProtocolInitializeToolProgressAndHostCalls(t *testing.T) {
 	var capabilities struct {
 		Tools    []ToolDefinition    `json:"tools"`
 		Hooks    []map[string]string `json:"hooks"`
-		Commands []map[string]string `json:"commands"`
+		Commands []struct {
+			Name                string `json:"name"`
+			AllowWhileStreaming bool   `json:"allow_while_streaming"`
+		} `json:"commands"`
 	}
 	if err := json.Unmarshal(initialized.Result, &capabilities); err != nil {
 		t.Fatal(err)
 	}
-	if len(capabilities.Tools) != 1 || capabilities.Tools[0].Name != "echo" || capabilities.Hooks[0]["name"] != "before" || capabilities.Commands[0]["name"] != "say" {
+	if len(capabilities.Tools) != 1 || capabilities.Tools[0].Name != "echo" || capabilities.Hooks[0]["name"] != "before" || capabilities.Commands[0].Name != "say" || !capabilities.Commands[0].AllowWhileStreaming {
 		t.Fatalf("unexpected initialize result: %+v", capabilities)
 	}
 

@@ -69,7 +69,16 @@ type CommandHandler func(ctx context.Context, args string) (string, error)
 type Command struct {
 	Name        string
 	Description string
-	Execute     CommandHandler
+	// AllowWhileStreaming opts into concurrent execution while a model response
+	// is active. Use it only for commands that do not alter the active run.
+	AllowWhileStreaming bool
+	Execute             CommandHandler
+}
+
+type commandDefinition struct {
+	Name                string `json:"name"`
+	Description         string `json:"description"`
+	AllowWhileStreaming bool   `json:"allow_while_streaming,omitempty"`
 }
 
 // Extension is the complete set of capabilities advertised by a plugin.
@@ -341,14 +350,16 @@ func (c *Client) dispatch(ctx context.Context, extension Extension, method strin
 		for i, hook := range extension.Hooks {
 			hooks[i] = map[string]string{"name": hook.name()}
 		}
-		commands := make([]map[string]string, len(extension.Commands))
+		commands := make([]commandDefinition, len(extension.Commands))
 		for i, command := range extension.Commands {
-			commands[i] = map[string]string{"name": command.Name, "description": command.Description}
+			commands[i] = commandDefinition{
+				Name: command.Name, Description: command.Description, AllowWhileStreaming: command.AllowWhileStreaming,
+			}
 		}
 		return struct {
 			Tools    []ToolDefinition    `json:"tools"`
 			Hooks    []map[string]string `json:"hooks"`
-			Commands []map[string]string `json:"commands"`
+			Commands []commandDefinition `json:"commands"`
 		}{tools, hooks, commands}, nil
 
 	case "tool.execute":

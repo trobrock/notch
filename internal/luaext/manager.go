@@ -41,8 +41,9 @@ type toolDecl struct {
 }
 
 type commandDecl struct {
-	name, description string
-	fn                *lua.LFunction
+	name, description   string
+	allowWhileStreaming bool
+	fn                  *lua.LFunction
 }
 
 type hookDecl struct {
@@ -153,7 +154,7 @@ func (m *Manager) commit(state *luaState, decls *declarations) error {
 	for _, d := range decls.commands {
 		d := d
 		commands = append(commands, extension.Command{
-			Name: d.name, Description: d.description, Source: state.source,
+			Name: d.name, Description: d.description, AllowWhileStreaming: d.allowWhileStreaming, Source: state.source,
 			Execute: func(ctx context.Context, args string) (string, error) {
 				value, err := state.call(ctx, d.fn, lua.LString(args))
 				if err != nil {
