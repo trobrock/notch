@@ -34,11 +34,18 @@ type Config struct {
 	BaseURL          string
 	HTTPClient       *http.Client
 	AnthropicVersion string
+
+	// Authorize supplies the OAuth bearer token for each request, superseding
+	// OAuthToken. It is called with an empty string before a request and with
+	// a rejected token after HTTP 401, which asks it to refresh. Providers
+	// configured with Authorize retry an unauthorized request once.
+	Authorize func(ctx context.Context, stale string) (string, error)
 }
 
 type provider struct {
 	apiKey             string
 	oauthToken         string
+	authorize          func(ctx context.Context, stale string) (string, error)
 	oauthMode          bool
 	baseURL            string
 	version            string
@@ -61,7 +68,7 @@ func New(cfg Config) model.Provider {
 		version = defaultVersion
 	}
 	return &provider{
-		apiKey: cfg.APIKey, oauthToken: cfg.OAuthToken, oauthMode: cfg.OAuthMode,
+		apiKey: cfg.APIKey, oauthToken: cfg.OAuthToken, authorize: cfg.Authorize, oauthMode: cfg.OAuthMode,
 		baseURL: baseURL, version: version,
 		apiPricingEligible: strings.TrimSpace(cfg.BaseURL) == "" || strings.EqualFold(baseURL, defaultBaseURL),
 		httpClient:         client,
@@ -363,24 +370,84 @@ type streamBlock struct {
 	sawArgDelta bool
 }
 
-func (p *provider) ListModels(ctx context.Context) ([]model.ModelInfo, error) {
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+"/v1/models?limit=1000", nil)
+// send performs an authorized request. When the provider refreshes its own
+// OAuth credential and the service reports the token unauthorized, the token is
+// refreshed and the request is retried exactly once, so a long-running session
+// survives access-token expiry without a restart.
+func (p *provider) send(ctx context.Context, build func(token string) (*http.Request, error)) (*http.Response, error) {
+	token, err := p.token(ctx, "")
 	if err != nil {
-		return nil, fmt.Errorf("anthropic: create model-list request: %w", err)
+		return nil, err
 	}
-	httpReq.Header.Set("anthropic-version", p.version)
+	httpReq, err := build(token)
+	if err != nil {
+		return nil, err
+	}
+	httpResp, err := p.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	if httpResp.StatusCode != http.StatusUnauthorized || p.authorize == nil {
+		return httpResp, nil
+	}
+
+	unauthorized := httpStatusError("anthropic", httpResp)
+	httpResp.Body.Close()
+	refreshed, refreshErr := p.token(ctx, token)
+	if refreshErr != nil {
+		unauthorized.Message = fmt.Sprintf("%s (token refresh failed: %v)", unauthorized.Message, refreshErr)
+		return nil, unauthorized
+	}
+	if refreshed == token {
+		return nil, unauthorized
+	}
+	retry, err := build(refreshed)
+	if err != nil {
+		return nil, err
+	}
+	return p.httpClient.Do(retry)
+}
+
+// token returns the OAuth bearer token for a request. A non-empty stale token
+// reports a token the service just rejected.
+func (p *provider) token(ctx context.Context, stale string) (string, error) {
+	if p.authorize == nil {
+		return p.oauthToken, nil
+	}
+	return p.authorize(ctx, stale)
+}
+
+// applyAuth sets the credential headers for an outgoing request.
+func (p *provider) applyAuth(httpReq *http.Request, token string) {
 	if p.oauthMode {
-		if p.oauthToken != "" {
-			httpReq.Header.Set("Authorization", "Bearer "+p.oauthToken)
+		if token != "" {
+			httpReq.Header.Set("Authorization", "Bearer "+token)
 		}
 		httpReq.Header.Set("anthropic-beta", oauthBeta)
 		httpReq.Header.Set("User-Agent", oauthUserAgent)
 		httpReq.Header.Set("x-app", "cli")
-	} else if p.apiKey != "" {
+		return
+	}
+	if p.apiKey != "" {
 		httpReq.Header.Set("x-api-key", p.apiKey)
 	}
-	httpResp, err := p.httpClient.Do(httpReq)
+}
+
+func (p *provider) ListModels(ctx context.Context) ([]model.ModelInfo, error) {
+	httpResp, err := p.send(ctx, func(token string) (*http.Request, error) {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+"/v1/models?limit=1000", nil)
+		if err != nil {
+			return nil, fmt.Errorf("anthropic: create model-list request: %w", err)
+		}
+		httpReq.Header.Set("anthropic-version", p.version)
+		p.applyAuth(httpReq, token)
+		return httpReq, nil
+	})
 	if err != nil {
+		var providerErr *model.ProviderError
+		if errors.As(err, &providerErr) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("anthropic: list models: %w", err)
 	}
 	defer httpResp.Body.Close()
@@ -418,28 +485,24 @@ func (p *provider) Stream(ctx context.Context, req model.Request, onEvent func(m
 	if err != nil {
 		return model.Response{}, fmt.Errorf("anthropic: encode request: %w", err)
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/messages", bytes.NewReader(body))
-	if err != nil {
-		return model.Response{}, fmt.Errorf("anthropic: create request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "text/event-stream")
-	httpReq.Header.Set("anthropic-version", p.version)
-	if p.oauthMode {
-		if p.oauthToken != "" {
-			httpReq.Header.Set("Authorization", "Bearer "+p.oauthToken)
+	httpResp, err := p.send(ctx, func(token string) (*http.Request, error) {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/messages", bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("anthropic: create request: %w", err)
 		}
-		httpReq.Header.Set("anthropic-beta", oauthBeta)
-		httpReq.Header.Set("User-Agent", oauthUserAgent)
-		httpReq.Header.Set("x-app", "cli")
-	} else if p.apiKey != "" {
-		httpReq.Header.Set("x-api-key", p.apiKey)
-	}
-
-	httpResp, err := p.httpClient.Do(httpReq)
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Accept", "text/event-stream")
+		httpReq.Header.Set("anthropic-version", p.version)
+		p.applyAuth(httpReq, token)
+		return httpReq, nil
+	})
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return model.Response{}, ctxErr
+		}
+		var providerErr *model.ProviderError
+		if errors.As(err, &providerErr) {
+			return model.Response{}, err
 		}
 		return model.Response{}, fmt.Errorf("anthropic: send request: %w", err)
 	}
@@ -654,7 +717,7 @@ func readSSE(r io.Reader, handle func(event, data string) (bool, error)) error {
 	return errors.New("anthropic: SSE stream ended before message_stop")
 }
 
-func httpStatusError(service string, response *http.Response) error {
+func httpStatusError(service string, response *http.Response) *model.ProviderError {
 	body, _ := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	message := strings.TrimSpace(string(body))
 	var envelope struct {
