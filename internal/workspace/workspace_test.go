@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -344,5 +345,74 @@ func TestHasProjectInputsCountsConfigAndMCP(t *testing.T) {
 				t.Fatalf("present=%v err=%v", present, err)
 			}
 		})
+	}
+}
+
+func TestHasProjectInputsCountsAgentInstructions(t *testing.T) {
+	for _, name := range []string{"AGENTS.md", "AGENTS.local.md"} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.WriteFile(filepath.Join(root, name), nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			present, err := HasProjectInputs(root)
+			if err != nil || !present {
+				t.Fatalf("present=%v err=%v", present, err)
+			}
+		})
+	}
+}
+
+func TestInstructionsLoadsSharedThenLocal(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("shared guidance\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.local.md"), []byte("local override\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	instructions, err := Instructions(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "## Workspace instructions from AGENTS.md\n\nshared guidance\n\n## Workspace instructions from AGENTS.local.md\n\nlocal override"
+	if instructions != want {
+		t.Fatalf("instructions = %q, want %q", instructions, want)
+	}
+}
+
+func TestInstructionsHandlesMissingAndOversizedFiles(t *testing.T) {
+	root := t.TempDir()
+	instructions, err := Instructions(root)
+	if err != nil || instructions != "" {
+		t.Fatalf("missing instructions = %q, %v", instructions, err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte(strings.Repeat("x", maxInstructionsSize+1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Instructions(root); err == nil || !strings.Contains(err.Error(), "exceed") {
+		t.Fatalf("oversized instructions error = %v", err)
+	}
+}
+
+func TestInstructionsEnforcesAggregateSize(t *testing.T) {
+	root := t.TempDir()
+	sharedSize := maxInstructionsSize / 2
+	localSize := maxInstructionsSize - sharedSize
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte(strings.Repeat("x", sharedSize)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	localPath := filepath.Join(root, "AGENTS.local.md")
+	if err := os.WriteFile(localPath, []byte(strings.Repeat("y", localSize)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Instructions(root); err != nil {
+		t.Fatalf("exact size limit: %v", err)
+	}
+	if err := os.WriteFile(localPath, []byte(strings.Repeat("y", localSize+1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Instructions(root); err == nil || !strings.Contains(err.Error(), "exceed") {
+		t.Fatalf("aggregate size error = %v", err)
 	}
 }
