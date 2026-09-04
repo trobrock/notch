@@ -53,7 +53,11 @@ type runResult struct {
 
 // Register registers explore_codebase with the shared subagent runner.
 func Register(registry *extension.Registry, host extension.Host) error {
-	runner, err := subagent.NewRunner(host)
+	return RegisterWithSettingSources(registry, host, "user,project")
+}
+
+func RegisterWithSettingSources(registry *extension.Registry, host extension.Host, settingSources string) error {
+	runner, err := subagent.NewRunnerWithSettingSources(host, settingSources)
 	if err != nil {
 		return err
 	}

@@ -35,6 +35,8 @@ func (a *eventAdapter) Start() { _ = a.server.write(map[string]any{"type": "agen
 
 func (a *eventAdapter) Handle(event agent.Event) {
 	switch event.Type {
+	case "session_start", "run_end":
+		_ = a.server.write(event)
 	case "turn_start":
 		a.flushTurn()
 		a.current = &rpcTurn{startedAt: time.Now().UnixMilli(), streamIndex: -1, toolResults: make([]map[string]any, 0)}

@@ -21,7 +21,13 @@ import (
 	"github.com/trobrock/notch/internal/session"
 )
 
-var ErrNotProcessing = errors.New("agent is not processing")
+var (
+	ErrNotProcessing  = errors.New("agent is not processing")
+	ErrMaxTurns       = errors.New("maximum turns reached")
+	ErrMaxCost        = errors.New("maximum cost reached")
+	ErrPricingUnknown = errors.New("model price is unknown; cannot enforce maximum cost")
+	ErrIdleTimeout    = errors.New("agent idle timeout reached")
+)
 
 type QueuedMessage struct {
 	ID   string `json:"id"`
@@ -48,19 +54,42 @@ type Event struct {
 	Attempt         int                   `json:"attempt,omitempty"`
 	MaxAttempts     int                   `json:"max_attempts,omitempty"`
 	DelayMS         int64                 `json:"delay_ms,omitempty"`
+	*SessionInfo
+	NumTurns       int      `json:"num_turns"`
+	WallMS         int64    `json:"wall_ms"`
+	FinalAssistant string   `json:"final_assistant_text"`
+	TotalCostUSD   *float64 `json:"total_cost_usd,omitempty"`
+	CostKnown      *bool    `json:"cost_known,omitempty"`
+	CostSource     string   `json:"cost_source,omitempty"`
+	PricingVersion string   `json:"pricing_version,omitempty"`
+	PricingError   string   `json:"pricing_error,omitempty"`
+}
+
+type SessionInfo struct {
+	NotchVersion     string   `json:"notch_version"`
+	Provider         string   `json:"provider"`
+	Model            string   `json:"model"`
+	ThinkingLevel    string   `json:"thinking_level"`
+	Tools            []string `json:"tools"`
+	CWD              string   `json:"cwd"`
+	WorkspaceTrusted bool     `json:"workspace_trusted"`
+	InstructionFiles []string `json:"instruction_files"`
+	Skills           []string `json:"skills"`
 }
 
 type Usage struct {
 	InputTokens      int      `json:"input_tokens"`
 	OutputTokens     int      `json:"output_tokens"`
-	CacheReadTokens  int      `json:"cache_read_tokens,omitempty"`
-	CacheWriteTokens int      `json:"cache_write_tokens,omitempty"`
-	ReasoningTokens  int      `json:"reasoning_tokens,omitempty"`
+	CacheReadTokens  int      `json:"cache_read_tokens"`
+	CacheWriteTokens int      `json:"cache_write_tokens"`
+	ReasoningTokens  int      `json:"reasoning_tokens"`
 	CostUSD          *float64 `json:"cost_usd,omitempty"`
 	ProviderCostUSD  *float64 `json:"provider_cost_usd,omitempty"`
 	EstimatedCostUSD *float64 `json:"estimated_cost_usd,omitempty"`
 	CostSource       string   `json:"cost_source,omitempty"`
 	PricingVersion   string   `json:"pricing_version,omitempty"`
+	CostKnown        *bool    `json:"cost_known,omitempty"`
+	PricingError     string   `json:"pricing_error,omitempty"`
 }
 
 type CompactionConfig struct {
@@ -89,6 +118,10 @@ type Config struct {
 	CacheRetention string
 	Compaction     CompactionConfig
 	Retry          RetryConfig
+	MaxTurns       int
+	MaxCostUSD     float64
+	SessionInfo    SessionInfo
+	IdleTimeout    time.Duration
 }
 
 type providerSwitch struct {
@@ -111,6 +144,10 @@ type Agent struct {
 	cacheKey       string
 	compaction     CompactionConfig
 	retry          RetryConfig
+	maxTurns       int
+	maxCostUSD     float64
+	sessionInfo    SessionInfo
+	idleTimeout    time.Duration
 
 	// mu serializes operations which mutate conversation or session state.
 	mu                  sync.Mutex
@@ -204,7 +241,8 @@ func New(cfg Config) (*Agent, error) {
 		provider: cfg.Provider, providerName: providerName, registry: cfg.Registry, session: cfg.Session,
 		model: cfg.Model, exploreModel: strings.TrimSpace(cfg.ExploreModel), system: cfg.SystemPrompt, maxTokens: cfg.MaxTokens,
 		thinkingLevel: cfg.ThinkingLevel, cacheRetention: cfg.CacheRetention, cacheKey: cacheKey,
-		compaction: cfg.Compaction, retry: cfg.Retry,
+		compaction: cfg.Compaction, retry: cfg.Retry, maxTurns: cfg.MaxTurns, maxCostUSD: cfg.MaxCostUSD,
+		sessionInfo: cfg.SessionInfo, idleTimeout: cfg.IdleTimeout,
 	}
 	if cfg.Session != nil {
 		a.messages = cloneMessages(cfg.Session.Messages)
@@ -260,6 +298,11 @@ func (a *Agent) responseUsage(response model.Response, cacheRetention, providerN
 			usage.CostUSD = &estimated
 			usage.CostSource = "api_list_price_estimate"
 		}
+	}
+	known := usage.CostUSD != nil
+	usage.CostKnown = &known
+	if !known {
+		usage.PricingError = "price_unknown"
 	}
 	return usage
 }
@@ -386,6 +429,14 @@ func (a *Agent) settleOrTakeQueued() (QueuedMessage, bool) {
 	return message, ok
 }
 
+type idleActivityKey struct{}
+
+func touchIdleActivity(ctx context.Context) {
+	if touch, ok := ctx.Value(idleActivityKey{}).(func()); ok {
+		touch()
+	}
+}
+
 // Calls are serialized so an Agent's history and session remain ordered.
 func (a *Agent) Prompt(ctx context.Context, text string, emit func(Event)) error {
 	return a.PromptWithStart(ctx, text, emit, nil)
@@ -395,6 +446,34 @@ func (a *Agent) Prompt(ctx context.Context, text string, emit func(Event)) error
 // available but before model work starts. RPC uses it to acknowledge a prompt
 // before any streamed events can be emitted.
 func (a *Agent) PromptWithStart(ctx context.Context, text string, emit func(Event), started func()) error {
+	if a.idleTimeout <= 0 {
+		return a.promptWithStart(ctx, text, emit, started)
+	}
+	runCtx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	var timerMu sync.Mutex
+	timer := time.AfterFunc(a.idleTimeout, func() { cancel(ErrIdleTimeout) })
+	defer timer.Stop()
+	touch := func() { timerMu.Lock(); timer.Reset(a.idleTimeout); timerMu.Unlock() }
+	runCtx = context.WithValue(runCtx, idleActivityKey{}, touch)
+	if emit == nil {
+		emit = func(Event) {}
+	}
+	activity := func(event Event) {
+		switch event.Type {
+		case "turn_start", "text_delta", "thinking_delta", "turn_end", "tool_start", "tool_update", "tool_end", "provider_retry", "delegation_usage":
+			touch()
+		}
+		emit(event)
+	}
+	err := a.promptWithStart(runCtx, text, activity, started)
+	if errors.Is(err, context.Canceled) && errors.Is(context.Cause(runCtx), ErrIdleTimeout) {
+		return ErrIdleTimeout
+	}
+	return err
+}
+
+func (a *Agent) promptWithStart(ctx context.Context, text string, emit func(Event), started func()) (runErr error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if emit == nil {
@@ -405,6 +484,54 @@ func (a *Agent) PromptWithStart(ctx context.Context, text string, emit func(Even
 	if started != nil {
 		started()
 	}
+
+	startedAt := time.Now()
+	totals := Usage{}
+	turns := 0
+	costKnown := true
+	finalText := ""
+	stop := "end_turn"
+	sessionInfo := a.sessionInfo
+	sessionInfo.Provider, sessionInfo.Model, sessionInfo.ThinkingLevel = a.providerName, a.model, a.ThinkingLevel()
+	sessionInfo.Tools = sessionInfo.Tools[:0]
+	for _, tool := range a.registry.Tools() {
+		sessionInfo.Tools = append(sessionInfo.Tools, tool.Definition.Name)
+	}
+	emit(Event{Type: "session_start", SessionInfo: &sessionInfo})
+	defer func() {
+		switch {
+		case errors.Is(runErr, ErrMaxTurns):
+			stop = "max_turns"
+		case errors.Is(runErr, ErrMaxCost):
+			stop = "max_cost"
+		case errors.Is(runErr, context.Canceled), errors.Is(runErr, context.DeadlineExceeded):
+			if cause := context.Cause(ctx); cause != nil && !errors.Is(cause, context.Canceled) && !errors.Is(cause, context.DeadlineExceeded) {
+				stop = "error"
+			} else {
+				stop = "canceled"
+			}
+		case runErr != nil:
+			stop = "error"
+		}
+		var totalCost *float64
+		if costKnown {
+			value := 0.0
+			if totals.CostUSD != nil {
+				value = *totals.CostUSD
+			}
+			totalCost = &value
+		}
+		known := costKnown
+		e := Event{Type: "run_end", Usage: &totals, StopReason: stop, NumTurns: turns,
+			WallMS: time.Since(startedAt).Milliseconds(), FinalAssistant: finalText,
+			TotalCostUSD: totalCost, CostKnown: &known, CostSource: totals.CostSource,
+			PricingVersion: totals.PricingVersion}
+		if !costKnown {
+			e.PricingError = "price_unknown"
+		}
+		emit(e)
+	}()
+
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -420,6 +547,9 @@ func (a *Agent) PromptWithStart(ctx context.Context, text string, emit func(Even
 	}
 
 	for turn := 0; ; turn++ {
+		if a.maxTurns > 0 && turn >= a.maxTurns {
+			return ErrMaxTurns
+		}
 		system := a.system
 		before, err := a.registry.RunHooks(ctx, "before_agent_start", map[string]any{
 			"system_prompt": system, "model": a.model, "turn": turn,
@@ -449,30 +579,31 @@ func (a *Agent) PromptWithStart(ctx context.Context, text string, emit func(Even
 		definitions := a.registry.Definitions()
 		requestEstimate := a.estimatedContextTokensWithDefinitionsLocked(definitions)
 		requestProvider, requestModel := a.providerName, a.model
-		request := model.Request{
-			Model: requestModel, SystemPrompt: system, Messages: requestMessages,
-			Tools: definitions, MaxTokens: a.maxTokens,
-			ReasoningLevel: a.ThinkingLevel(), CacheRetention: a.cacheRetention, CacheKey: a.cacheKey,
-		}
+		request := model.Request{Model: requestModel, SystemPrompt: system, Messages: requestMessages,
+			Tools: definitions, MaxTokens: a.maxTokens, ReasoningLevel: a.ThinkingLevel(),
+			CacheRetention: a.cacheRetention, CacheKey: a.cacheKey}
 		response, err := a.streamWithRetry(ctx, request, emit)
 		if err != nil {
 			_, _ = a.registry.RunHooks(ctx, "agent_error", map[string]any{"message": err.Error(), "model": a.model, "turn": turn})
 			emit(Event{Type: "error", Text: err.Error()})
 			return err
 		}
+		turns++
 		if response.TotalInputTokens() > 0 {
-			a.reportedInputTokens = response.TotalInputTokens()
-			a.reportedEstimate = requestEstimate
+			a.reportedInputTokens, a.reportedEstimate = response.TotalInputTokens(), requestEstimate
 		} else {
-			a.reportedInputTokens = 0
-			a.reportedEstimate = 0
+			a.reportedInputTokens, a.reportedEstimate = 0, 0
 		}
 		assistant := model.Message{Role: "assistant", Content: response.Content}
+		finalText = assistantText(assistant)
+		turnUsage := a.responseUsage(response, a.cacheRetention, requestProvider, requestModel)
+		addUsage(&totals, turnUsage)
+		if turnUsage.CostUSD == nil {
+			costKnown = false
+		}
 		if err := a.appendMessage(assistant); err != nil {
 			return err
 		}
-
-		turnUsage := a.responseUsage(response, a.cacheRetention, requestProvider, requestModel)
 		usage := &turnUsage
 		contextUsage := a.contextUsageLocked()
 		emit(Event{Type: "turn_end", Usage: usage, ContextUsage: &contextUsage, Message: &assistant, StopReason: response.StopReason})
@@ -495,6 +626,18 @@ func (a *Agent) PromptWithStart(ctx context.Context, text string, emit func(Even
 					recordToolResult(executed.call, executed.result)
 				}
 			}
+			if !delegatedTotals.Empty() {
+				du := Usage{InputTokens: delegatedTotals.InputTokens, OutputTokens: delegatedTotals.OutputTokens,
+					CacheReadTokens: delegatedTotals.CacheReadTokens, CacheWriteTokens: delegatedTotals.CacheWriteTokens,
+					ReasoningTokens: delegatedTotals.ReasoningTokens, CostUSD: delegatedTotals.CostUSD}
+				if delegatedTotals.CostUSD != nil {
+					du.CostSource, du.PricingVersion = "delegated", "delegated"
+				}
+				addUsage(&totals, du)
+				if delegatedTotals.CostUSD == nil {
+					costKnown = false
+				}
+			}
 			if err := a.appendMessage(model.Message{Role: "user", Content: results}); err != nil {
 				if appendErr := a.appendUsage(response, delegatedTotals, a.cacheRetention, requestProvider, requestModel); appendErr != nil {
 					return appendErr
@@ -512,8 +655,14 @@ func (a *Agent) PromptWithStart(ctx context.Context, text string, emit func(Even
 			return err
 		}
 
-		// Steering interrupts the normal tool-call chain at the next safe turn
-		// boundary, after tool results have been recorded.
+		if a.maxCostUSD > 0 {
+			if !costKnown {
+				return ErrPricingUnknown
+			}
+			if totals.CostUSD != nil && *totals.CostUSD >= a.maxCostUSD {
+				return ErrMaxCost
+			}
+		}
 		if queued, ok := a.takeQueued("steer"); ok {
 			if err := a.appendMessage(model.TextMessage("user", queued.Text)); err != nil {
 				return err
@@ -523,10 +672,7 @@ func (a *Agent) PromptWithStart(ctx context.Context, text string, emit func(Even
 		if len(calls) != 0 {
 			continue
 		}
-
-		end, hookErr := a.registry.RunHooks(ctx, "agent_end", map[string]any{
-			"stop_reason": response.StopReason, "turn": turn,
-		})
+		end, hookErr := a.registry.RunHooks(ctx, "agent_end", map[string]any{"stop_reason": response.StopReason, "turn": turn})
 		if hookErr != nil {
 			return hookErr
 		}
@@ -536,9 +682,6 @@ func (a *Agent) PromptWithStart(ctx context.Context, text string, emit func(Even
 			}
 			continue
 		}
-
-		// The queue check and transition to idle are atomic, so a message cannot
-		// be accepted as queued after the run has already decided to settle.
 		if queued, ok := a.settleOrTakeQueued(); ok {
 			if err := a.appendMessage(model.TextMessage("user", queued.Text)); err != nil {
 				return err
@@ -549,10 +692,64 @@ func (a *Agent) PromptWithStart(ctx context.Context, text string, emit func(Even
 	}
 }
 
+func assistantText(message model.Message) string {
+	var parts []string
+	for _, block := range message.Content {
+		if block.Type == "text" && block.Text != "" {
+			parts = append(parts, block.Text)
+		}
+	}
+	return strings.Join(parts, "")
+}
+
+func addUsage(total *Usage, current Usage) {
+	total.InputTokens += current.InputTokens
+	total.OutputTokens += current.OutputTokens
+	total.CacheReadTokens += current.CacheReadTokens
+	total.CacheWriteTokens += current.CacheWriteTokens
+	total.ReasoningTokens += current.ReasoningTokens
+	if current.CostUSD != nil {
+		v := *current.CostUSD
+		if total.CostUSD != nil {
+			v += *total.CostUSD
+		}
+		total.CostUSD = &v
+	}
+	if current.ProviderCostUSD != nil {
+		v := *current.ProviderCostUSD
+		if total.ProviderCostUSD != nil {
+			v += *total.ProviderCostUSD
+		}
+		total.ProviderCostUSD = &v
+	}
+	if current.EstimatedCostUSD != nil {
+		v := *current.EstimatedCostUSD
+		if total.EstimatedCostUSD != nil {
+			v += *total.EstimatedCostUSD
+		}
+		total.EstimatedCostUSD = &v
+	}
+	if current.CostSource != "" {
+		if total.CostSource == "" {
+			total.CostSource = current.CostSource
+		} else if total.CostSource != current.CostSource {
+			total.CostSource = "mixed"
+		}
+	}
+	if current.PricingVersion != "" {
+		if total.PricingVersion == "" {
+			total.PricingVersion = current.PricingVersion
+		} else if total.PricingVersion != current.PricingVersion {
+			total.PricingVersion = "mixed"
+		}
+	}
+}
+
 func (a *Agent) streamWithRetry(ctx context.Context, request model.Request, emit func(Event)) (model.Response, error) {
 	for attempt := 1; ; attempt++ {
 		emitted := false
 		response, err := a.provider.Stream(ctx, request, func(event model.StreamEvent) {
+			touchIdleActivity(ctx)
 			switch event.Type {
 			case "text_delta", "thinking_delta":
 				emitted = true

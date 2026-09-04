@@ -165,7 +165,7 @@ func Load(home, cwd string) (Config, error) {
 // LoadGlobal loads only built-in and per-user configuration. It never reads
 // project configuration or adds project discovery directories.
 func LoadGlobal(home string) (Config, error) {
-	return load(home, "", false)
+	return load(home, "", true, false)
 }
 
 // LoadWorkspace loads global configuration and, when trusted is true, project
@@ -173,24 +173,41 @@ func LoadGlobal(home string) (Config, error) {
 // Security-sensitive paths and endpoints are always taken from built-in or
 // global configuration, never project configuration.
 func LoadWorkspace(home, workspaceRoot string, trusted bool) (Config, error) {
-	return load(home, workspaceRoot, trusted)
+	return load(home, workspaceRoot, true, trusted)
 }
 
-func load(home, workspaceRoot string, includeProject bool) (Config, error) {
+// LoadWorkspaceSources loads an explicitly selected combination of user and
+// project configuration/resources. Environment and CLI overrides remain active.
+func LoadWorkspaceSources(home, workspaceRoot string, includeUser, includeProject bool) (Config, error) {
+	return load(home, workspaceRoot, includeUser, includeProject)
+}
+
+func load(home, workspaceRoot string, includeUser, includeProject bool) (Config, error) {
 	cfg, err := defaults(home, workspaceRoot, includeProject)
 	if err != nil {
 		return Config{}, err
 	}
 	globalPath := filepath.Join(cfg.configRoot, "config.json")
-	if _, err := os.Lstat(globalPath); err == nil {
-		layer, err := read(globalPath)
-		if err != nil {
-			return Config{}, err
+	if includeUser {
+		if _, err := os.Lstat(globalPath); err == nil {
+			layer, err := read(globalPath)
+			if err != nil {
+				return Config{}, err
+			}
+			resolveGlobalPaths(&layer, cfg.configRoot)
+			merge(&cfg, layer)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return Config{}, fmt.Errorf("inspect config %q: %w", globalPath, err)
 		}
-		resolveGlobalPaths(&layer, cfg.configRoot)
-		merge(&cfg, layer)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return Config{}, fmt.Errorf("inspect config %q: %w", globalPath, err)
+	} else {
+		// Keep state/credential paths, but exclude every user-discovered input.
+		cfg.MCPConfig = ""
+		cfg.ExtensionDirs = removePath(cfg.ExtensionDirs, filepath.Join(cfg.configRoot, "extensions"))
+		cfg.SkillDirs = removePath(cfg.SkillDirs, filepath.Join(cfg.configRoot, "skills"))
+		cfg.PromptDirs = removePath(cfg.PromptDirs, filepath.Join(cfg.configRoot, "prompts"))
+		cfg.ThemeDirs = removePath(cfg.ThemeDirs, filepath.Join(cfg.configRoot, "themes"))
+		cfg.AgentSkillDirs = removePath(cfg.AgentSkillDirs, filepath.Join(home, ".agents", "skills"))
+		cfg.AgentCommandDirs = removePath(cfg.AgentCommandDirs, filepath.Join(home, ".agents", "commands"))
 	}
 	if includeProject {
 		projectNotch := filepath.Join(workspaceRoot, ".notch")
@@ -262,6 +279,16 @@ func applyEnvironment(cfg *Config) {
 	if value := strings.TrimSpace(os.Getenv("NOTCH_THINKING_LEVEL")); value != "" {
 		cfg.ThinkingLevel = value
 	}
+}
+
+func removePath(paths []string, excluded string) []string {
+	out := paths[:0]
+	for _, path := range paths {
+		if filepath.Clean(path) != filepath.Clean(excluded) {
+			out = append(out, path)
+		}
+	}
+	return out
 }
 
 func read(path string) (Config, error) {

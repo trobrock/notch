@@ -147,7 +147,7 @@ func supportsAdaptiveThinking(modelID string) bool {
 		return err == nil && major == 4 && minor >= 6
 	}
 	for i, part := range parts {
-		if part != "opus" && part != "sonnet" && part != "haiku" {
+		if part != "opus" && part != "sonnet" && part != "haiku" && part != "fable" {
 			continue
 		}
 		// Current IDs place the family before the version (opus-4-6), but

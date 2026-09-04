@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -69,6 +70,10 @@ Run 'notch COMMAND --help' for command-specific help.`
 
 type options struct {
 	provider, modelName, thinking, prompt, systemPrompt, systemPromptFile, mcpConfig, resumeSession, mode, toolAllow, toolExclude string
+	settingSources                                                                                                                string
+	maxTurns                                                                                                                      int
+	maxCostUSD                                                                                                                    float64
+	idleTimeout                                                                                                                   time.Duration
 	printMode, planMode, continueSession, noSession, jsonOutput, noTUI, init, showVersion, rpcMode                                bool
 	noTools, noBuiltinTools, noExtensions, noResources                                                                            bool
 	safe, trustWorkspace                                                                                                          bool
@@ -77,8 +82,15 @@ type options struct {
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "notch:", err)
-		os.Exit(1)
+		os.Exit(processExitCode(err))
 	}
+}
+
+func processExitCode(err error) int {
+	if errors.Is(err, agent.ErrMaxTurns) || errors.Is(err, agent.ErrMaxCost) {
+		return 2
+	}
+	return 1
 }
 
 func newRootFlagSet(opts *options) *flag.FlagSet {
@@ -87,6 +99,10 @@ func newRootFlagSet(opts *options) *flag.FlagSet {
 	flags.StringVar(&opts.modelName, "model", "", "model ID")
 	flags.StringVar(&opts.modelName, "m", "", "model ID (shorthand)")
 	flags.StringVar(&opts.thinking, "thinking", "", "reasoning effort: off, minimal, low, medium, high, or xhigh")
+	flags.IntVar(&opts.maxTurns, "max-turns", 0, "maximum model turns per run (0 is unlimited)")
+	flags.Float64Var(&opts.maxCostUSD, "max-cost-usd", 0, "maximum cumulative run cost in USD (0 is unlimited)")
+	flags.DurationVar(&opts.idleTimeout, "idle-timeout", 0, "cancel a run after no provider or tool events for this duration")
+	flags.StringVar(&opts.settingSources, "setting-sources", "user,project", "configuration/resource sources: user, project, user,project, or none")
 	flags.BoolVar(&opts.printMode, "print", false, "non-interactive mode: process prompt and exit")
 	flags.BoolVar(&opts.printMode, "p", false, "non-interactive mode (shorthand)")
 	flags.BoolVar(&opts.planMode, "plan", false, "start with read-only plan mode enabled")
@@ -171,6 +187,22 @@ func run(args []string) error {
 	if opts.safe && opts.trustWorkspace {
 		return errors.New("--safe and --trust-workspace cannot be combined")
 	}
+	if opts.maxTurns < 0 {
+		return errors.New("--max-turns must be non-negative")
+	}
+	if opts.maxCostUSD < 0 || math.IsNaN(opts.maxCostUSD) || math.IsInf(opts.maxCostUSD, 0) {
+		return errors.New("--max-cost-usd must be a finite non-negative number")
+	}
+	if opts.idleTimeout < 0 {
+		return errors.New("--idle-timeout must be non-negative")
+	}
+	includeUser, includeProject, sourceErr := parseSettingSources(opts.settingSources)
+	if sourceErr != nil {
+		return sourceErr
+	}
+	if opts.safe && opts.settingSources != "user,project" {
+		return errors.New("--safe and --setting-sources cannot be combined")
+	}
 	if opts.noExtensions && opts.planMode {
 		return errors.New("--plan cannot be combined with --no-extensions")
 	}
@@ -212,6 +244,9 @@ func run(args []string) error {
 		// Safe mode is also an emergency bypass for malformed or hostile Git
 		// metadata, so it must not perform workspace discovery.
 		cfg, err = config.LoadWorkspace(home, cwd, false)
+	case !includeProject:
+		// Explicit user-only/none isolation must not inspect or prompt for project inputs.
+		cfg, err = config.LoadWorkspaceSources(home, cwd, includeUser, false)
 	default:
 		workspaceInfo, resolveErr := workspace.Resolve(cwd)
 		if resolveErr != nil {
@@ -222,7 +257,7 @@ func run(args []string) error {
 		gitBranch = workspaceInfo.Branch
 		workspaceTrusted, err = resolveWorkspaceTrust(home, workspaceRoot, workspaceTrustKey, opts, os.Stdin, os.Stderr, terminalsInteractive(os.Stdin, os.Stdout))
 		if err == nil {
-			cfg, err = config.LoadWorkspace(home, workspaceRoot, workspaceTrusted)
+			cfg, err = config.LoadWorkspaceSources(home, workspaceRoot, includeUser, workspaceTrusted && includeProject)
 		}
 	}
 	if err != nil {
@@ -280,7 +315,7 @@ func run(args []string) error {
 		cfg.ExtensionDirs = nil
 	}
 	var packageDirs []string
-	if !opts.noExtensions {
+	if !opts.noExtensions && includeUser {
 		packageDirs, err = func() ([]string, error) {
 			dataRoot, rootErr := config.DataDir(home)
 			if rootErr != nil {
@@ -375,7 +410,7 @@ func run(args []string) error {
 			}
 		}
 		if !opts.noExtensions {
-			if err := officialext.Register(registry, extensionHost); err != nil {
+			if err := officialext.RegisterWithSettingSources(registry, extensionHost, opts.settingSources); err != nil {
 				return err
 			}
 		}
@@ -537,6 +572,9 @@ func run(args []string) error {
 		Provider: provider, ProviderName: normalizeProvider(cfg.Provider), Registry: registry, Session: store, Model: cfg.Model,
 		ExploreModel: cfg.ExploreModel, SystemPrompt: systemPrompt, MaxTokens: cfg.MaxTokens, ThinkingLevel: cfg.ThinkingLevel, CacheRetention: cfg.CacheRetention,
 		Compaction: agent.CompactionConfig{Enabled: compactionEnabled, ContextWindow: contextWindow, ReserveTokens: reserveTokens, KeepRecentTokens: keepRecentTokens},
+		MaxTurns:   opts.maxTurns, MaxCostUSD: opts.maxCostUSD,
+		SessionInfo: benchmarkSessionInfo(cfg, cwd, workspaceRoot, workspaceTrusted && includeProject, registry, catalog),
+		IdleTimeout: opts.idleTimeout,
 	})
 	if err != nil {
 		return err
@@ -704,6 +742,49 @@ func run(args []string) error {
 			fmt.Println()
 		}
 	}
+}
+
+func parseSettingSources(value string) (bool, bool, error) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" || value == "none" {
+		return false, false, nil
+	}
+	var user, project bool
+	for _, source := range strings.Split(value, ",") {
+		switch strings.TrimSpace(source) {
+		case "user":
+			user = true
+		case "project":
+			project = true
+		default:
+			return false, false, fmt.Errorf("invalid --setting-sources %q (expected user, project, user,project, or none)", value)
+		}
+	}
+	return user, project, nil
+}
+
+func benchmarkSessionInfo(cfg config.Config, cwd, workspaceRoot string, trusted bool, registry *extension.Registry, catalog *resources.Catalog) agent.SessionInfo {
+	tools := make([]string, 0, len(registry.Tools()))
+	for _, tool := range registry.Tools() {
+		tools = append(tools, tool.Definition.Name)
+	}
+	skills := make([]string, 0, len(catalog.Skills))
+	for name := range catalog.Skills {
+		skills = append(skills, name)
+	}
+	sort.Strings(skills)
+	files := make([]string, 0, 2)
+	if trusted {
+		for _, name := range []string{"AGENTS.md", "AGENTS.local.md"} {
+			path := filepath.Join(workspaceRoot, name)
+			if data, err := os.ReadFile(path); err == nil && strings.TrimSpace(string(data)) != "" {
+				files = append(files, path)
+			}
+		}
+	}
+	return agent.SessionInfo{NotchVersion: currentBuildInfo().Version, Provider: normalizeProvider(cfg.Provider), Model: cfg.Model,
+		ThinkingLevel: cfg.ThinkingLevel, Tools: tools, CWD: cwd, WorkspaceTrusted: trusted,
+		InstructionFiles: files, Skills: skills}
 }
 
 const sessionLifecycleTimeout = 10 * time.Second

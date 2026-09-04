@@ -980,3 +980,132 @@ func TestToolUpdateModeIsEmittedToFrontends(t *testing.T) {
 		t.Fatalf("updates = %#v", updates)
 	}
 }
+
+type benchmarkProvider struct {
+	calls   int
+	cost    *float64
+	block   bool
+	started chan struct{}
+}
+
+func (p *benchmarkProvider) Stream(ctx context.Context, _ model.Request, _ func(model.StreamEvent)) (model.Response, error) {
+	p.calls++
+	if p.started != nil {
+		close(p.started)
+	}
+	if p.block {
+		<-ctx.Done()
+		return model.Response{}, ctx.Err()
+	}
+	content := []model.Block{{Type: "text", Text: "done"}}
+	stop := "end_turn"
+	if p.calls == 1 {
+		content, stop = []model.Block{{Type: "tool_use", ID: "1", Name: "echo", Arguments: json.RawMessage(`{}`)}}, "tool_use"
+	}
+	return model.Response{Content: content, StopReason: stop, InputTokens: 10, OutputTokens: 2, CostUSD: p.cost}, nil
+}
+
+func benchmarkRegistry(t *testing.T) *extension.Registry {
+	t.Helper()
+	registry := extension.NewRegistry()
+	if err := registry.RegisterTool(extension.Tool{Definition: model.ToolDefinition{Name: "echo", InputSchema: map[string]any{"type": "object"}}, Source: "test", Execute: func(context.Context, json.RawMessage, func(string)) (extension.ToolResult, error) {
+		return extension.ToolResult{Content: "ok"}, nil
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	return registry
+}
+
+func TestPromptMaxTurnsEmitsCumulativeRunEnd(t *testing.T) {
+	cost := 0.25
+	provider := &benchmarkProvider{cost: &cost}
+	runner, err := New(Config{Provider: provider, ProviderName: "anthropic", Registry: benchmarkRegistry(t), Model: "test", MaxTurns: 1,
+		SessionInfo: SessionInfo{NotchVersion: "test", WorkspaceTrusted: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var events []Event
+	err = runner.Prompt(context.Background(), "go", func(event Event) { events = append(events, event) })
+	if !errors.Is(err, ErrMaxTurns) {
+		t.Fatalf("error = %v, want ErrMaxTurns", err)
+	}
+	if provider.calls != 1 {
+		t.Fatalf("provider calls = %d, want 1", provider.calls)
+	}
+	if len(events) < 2 || events[0].Type != "session_start" {
+		t.Fatalf("events = %#v", events)
+	}
+	end := events[len(events)-1]
+	if end.Type != "run_end" || end.StopReason != "max_turns" || end.NumTurns != 1 || end.Usage == nil || end.Usage.InputTokens != 10 || end.TotalCostUSD == nil || *end.TotalCostUSD != cost || end.FinalAssistant != "" {
+		t.Fatalf("run_end = %#v", end)
+	}
+}
+
+func TestPromptMaxCostAndUnknownPricing(t *testing.T) {
+	cost := 1.25
+	for _, tc := range []struct {
+		name   string
+		cost   *float64
+		want   error
+		reason string
+	}{
+		{"limit", &cost, ErrMaxCost, "max_cost"}, {"unknown", nil, ErrPricingUnknown, "error"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := &benchmarkProvider{cost: tc.cost}
+			runner, err := New(Config{Provider: provider, Registry: benchmarkRegistry(t), Model: "unknown", MaxCostUSD: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var end Event
+			err = runner.Prompt(context.Background(), "go", func(event Event) {
+				if event.Type == "run_end" {
+					end = event
+				}
+			})
+			if !errors.Is(err, tc.want) || end.StopReason != tc.reason {
+				t.Fatalf("error = %v, run_end = %#v", err, end)
+			}
+			if tc.cost == nil && (end.CostKnown == nil || *end.CostKnown || end.PricingError != "price_unknown") {
+				t.Fatalf("unknown-price run_end = %#v", end)
+			}
+		})
+	}
+}
+
+func TestPromptCancellationStillEmitsRunEnd(t *testing.T) {
+	provider := &benchmarkProvider{block: true, started: make(chan struct{})}
+	runner, err := New(Config{Provider: provider, Registry: extension.NewRegistry(), Model: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	var events []Event
+	done := make(chan error, 1)
+	go func() { done <- runner.Prompt(ctx, "go", func(event Event) { events = append(events, event) }) }()
+	<-provider.started
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v", err)
+	}
+	if end := events[len(events)-1]; end.Type != "run_end" || end.StopReason != "canceled" {
+		t.Fatalf("events = %#v", events)
+	}
+}
+
+func TestPromptIdleTimeoutEmitsErrorRunEnd(t *testing.T) {
+	provider := &benchmarkProvider{block: true, started: make(chan struct{})}
+	runner, err := New(Config{Provider: provider, Registry: extension.NewRegistry(), Model: "test", IdleTimeout: 5 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var end Event
+	err = runner.Prompt(context.Background(), "go", func(event Event) {
+		if event.Type == "run_end" {
+			end = event
+		}
+	})
+	if !errors.Is(err, ErrIdleTimeout) || end.StopReason != "error" {
+		t.Fatalf("error = %v, run_end = %#v", err, end)
+	}
+}

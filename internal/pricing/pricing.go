@@ -9,7 +9,7 @@ import (
 	"github.com/trobrock/notch/internal/model"
 )
 
-const Version = "builtin-2026-05-21"
+const Version = "builtin-2026-05-22"
 
 type Rates struct {
 	Input      float64
@@ -30,6 +30,7 @@ type entry struct {
 
 var catalog = map[string]map[string]entry{
 	"anthropic": {
+		"claude-fable-5-1":  {Rates: Rates{Input: 2, Output: 10, CacheRead: 0.2, CacheWrite: 2.5}},
 		"claude-haiku-4-5":  {Rates: Rates{Input: 1, Output: 5, CacheRead: 0.1, CacheWrite: 1.25}},
 		"claude-opus-4-6":   {Rates: Rates{Input: 5, Output: 25, CacheRead: 0.5, CacheWrite: 6.25}},
 		"claude-opus-4-7":   {Rates: Rates{Input: 5, Output: 25, CacheRead: 0.5, CacheWrite: 6.25}},
@@ -40,15 +41,15 @@ var catalog = map[string]map[string]entry{
 		"claude-sonnet-5":   {Rates: Rates{Input: 2, Output: 10, CacheRead: 0.2, CacheWrite: 2.5}},
 	},
 	"openai": {
-		"gpt-5":                 {Rates: Rates{Input: 1.25, Output: 10, CacheRead: 0.125}},
-		"gpt-5-mini":            {Rates: Rates{Input: 0.25, Output: 2, CacheRead: 0.025}},
-		"gpt-5.3-codex-spark":   {Rates: Rates{Input: 1.75, Output: 14, CacheRead: 0.175}},
-		"gpt-5.4":               tiered(Rates{Input: 2.5, Output: 15, CacheRead: 0.25}, Rates{Input: 5, Output: 22.5, CacheRead: 0.5}),
-		"gpt-5.4-mini":          {Rates: Rates{Input: 0.75, Output: 4.5, CacheRead: 0.075}},
-		"gpt-5.5":               tiered(Rates{Input: 5, Output: 30, CacheRead: 0.5}, Rates{Input: 10, Output: 45, CacheRead: 1}),
-		"gpt-5.6-luna":          tiered(Rates{Input: 0.2, Output: 1.2, CacheRead: 0.02, CacheWrite: 0.25}, Rates{Input: 0.4, Output: 1.8, CacheRead: 0.04, CacheWrite: 0.5}),
-		"gpt-5.6-sol":           tiered(Rates{Input: 5, Output: 30, CacheRead: 0.5, CacheWrite: 6.25}, Rates{Input: 10, Output: 45, CacheRead: 1, CacheWrite: 12.5}),
-		"gpt-5.6-terra":         tiered(Rates{Input: 2, Output: 12, CacheRead: 0.2, CacheWrite: 2.5}, Rates{Input: 4, Output: 18, CacheRead: 0.4, CacheWrite: 5}),
+		"gpt-5":               {Rates: Rates{Input: 1.25, Output: 10, CacheRead: 0.125}},
+		"gpt-5-mini":          {Rates: Rates{Input: 0.25, Output: 2, CacheRead: 0.025}},
+		"gpt-5.3-codex-spark": {Rates: Rates{Input: 1.75, Output: 14, CacheRead: 0.175}},
+		"gpt-5.4":             tiered(Rates{Input: 2.5, Output: 15, CacheRead: 0.25}, Rates{Input: 5, Output: 22.5, CacheRead: 0.5}),
+		"gpt-5.4-mini":        {Rates: Rates{Input: 0.75, Output: 4.5, CacheRead: 0.075}},
+		"gpt-5.5":             tiered(Rates{Input: 5, Output: 30, CacheRead: 0.5}, Rates{Input: 10, Output: 45, CacheRead: 1}),
+		"gpt-5.6-luna":        tiered(Rates{Input: 0.2, Output: 1.2, CacheRead: 0.02, CacheWrite: 0.25}, Rates{Input: 0.4, Output: 1.8, CacheRead: 0.04, CacheWrite: 0.5}),
+		"gpt-5.6-sol":         tiered(Rates{Input: 5, Output: 30, CacheRead: 0.5, CacheWrite: 6.25}, Rates{Input: 10, Output: 45, CacheRead: 1, CacheWrite: 12.5}),
+		"gpt-5.6-terra":       tiered(Rates{Input: 2, Output: 12, CacheRead: 0.2, CacheWrite: 2.5}, Rates{Input: 4, Output: 18, CacheRead: 0.4, CacheWrite: 5}),
 	},
 }
 
