@@ -15,12 +15,15 @@ import (
 )
 
 const (
-	defaultContextWindow     = 128000
-	defaultReserveTokens     = 16384
-	defaultKeepRecentTokens  = 20000
-	recentToolResultsToKeep  = 3
-	maxRecentToolResultBytes = 12000
-	maxOldToolResultBytes    = 4000
+	defaultContextWindow           = 128000
+	defaultReserveTokens           = 16384
+	defaultKeepRecentTokens        = 20000
+	recentToolResultsToKeep        = 3
+	maxRecentToolResultBytes       = 12000
+	maxOldToolResultBytes          = 4000
+	maxCompactionBlockBytes        = 64 * 1024
+	maxCompactionInstructionsBytes = 16 * 1024
+	maxCompactionConversationBytes = 512 * 1024
 )
 
 var ErrNothingToCompact = errors.New("agent: no useful old context to compact")
@@ -135,6 +138,7 @@ func estimateMessage(message model.Message) int {
 		tokens += estimatedTokens([]byte(block.ID))
 		tokens += estimatedTokens([]byte(block.Name))
 		tokens += estimatedTokens([]byte(block.ToolUseID))
+		tokens += estimatedTokens([]byte(block.Signature))
 		tokens += estimatedTokens(block.Arguments)
 	}
 	return tokens
@@ -169,6 +173,7 @@ func estimateContextMessages(messages []model.Message) int {
 			total += estimatedTokens([]byte(block.ID))
 			total += estimatedTokens([]byte(block.Name))
 			total += estimatedTokens([]byte(block.ToolUseID))
+			total += estimatedTokens([]byte(block.Signature))
 			total += estimatedTokens(block.Arguments)
 		}
 	}
@@ -200,6 +205,94 @@ func contextMessages(messages []model.Message) []model.Message {
 		}
 	}
 	return out
+}
+
+func compactCompactionText(value string, limit int, label string) string {
+	if len(value) <= limit {
+		return value
+	}
+	head := limit * 65 / 100
+	tail := limit - head
+	for head > 0 && !utf8.ValidString(value[:head]) {
+		head--
+	}
+	for tail > 0 && !utf8.ValidString(value[len(value)-tail:]) {
+		tail--
+	}
+	return value[:head] + fmt.Sprintf("\n\n[notch compaction %s trimmed: %d bytes total]\n\n", label, len(value)) + value[len(value)-tail:]
+}
+
+func compactionConversationJSON(messages []model.Message) ([]byte, error) {
+	messages = contextMessages(messages)
+	for i := range messages {
+		for j := range messages[i].Content {
+			block := &messages[i].Content[j]
+			// Provider signatures are opaque replay state, not useful session
+			// content. They can also be much larger than the visible reasoning.
+			block.Signature = ""
+			block.Text = compactCompactionText(block.Text, maxCompactionBlockBytes, "block text")
+			if len(block.Arguments) > maxCompactionBlockBytes {
+				excerpt := compactCompactionText(string(block.Arguments), maxCompactionBlockBytes/2, "tool arguments")
+				block.Arguments, _ = json.Marshal(map[string]any{
+					"_notch_compaction": fmt.Sprintf("tool arguments trimmed from %d bytes", len(block.Arguments)),
+					"excerpt":           excerpt,
+				})
+			}
+		}
+	}
+
+	serialized, err := json.Marshal(messages)
+	if err != nil || len(serialized) <= maxCompactionConversationBytes {
+		return serialized, err
+	}
+
+	// Compaction requests can hit provider HTTP body limits before their token
+	// limit. Keep the beginning (goal and constraints) and the newest old
+	// context (current progress), and explicitly mark the omitted middle.
+	sizes := make([]int, len(messages))
+	for i := range messages {
+		encoded, marshalErr := json.Marshal(messages[i])
+		if marshalErr != nil {
+			return nil, marshalErr
+		}
+		sizes[i] = len(encoded)
+	}
+
+	const markerReserve = 256
+	used := 2 + markerReserve // JSON array brackets and omission marker.
+	prefixEnd := 0
+	prefixBudget := maxCompactionConversationBytes / 3
+	for prefixEnd < len(messages) && used+sizes[prefixEnd]+1 <= prefixBudget {
+		used += sizes[prefixEnd] + 1
+		prefixEnd++
+	}
+	suffixStart := len(messages)
+	for suffixStart > prefixEnd && used+sizes[suffixStart-1]+1 <= maxCompactionConversationBytes {
+		suffixStart--
+		used += sizes[suffixStart] + 1
+	}
+
+	build := func() []model.Message {
+		omitted := suffixStart - prefixEnd
+		out := make([]model.Message, 0, prefixEnd+1+len(messages)-suffixStart)
+		out = append(out, messages[:prefixEnd]...)
+		out = append(out, model.TextMessage("user", fmt.Sprintf("[notch compaction omitted %d middle messages to stay within the provider request-size limit]", omitted)))
+		out = append(out, messages[suffixStart:]...)
+		return out
+	}
+	for {
+		serialized, err = json.Marshal(build())
+		if err != nil || len(serialized) <= maxCompactionConversationBytes {
+			return serialized, err
+		}
+		if prefixEnd > 0 {
+			prefixEnd--
+		} else if suffixStart < len(messages) {
+			suffixStart++
+		} else {
+			return nil, errors.New("compact conversation: request-size marker exceeds payload limit")
+		}
+	}
 }
 
 func compactToolResultLength(value string, limit int) int {
@@ -252,7 +345,7 @@ func (a *Agent) Compact(ctx context.Context, instructions string, auto bool, emi
 	return a.compactLocked(ctx, instructions, auto, emit)
 }
 
-func (a *Agent) compactLocked(ctx context.Context, instructions string, auto bool, emit func(Event)) error {
+func (a *Agent) compactLocked(ctx context.Context, instructions string, auto bool, emit func(Event)) (returnErr error) {
 	if emit == nil {
 		emit = func(Event) {}
 	}
@@ -271,6 +364,19 @@ func (a *Agent) compactLocked(ctx context.Context, instructions string, auto boo
 		Type: "compaction_start", Auto: auto, ContextUsage: &before,
 		Usage: &Usage{InputTokens: before.Tokens},
 	})
+	var terminalUsage *Usage
+	defer func() {
+		after := a.contextUsageLocked()
+		terminal := Event{
+			Type: "compaction_end", Auto: auto, Aborted: returnErr != nil,
+			Canceled:     errors.Is(returnErr, context.Canceled) || errors.Is(returnErr, context.DeadlineExceeded),
+			ContextUsage: &after, Usage: terminalUsage,
+		}
+		if returnErr != nil {
+			terminal.Text = returnErr.Error()
+		}
+		emit(terminal)
+	}()
 
 	hook, err := a.registry.RunHooks(ctx, "session_before_compact", map[string]any{
 		"auto": auto, "instructions": instructions, "usage": before,
@@ -280,14 +386,13 @@ func (a *Agent) compactLocked(ctx context.Context, instructions string, auto boo
 		return err
 	}
 	if summary, ok := hook["summary"].(string); ok && strings.TrimSpace(summary) != "" {
-		return a.applyCompactionLocked(summary, recent, auto, before, Usage{}, emit)
+		return a.applyCompactionLocked(summary, recent, auto)
 	}
 	if value, ok := hook["instructions"].(string); ok {
 		instructions = value
 	}
 
-	summaryMessages := contextMessages(oldMessages)
-	serialized, err := json.Marshal(summaryMessages)
+	serialized, err := compactionConversationJSON(oldMessages)
 	if err != nil {
 		return fmt.Errorf("compact conversation: serialize old context: %w", err)
 	}
@@ -308,6 +413,7 @@ Use exactly these headings:
 ## Critical Context
 Preserve exact paths, identifiers, commands, errors, user decisions, current implementation state, verification already run, and unresolved work. Distinguish completed work from proposed work. Omit chatter and redundant tool output. Be concise but sufficiently complete for another agent to continue without the original context. Output only the summary.`
 	if strings.TrimSpace(instructions) != "" {
+		instructions = compactCompactionText(instructions, maxCompactionInstructionsBytes, "instructions")
 		summaryPrompt += "\nApply these additional summary requirements without weakening the rules above:\n" + instructions
 	}
 
@@ -315,13 +421,13 @@ Preserve exact paths, identifiers, commands, errors, user decisions, current imp
 	if maxTokens <= 0 || maxTokens > 4096 {
 		maxTokens = 4096
 	}
-	response, err := a.provider.Stream(ctx, model.Request{
+	response, err := a.streamWithRetryMode(ctx, model.Request{
 		Model:        a.model,
 		SystemPrompt: summaryPrompt,
 		Messages:     []model.Message{model.TextMessage("user", payload)},
 		Tools:        nil, MaxTokens: maxTokens, ReasoningLevel: a.ThinkingLevel(),
 		CacheRetention: "none", CacheKey: a.cacheKey,
-	}, func(model.StreamEvent) {})
+	}, emit, false)
 	if err != nil {
 		return fmt.Errorf("compact conversation: summarize: %w", err)
 	}
@@ -333,10 +439,15 @@ Preserve exact paths, identifiers, commands, errors, user decisions, current imp
 		return errors.New("compact conversation: provider returned an empty summary")
 	}
 
-	return a.applyCompactionLocked(summary, recent, auto, before, a.responseUsage(response, "none", a.providerName, a.model), emit)
+	usage := a.responseUsage(response, "none", a.providerName, a.model)
+	if err := a.applyCompactionLocked(summary, recent, auto); err != nil {
+		return err
+	}
+	terminalUsage = &usage
+	return nil
 }
 
-func (a *Agent) applyCompactionLocked(summary string, recent []model.Message, auto bool, before ContextUsage, usage Usage, emit func(Event)) error {
+func (a *Agent) applyCompactionLocked(summary string, recent []model.Message, auto bool) error {
 	compacted := make([]model.Message, 0, len(recent)+1)
 	compacted = append(compacted, model.TextMessage("user", "[Conversation summary]\n\n"+summary))
 	compacted = append(compacted, recent...)
@@ -349,11 +460,6 @@ func (a *Agent) applyCompactionLocked(summary string, recent []model.Message, au
 	a.messageCount.Store(int64(len(a.messages)))
 	a.reportedInputTokens = 0
 	a.reportedEstimate = 0
-	after := a.contextUsageLocked()
-	emit(Event{
-		Type: "compaction_end", Auto: auto, ContextUsage: &after,
-		Usage: &usage,
-	})
 	return nil
 }
 

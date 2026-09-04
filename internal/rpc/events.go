@@ -90,7 +90,14 @@ func (a *eventAdapter) Handle(event agent.Event) {
 		if event.Auto {
 			reason = "threshold"
 		}
-		_ = a.server.write(map[string]any{"type": "compaction_end", "reason": reason, "aborted": false, "willRetry": false})
+		result := map[string]any{
+			"type": "compaction_end", "reason": reason,
+			"aborted": event.Aborted, "canceled": event.Canceled, "willRetry": event.WillRetry,
+		}
+		if event.Text != "" {
+			result["error"] = event.Text
+		}
+		_ = a.server.write(result)
 	case "delegation_usage":
 		_ = a.server.write(map[string]any{"type": "delegation_usage", "usage": rpcDelegationUsage(event.DelegationUsage)})
 	case "provider_retry":

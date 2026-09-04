@@ -5,7 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"reflect"
 	"strings"
 	"sync"
@@ -15,6 +19,7 @@ import (
 	"github.com/trobrock/notch/internal/delegation"
 	"github.com/trobrock/notch/internal/extension"
 	"github.com/trobrock/notch/internal/model"
+	openaiProvider "github.com/trobrock/notch/internal/provider/openai"
 	"github.com/trobrock/notch/internal/session"
 )
 
@@ -594,12 +599,12 @@ func TestManualCompactionPersists(t *testing.T) {
 	if err := a.Compact(context.Background(), "focus on files", false, nil); err != nil {
 		t.Fatal(err)
 	}
-	var entry session.CompactionEntry
-	if err := json.Unmarshal(store.Entries[len(store.Entries)-1], &entry); err != nil {
+	contents, err := os.ReadFile(store.Path())
+	if err != nil {
 		t.Fatal(err)
 	}
-	if entry.Type != "compaction" || entry.Auto || entry.Summary != "old work summarized" {
-		t.Fatalf("unexpected compaction entry: %#v", entry)
+	if !strings.Contains(string(contents), `"type":"compaction"`) || !strings.Contains(string(contents), `"summary":"old work summarized"`) {
+		t.Fatalf("durable compaction record missing: %s", contents)
 	}
 	if len(store.UsageEntries) != 1 || store.UsageEntries[0].Provider != "fake" || store.UsageEntries[0].Usage.InputTokens != 20 {
 		t.Fatalf("compaction usage = %#v", store.UsageEntries)
@@ -655,6 +660,193 @@ func TestCompactionTrimsLargeToolResultsBeforeSummarizing(t *testing.T) {
 	}
 	if strings.Contains(payload, large) || len(payload) > maxRecentToolResultBytes+2000 {
 		t.Fatalf("summary payload retained oversized tool output: %d bytes", len(payload))
+	}
+}
+
+func TestCompactionFitsCompleteOpenAIWireRequest(t *testing.T) {
+	const wireLimit = 1024 * 1024
+	var requestBytes int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error(err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		requestBytes = len(body)
+		if requestBytes > wireLimit {
+			http.Error(w, "payload too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"content_index\":0,\"delta\":\"bounded summary\"}\n\n")
+		fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"output_tokens\":2}}}\n\n")
+	}))
+	defer server.Close()
+
+	a, err := New(Config{
+		Provider:     openaiProvider.New(openaiProvider.Config{BaseURL: server.URL, HTTPClient: server.Client()}),
+		ProviderName: "openai", Registry: extension.NewRegistry(), Model: "test",
+		Compaction: CompactionConfig{Enabled: false, ContextWindow: 400000, ReserveTokens: 16000, KeepRecentTokens: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 300; i++ {
+		a.messages = append(a.messages,
+			model.TextMessage("user", fmt.Sprintf("task-%03d %s", i, strings.Repeat("u", 2000))),
+			model.Message{Role: "assistant", Content: []model.Block{
+				{Type: "thinking", Text: strings.Repeat("r", 500), Signature: strings.Repeat("s", 8000)},
+				{Type: "text", Text: "answer"},
+			}},
+		)
+	}
+	if err := a.Compact(context.Background(), "", false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if requestBytes == 0 || requestBytes > wireLimit {
+		t.Fatalf("OpenAI wire request = %d bytes, limit = %d", requestBytes, wireLimit)
+	}
+	t.Logf("OpenAI wire request = %d bytes (limit %d)", requestBytes, wireLimit)
+	if !strings.Contains(a.messages[0].Content[0].Text, "bounded summary") {
+		t.Fatalf("compaction summary was not applied: %#v", a.messages[0])
+	}
+}
+
+func TestCompactionRetriesTransientFailureAndEmitsOneTerminalEvent(t *testing.T) {
+	provider := &retryProvider{failures: 1}
+	a, err := New(Config{
+		Provider: provider, Registry: extension.NewRegistry(), Model: "m",
+		Retry:      RetryConfig{MaxAttempts: 2, BaseDelay: time.Nanosecond, MaxDelay: time.Nanosecond},
+		Compaction: CompactionConfig{Enabled: false, ContextWindow: 128000, ReserveTokens: 16384, KeepRecentTokens: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.messages = []model.Message{
+		model.TextMessage("user", "old task"), model.TextMessage("assistant", "old answer"),
+		model.TextMessage("user", "recent task"), model.TextMessage("assistant", "recent answer"),
+	}
+	var starts, ends, retries, leakedOutput int
+	var terminal Event
+	if err := a.Compact(context.Background(), "", false, func(event Event) {
+		switch event.Type {
+		case "compaction_start":
+			starts++
+		case "compaction_end":
+			ends++
+			terminal = event
+		case "provider_retry":
+			retries++
+		case "text_delta", "thinking_delta":
+			leakedOutput++
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if provider.calls != 2 || starts != 1 || ends != 1 || retries != 1 || leakedOutput != 0 {
+		t.Fatalf("calls=%d starts=%d ends=%d retries=%d leaked=%d", provider.calls, starts, ends, retries, leakedOutput)
+	}
+	if terminal.Aborted || terminal.Text != "" || terminal.ContextUsage == nil {
+		t.Fatalf("terminal event = %#v", terminal)
+	}
+}
+
+func TestCompactionFailureEmitsAbortedTerminalAndPreservesContext(t *testing.T) {
+	provider := &retryProvider{failures: 1, emitOnError: true}
+	a, err := New(Config{
+		Provider: provider, Registry: extension.NewRegistry(), Model: "m",
+		Retry:      RetryConfig{MaxAttempts: 3, BaseDelay: time.Nanosecond, MaxDelay: time.Nanosecond},
+		Compaction: CompactionConfig{Enabled: false, ContextWindow: 128000, ReserveTokens: 16384, KeepRecentTokens: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.messages = []model.Message{
+		model.TextMessage("user", "old task"), model.TextMessage("assistant", "old answer"),
+		model.TextMessage("user", "recent task"), model.TextMessage("assistant", "recent answer"),
+	}
+	before := cloneMessages(a.messages)
+	var events []Event
+	err = a.Compact(context.Background(), "", false, func(event Event) { events = append(events, event) })
+	if err == nil || provider.calls != 1 {
+		t.Fatalf("err=%v calls=%d", err, provider.calls)
+	}
+	if !reflect.DeepEqual(a.messages, before) {
+		t.Fatalf("failed compaction changed context: %#v", a.messages)
+	}
+	if len(events) < 2 || events[0].Type != "compaction_start" || events[len(events)-1].Type != "compaction_end" || !events[len(events)-1].Aborted || events[len(events)-1].Text == "" {
+		t.Fatalf("events = %#v", events)
+	}
+}
+
+type preservingSummaryProvider struct {
+	calls    int
+	payloads []string
+}
+
+func (p *preservingSummaryProvider) Stream(_ context.Context, req model.Request, _ func(model.StreamEvent)) (model.Response, error) {
+	p.calls++
+	payload := req.Messages[0].Content[0].Text
+	p.payloads = append(p.payloads, payload)
+	return model.Response{Content: []model.Block{{Type: "text", Text: "Path: internal/agent/context.go\nError: payload too large\nDecision: keep append-only sessions\nNext: run make check"}}}, nil
+}
+
+func TestCanceledCompactionMarksTerminalEvent(t *testing.T) {
+	a, err := New(Config{
+		Provider: &errorProvider{err: context.Canceled}, Registry: extension.NewRegistry(), Model: "m",
+		Compaction: CompactionConfig{Enabled: false, ContextWindow: 128000, ReserveTokens: 16384, KeepRecentTokens: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.messages = []model.Message{
+		model.TextMessage("user", "old task"), model.TextMessage("assistant", "old answer"),
+		model.TextMessage("user", "recent task"), model.TextMessage("assistant", "recent answer"),
+	}
+	var terminal Event
+	err = a.Compact(context.Background(), "", false, func(event Event) {
+		if event.Type == "compaction_end" {
+			terminal = event
+		}
+	})
+	if !errors.Is(err, context.Canceled) || !terminal.Aborted || !terminal.Canceled {
+		t.Fatalf("err=%v terminal=%#v", err, terminal)
+	}
+}
+
+func TestRepeatedCompactionPreservesPriorSummaryContext(t *testing.T) {
+	provider := &preservingSummaryProvider{}
+	a, err := New(Config{
+		Provider: provider, Registry: extension.NewRegistry(), Model: "m",
+		Compaction: CompactionConfig{Enabled: false, ContextWindow: 128000, ReserveTokens: 16384, KeepRecentTokens: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.messages = []model.Message{
+		model.TextMessage("user", "Fix internal/agent/context.go after payload too large; keep append-only sessions"),
+		model.TextMessage("assistant", "I will run make check"),
+		model.TextMessage("user", "first recent task"), model.TextMessage("assistant", "first recent answer"),
+	}
+	if err := a.Compact(context.Background(), "", false, nil); err != nil {
+		t.Fatal(err)
+	}
+	a.messages = append(a.messages, model.TextMessage("user", "second recent task"), model.TextMessage("assistant", "second recent answer"))
+	if err := a.Compact(context.Background(), "", false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if provider.calls != 2 || len(provider.payloads) != 2 || !strings.Contains(provider.payloads[1], "[Conversation summary]") {
+		t.Fatalf("calls=%d payloads=%q", provider.calls, provider.payloads)
+	}
+	final := a.messages[0].Content[0].Text
+	for _, exact := range []string{"internal/agent/context.go", "payload too large", "append-only sessions", "make check"} {
+		if !strings.Contains(final, exact) {
+			t.Fatalf("final summary lost %q: %q", exact, final)
+		}
+	}
+	if len(a.messages) < 2 || a.messages[1].Role != "user" || a.messages[1].Content[0].Type == "tool_result" {
+		t.Fatalf("invalid retained turn boundary: %#v", a.messages)
 	}
 }
 
@@ -730,7 +922,7 @@ func TestSwitchProviderPreservesContextAndRecordsSession(t *testing.T) {
 	if len(a.Messages()) != 1 || a.Messages()[0].Content[0].Text != "keep me" || a.model != "new-model" || a.provider != nextProvider || a.compaction.ContextWindow != 999 {
 		t.Fatalf("switched agent = %#v", a)
 	}
-	if len(store.Entries) != 2 || !strings.Contains(string(store.Entries[1]), `"type":"model_change"`) {
+	if len(store.Entries) != 1 || !strings.Contains(string(store.Entries[0]), `"type":"model_change"`) {
 		t.Fatalf("session entries = %s", store.Entries)
 	}
 }

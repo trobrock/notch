@@ -1334,6 +1334,11 @@ func (a *App) submit(runCtx context.Context, input string) bool {
 func (a *App) agentEventPoster(ctx context.Context) func(agent.Event) {
 	return func(agentEvent agent.Event) {
 		event := agentEvent
+		if event.Type == "compaction_end" {
+			// A canceled operation still owes the UI its terminal compaction event.
+			a.postRunning(appEvent{agent: &event})
+			return
+		}
 		a.post(ctx, appEvent{agent: &event}, false)
 	}
 }
@@ -1469,8 +1474,21 @@ func (a *App) handleAgentEvent(event agent.Event) bool {
 		if event.Auto {
 			mode = "automatically"
 		}
-		a.state.layout.Transcript[i].Text = "Context compacted " + mode
-		a.state.layout.Transcript[i].Pending = false
+		entry := &a.state.layout.Transcript[i]
+		switch {
+		case !event.Aborted:
+			entry.Text = "Context compacted " + mode
+		case event.Canceled:
+			entry.Text = "Context compaction canceled"
+		default:
+			entry.Kind = KindError
+			entry.Text = "Context compaction failed"
+			if event.Text != "" {
+				entry.Text += ": " + event.Text
+			}
+		}
+		entry.Pending = false
+		a.state.compaction = -1
 		if event.ContextUsage != nil {
 			a.applyContextUsage(*event.ContextUsage)
 		}

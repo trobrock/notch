@@ -122,7 +122,7 @@ Notch emits the Pi event names needed by streaming clients:
 - `message_start`, `message_update`, and `message_end`
 - `tool_execution_start`, `tool_execution_update`, and `tool_execution_end`
 - `queue_update`
-- `compaction_start` and `compaction_end`
+- `compaction_start` and `compaction_end` (`compaction_end` always terminates a started compaction and includes `aborted`, `canceled`, `willRetry`, and an `error` string on failure)
 - `error`
 
 Text and thinking use Pi's delta envelope:
