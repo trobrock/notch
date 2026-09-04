@@ -555,3 +555,23 @@ func TestBenchmarkFlags(t *testing.T) {
 		t.Fatal("unexpected exit code classification")
 	}
 }
+
+func TestRootResumeFlagAllowsPickerOrExplicitSession(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--resume"}, ""},
+		{[]string{"--resume", "session-id"}, "session-id"},
+		{[]string{"--resume=session-id"}, "session-id"},
+	} {
+		var opts options
+		flags := newRootFlagSet(&opts)
+		if err := flags.Parse(normalizeResumeArgs(tc.args)); err != nil {
+			t.Fatal(err)
+		}
+		if !opts.resumeSpecified || opts.resumeSession != tc.want {
+			t.Fatalf("args %v parsed as %+v", tc.args, opts)
+		}
+	}
+}

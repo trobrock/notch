@@ -74,9 +74,36 @@ type options struct {
 	maxTurns                                                                                                                      int
 	maxCostUSD                                                                                                                    float64
 	idleTimeout                                                                                                                   time.Duration
-	printMode, planMode, continueSession, noSession, jsonOutput, noTUI, init, showVersion, rpcMode                                bool
+	printMode, planMode, continueSession, resumeSpecified, noSession, jsonOutput, noTUI, init, showVersion, rpcMode               bool
 	noTools, noBuiltinTools, noExtensions, noResources                                                                            bool
 	safe, trustWorkspace                                                                                                          bool
+}
+
+type optionalStringFlag struct {
+	value     *string
+	specified *bool
+}
+
+func (f *optionalStringFlag) String() string {
+	if f == nil || f.value == nil {
+		return ""
+	}
+	return *f.value
+}
+func (f *optionalStringFlag) Set(value string) error {
+	*f.value = value
+	*f.specified = true
+	return nil
+}
+
+func normalizeResumeArgs(args []string) []string {
+	result := append([]string(nil), args...)
+	for i, arg := range result {
+		if (arg == "--resume" || arg == "-r") && (i+1 == len(result) || strings.HasPrefix(result[i+1], "-")) {
+			result[i] += "="
+		}
+	}
+	return result
 }
 
 func main() {
@@ -95,6 +122,7 @@ func processExitCode(err error) int {
 
 func newRootFlagSet(opts *options) *flag.FlagSet {
 	flags := flag.NewFlagSet("notch", flag.ContinueOnError)
+	resume := optionalStringFlag{value: &opts.resumeSession, specified: &opts.resumeSpecified}
 	flags.StringVar(&opts.provider, "provider", "", "provider: openai-codex, anthropic-claude-code, openrouter, anthropic, or openai")
 	flags.StringVar(&opts.modelName, "model", "", "model ID")
 	flags.StringVar(&opts.modelName, "m", "", "model ID (shorthand)")
@@ -110,8 +138,8 @@ func newRootFlagSet(opts *options) *flag.FlagSet {
 	flags.StringVar(&opts.systemPromptFile, "system-prompt-file", "", "read the system prompt override from a file")
 	flags.StringVar(&opts.mcpConfig, "mcp-config", "", "path to MCP JSON config")
 	flags.BoolVar(&opts.continueSession, "continue", false, "continue the latest session for this working directory")
-	flags.StringVar(&opts.resumeSession, "resume", "", "resume a session by ID, prefix, filename, or path")
-	flags.StringVar(&opts.resumeSession, "r", "", "resume a session (shorthand)")
+	flags.Var(&resume, "resume", "select a recent session; pass an ID, prefix, filename, or path to resume directly")
+	flags.Var(&resume, "r", "resume a session (shorthand)")
 	flags.BoolVar(&opts.noSession, "no-session", false, "do not save a session")
 	flags.BoolVar(&opts.jsonOutput, "json", false, "emit JSONL events")
 	flags.BoolVar(&opts.noTUI, "no-tui", false, "use the line-oriented interface")
@@ -170,7 +198,7 @@ func run(args []string) error {
 	var opts options
 	flags := newRootFlagSet(&opts)
 	flags.SetOutput(os.Stderr)
-	if err := flags.Parse(args); err != nil {
+	if err := flags.Parse(normalizeResumeArgs(args)); err != nil {
 		return err
 	}
 	if opts.showVersion {
@@ -212,10 +240,10 @@ func run(args []string) error {
 	if opts.noTools && (opts.toolAllow != "" || opts.toolExclude != "") {
 		return errors.New("--no-tools cannot be combined with --tools or --exclude-tools")
 	}
-	if opts.continueSession && opts.resumeSession != "" {
+	if opts.continueSession && opts.resumeSpecified {
 		return errors.New("--continue and --resume cannot be used together")
 	}
-	if opts.noSession && (opts.continueSession || opts.resumeSession != "") {
+	if opts.noSession && (opts.continueSession || opts.resumeSpecified) {
 		return errors.New("--no-session cannot be combined with --continue or --resume")
 	}
 	if flags.NArg() != 0 {
@@ -371,6 +399,49 @@ func run(args []string) error {
 		return fmt.Errorf("unknown theme %q (available: %s)", cfg.Theme, strings.Join(themeCatalog.Names(), ", "))
 	}
 	cfg.Theme = selectedThemeName
+	if opts.resumeSpecified && opts.resumeSession == "" {
+		if !interactiveTerminal || rpcMode {
+			return errors.New("--resume without a session ID requires an interactive terminal")
+		}
+		infos, listErr := session.List(cfg.SessionDir)
+		if listErr != nil {
+			return listErr
+		}
+		recent := make([]session.Info, 0, 5)
+		for _, info := range infos {
+			if info.MessageCount > 0 && filepath.Clean(info.Header.CWD) == filepath.Clean(cwd) {
+				recent = append(recent, info)
+				if len(recent) == 5 {
+					break
+				}
+			}
+		}
+		if runtime.GOOS == "windows" {
+			choices := make([]string, len(recent))
+			for i, info := range recent {
+				choices[i] = fmt.Sprintf("%s — %s", info.ModifiedAt.Local().Format("Jan 02 15:04"), info.Preview)
+			}
+			choice, selectErr := terminal.Select(ctx, "Resume session", choices)
+			if selectErr != nil {
+				return selectErr
+			}
+			for i, label := range choices {
+				if label == choice {
+					opts.resumeSession = recent[i].Path
+					break
+				}
+			}
+		} else {
+			selected, selectErr := tui.SelectRecentSession(ctx, os.Stdin, os.Stdout, recent, selectedTheme)
+			if errors.Is(selectErr, context.Canceled) {
+				return nil
+			}
+			if selectErr != nil {
+				return selectErr
+			}
+			opts.resumeSession = selected.Path
+		}
+	}
 	useFullscreen, _ := selectRunMode(opts, interactiveTerminal)
 	sessionDir := cfg.SessionDir
 	if opts.noSession {
@@ -530,7 +601,7 @@ func run(args []string) error {
 	}
 	var store *session.Session
 	if !opts.noSession {
-		if opts.resumeSession != "" {
+		if opts.resumeSpecified {
 			var path string
 			path, err = session.Resolve(cfg.SessionDir, opts.resumeSession)
 			if err == nil {
@@ -597,7 +668,7 @@ func run(args []string) error {
 	lifecycleEvent := map[string]any{
 		"cwd": cwd, "provider": normalizeProvider(cfg.Provider), "model": cfg.Model,
 		"thinking_level": cfg.ThinkingLevel, "mode": runMode(rpcMode, useFullscreen, opts),
-		"resumed": opts.continueSession || opts.resumeSession != "",
+		"resumed": opts.continueSession || opts.resumeSpecified,
 	}
 	if store != nil {
 		lifecycleEvent["session_id"] = store.Header.ID
