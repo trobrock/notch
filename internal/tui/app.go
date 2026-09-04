@@ -112,6 +112,7 @@ type appState struct {
 	queuedText          map[string]string
 	promptErrored       bool
 	pendingFollowUps    []string
+	pendingHandoffs     []handoffEvent
 	providerUsage       *agent.Usage
 	commandHelp         bool
 	completionDismissed string
@@ -759,6 +760,11 @@ func (a *App) applyEvent(runCtx context.Context, event appEvent) bool {
 	}
 	if event.promptDone != nil {
 		changed = a.finishPrompt(event.promptDone.err) || changed
+		if !a.state.activeModel && len(a.state.pendingHandoffs) != 0 {
+			handoff := a.state.pendingHandoffs[0]
+			a.state.pendingHandoffs = a.state.pendingHandoffs[1:]
+			changed = a.applyHandoff(runCtx, handoff) || changed
+		}
 		if !a.state.activeModel && len(a.state.pendingFollowUps) != 0 {
 			message := a.state.pendingFollowUps[0]
 			a.state.pendingFollowUps = a.state.pendingFollowUps[1:]
@@ -845,17 +851,10 @@ func (a *App) applyEvent(runCtx context.Context, event appEvent) bool {
 		changed = true
 	}
 	if event.handoff != nil {
-		if event.handoff.fresh {
-			if a.state.activeModel {
-				a.addNotice("fresh handoff requires the agent to be idle", "error")
-			} else if _, err := a.runner.ResetConversation(a.currentSession); err != nil {
-				a.addNotice(err.Error(), "error")
-			} else {
-				a.resetConversationState()
-				changed = a.submit(runCtx, event.handoff.message) || changed
-			}
+		if a.state.activeModel {
+			a.state.pendingHandoffs = append(a.state.pendingHandoffs, *event.handoff)
 		} else {
-			changed = a.submit(runCtx, event.handoff.message) || changed
+			changed = a.applyHandoff(runCtx, *event.handoff) || changed
 		}
 		changed = true
 	}
@@ -879,6 +878,17 @@ func (a *App) applyEvent(runCtx context.Context, event appEvent) bool {
 		a.preserveTranscriptAnchor(oldLines, oldViewport)
 	}
 	return changed
+}
+
+func (a *App) applyHandoff(runCtx context.Context, handoff handoffEvent) bool {
+	if handoff.fresh {
+		if _, err := a.runner.ResetConversation(a.currentSession); err != nil {
+			a.addNotice(err.Error(), "error")
+			return true
+		}
+		a.resetConversationState()
+	}
+	return a.submit(runCtx, handoff.message)
 }
 
 func (a *App) handleGlobalInput(runCtx context.Context, key KeyEvent) (changed, exit, handled bool) {

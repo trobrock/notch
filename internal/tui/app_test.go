@@ -1297,6 +1297,50 @@ func TestAppDisplaysProviderRetryWithoutMarkingPromptFailed(t *testing.T) {
 	}
 }
 
+func TestFreshHandoffWaitsForPromptDone(t *testing.T) {
+	runner := newAppTestAgent(t, nil)
+	if err := runner.Prompt(context.Background(), "old context", nil); err != nil {
+		t.Fatal(err)
+	}
+	a := NewApp(AppConfig{})
+	a.runner = runner
+	// Handoff is posted by the agent_end hook before the prompt goroutine can
+	// post promptDone, so the UI still considers the model active here.
+	a.state.activeModel = true
+	handoff := handoffEvent{message: "implement approved plan", fresh: true}
+	if !a.applyEvent(context.Background(), appEvent{handoff: &handoff}) {
+		t.Fatal("handoff event was not handled")
+	}
+	if len(a.state.pendingHandoffs) != 1 {
+		t.Fatalf("pending handoffs = %#v", a.state.pendingHandoffs)
+	}
+	if got := runner.Messages(); len(got) != 2 {
+		t.Fatalf("conversation changed before prompt completion: %#v", got)
+	}
+
+	if !a.applyEvent(context.Background(), appEvent{promptDone: &promptResult{}}) {
+		t.Fatal("prompt completion was not handled")
+	}
+	if len(a.state.pendingHandoffs) != 0 || !a.state.activeModel {
+		t.Fatalf("handoff dispatch state: pending=%#v active=%v", a.state.pendingHandoffs, a.state.activeModel)
+	}
+	if len(a.state.layout.Transcript) != 1 || a.state.layout.Transcript[0].Text != handoff.message {
+		t.Fatalf("fresh transcript = %#v", a.state.layout.Transcript)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		messages := runner.Messages()
+		if len(messages) >= 2 && messages[0].Role == "user" && messages[0].Content[0].Text == handoff.message {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("fresh handoff was not submitted: %#v", messages)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func TestMonitorFollowUpSurvivesSettledAgentBeforePromptDone(t *testing.T) {
 	runner := newAppTestAgent(t, nil)
 	if err := runner.Prompt(context.Background(), "initial", nil); err != nil {
