@@ -403,7 +403,8 @@ func run(args []string) error {
 	}
 	defer luaManager.Close()
 
-	var mcpManager *mcp.Manager
+	var mcpRuntime *mcpRuntime
+	mcpPolicyReady := false
 	if cfg.MCPConfig != "" && !opts.noTools {
 		if _, statErr := os.Stat(cfg.MCPConfig); statErr == nil {
 			mcpCfg, loadErr := mcp.LoadConfig(cfg.MCPConfig)
@@ -412,14 +413,27 @@ func run(args []string) error {
 			} else {
 				oauthStore := mcpoauth.NewStore(cfg.MCPAuthFile)
 				authorizer := &mcpoauth.Authorizer{Store: oauthStore, Client: mcpoauth.NewClient()}
-				if mcpManager, err = mcp.ConnectConfigured(ctx, mcpCfg, registry, authorizer); err != nil {
+				mcpRuntime = newMCPRuntime(mcpCfg, registry, oauthStore, authorizer, func() {
+					if mcpPolicyReady {
+						reapplyToolPolicy(registry, opts)
+					}
+				})
+				if fullscreen != nil {
+					if err := registry.RegisterCommand(mcpRuntime.command(mcpNoticeWriter{host: extensionHost})); err != nil {
+						return err
+					}
+				}
+				if err = mcpRuntime.Connect(ctx); err != nil {
 					extensionHost.Notify(err.Error(), "warning")
+					if hint := mcpLoginHint(err, mcpCfg); fullscreen != nil && hint != "" {
+						extensionHost.Notify(hint, "notice")
+					}
 				}
 			}
 		}
 	}
-	if mcpManager != nil {
-		defer mcpManager.Close()
+	if mcpRuntime != nil {
+		defer mcpRuntime.Close()
 	}
 
 	var catalog *resources.Catalog
@@ -447,6 +461,7 @@ func run(args []string) error {
 	if err := applyToolPolicy(registry, opts); err != nil {
 		return err
 	}
+	mcpPolicyReady = true
 	if _, active := registry.Tool("skill"); !active {
 		skillToolAvailable = false
 	}
@@ -1065,6 +1080,25 @@ func enableStartupPlanMode(ctx context.Context, registry *extension.Registry) er
 		return fmt.Errorf("enable plan mode: %w", err)
 	}
 	return nil
+}
+
+func reapplyToolPolicy(registry *extension.Registry, opts options) {
+	if opts.noTools {
+		registry.RestrictTools(nil)
+		return
+	}
+	if opts.toolAllow != "" {
+		allowed, err := parseToolNames(opts.toolAllow)
+		if err == nil {
+			registry.RestrictTools(allowed)
+		}
+	}
+	if opts.toolExclude != "" {
+		excluded, err := parseToolNames(opts.toolExclude)
+		if err == nil {
+			registry.RemoveTools(excluded)
+		}
+	}
 }
 
 func applyToolPolicy(registry *extension.Registry, opts options) error {
