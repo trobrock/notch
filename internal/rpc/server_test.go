@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -48,6 +49,28 @@ func (p *rpcTestProvider) Stream(ctx context.Context, _ model.Request, emit func
 		Content: []model.Block{{Type: "text", Text: text}}, StopReason: "end_turn",
 		InputTokens: 10 * call, OutputTokens: 2,
 	}, nil
+}
+
+func TestCompactionFailureEventClearsRPCState(t *testing.T) {
+	var output bytes.Buffer
+	server := New(strings.NewReader(""), &output, "/work")
+	adapter := newEventAdapter(server, StateConfig{})
+	adapter.Handle(agent.Event{Type: "compaction_start"})
+	if !server.compacting {
+		t.Fatal("compaction start did not set RPC state")
+	}
+	adapter.Handle(agent.Event{Type: "compaction_end", Aborted: true, Text: "request rejected"})
+	if server.compacting {
+		t.Fatal("compaction failure did not clear RPC state")
+	}
+	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
+	var terminal map[string]any
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &terminal); err != nil {
+		t.Fatal(err)
+	}
+	if terminal["aborted"] != true || terminal["willRetry"] != false || terminal["error"] != "request rejected" {
+		t.Fatalf("terminal event = %#v", terminal)
+	}
 }
 
 func TestRPCUsageKeepsProviderAndDelegationMetricsSeparate(t *testing.T) {

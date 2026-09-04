@@ -1132,6 +1132,19 @@ func TestAppThinkingCycleForwardsToAgent(t *testing.T) {
 	}
 }
 
+func TestAppFailedCompactionClearsPendingNotice(t *testing.T) {
+	a := NewApp(AppConfig{})
+	a.handleAgentEvent(agent.Event{Type: "compaction_start"})
+	a.handleAgentEvent(agent.Event{Type: "compaction_end", Aborted: true, Text: "request rejected"})
+	if len(a.state.layout.Transcript) != 1 {
+		t.Fatalf("transcript entries = %d", len(a.state.layout.Transcript))
+	}
+	entry := a.state.layout.Transcript[0]
+	if entry.Pending || entry.Kind != KindError || !strings.Contains(entry.Text, "request rejected") || a.state.compaction != -1 {
+		t.Fatalf("failed compaction state = %#v / index %d", entry, a.state.compaction)
+	}
+}
+
 func TestAppManualCompactionEventsShareNotice(t *testing.T) {
 	a := NewApp(AppConfig{})
 	before := agent.ContextUsage{Tokens: 900, ContextWindow: 1000, AutoCompact: true}

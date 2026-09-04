@@ -127,9 +127,11 @@ type sessionFile interface {
 	Close() error
 }
 
-// Session is a loaded or newly-created session. Entries contains the exact
-// JSON for every record after the header, and Messages contains the effective
-// conversation context after applying message, compaction, and reset records.
+// Session is a loaded or newly-created session. Entries contains exact custom
+// JSON records in the current logical conversation; standard records are kept
+// only in their structured forms to avoid duplicating large message payloads.
+// Messages contains the effective conversation context after applying message,
+// compaction, and reset records.
 type Session struct {
 	Header       Header
 	Metadata     Metadata
@@ -137,10 +139,13 @@ type Session struct {
 	Messages     []model.Message
 	UsageEntries []UsageEntry
 
-	mu     sync.Mutex
-	path   string
-	file   sessionFile
-	closed bool
+	mu           sync.Mutex
+	path         string
+	file         sessionFile
+	closed       bool
+	lightweight  bool
+	messageCount int
+	preview      string
 }
 
 // New atomically creates a session in dir. The header is durable before New
@@ -203,7 +208,7 @@ func Load(path string) (*Session, error) {
 		_ = f.Close()
 		return nil, fmt.Errorf("stat session %q: %w", path, err)
 	}
-	loaded, recovery, err := readRecoverableSession(f, path, stat.Size())
+	loaded, recovery, err := readRecoverableSession(f, path, stat.Size(), false)
 	if err != nil {
 		_ = f.Close()
 		return nil, err
@@ -247,7 +252,7 @@ type tailRecovery struct {
 
 // readRecoverableSession applies Load's validation rules without modifying the
 // file. Callers may then perform the returned recovery action when appropriate.
-func readRecoverableSession(f *os.File, path string, size int64) (*Session, tailRecovery, error) {
+func readRecoverableSession(f *os.File, path string, size int64, lightweight bool) (*Session, tailRecovery, error) {
 	unterminated := false
 	if size > 0 {
 		var last [1]byte
@@ -269,7 +274,7 @@ func readRecoverableSession(f *os.File, path string, size int64) (*Session, tail
 		if !json.Valid(bytes.TrimSpace(tail)) {
 			// Validate the prefix before discarding anything. This ensures an
 			// interior corrupt record can never be mistaken for a torn tail.
-			loaded := &Session{path: path}
+			loaded := &Session{path: path, lightweight: lightweight}
 			if err := loaded.decode(io.NewSectionReader(f, 0, tailStart)); err != nil {
 				return nil, tailRecovery{}, fmt.Errorf("load session %q: %w", path, err)
 			}
@@ -277,7 +282,7 @@ func readRecoverableSession(f *os.File, path string, size int64) (*Session, tail
 		}
 	}
 
-	loaded := &Session{path: path}
+	loaded := &Session{path: path, lightweight: lightweight}
 	if err := loaded.decode(io.NewSectionReader(f, 0, size)); err != nil {
 		return nil, tailRecovery{}, fmt.Errorf("load session %q: %w", path, err)
 	}
@@ -329,7 +334,7 @@ func List(dir string) ([]Info, error) {
 			_ = file.Close()
 			return nil, fmt.Errorf("stat session %q: %w", path, statErr)
 		}
-		loaded, _, decodeErr := readRecoverableSession(file, path, stat.Size())
+		loaded, _, decodeErr := readRecoverableSession(file, path, stat.Size(), true)
 		closeErr := file.Close()
 		if closeErr != nil {
 			return nil, fmt.Errorf("close session %q: %w", path, closeErr)
@@ -340,8 +345,11 @@ func List(dir string) ([]Info, error) {
 			// are left untouched; Load performs the actual repair.
 			continue
 		}
-		info := Info{Path: path, Header: loaded.Header, ModifiedAt: stat.ModTime(), MessageCount: len(loaded.Messages)}
-		info.Preview = sessionPreview(loaded.Messages)
+		info := Info{Path: path, Header: loaded.Header, ModifiedAt: stat.ModTime(), MessageCount: loaded.messageCount}
+		info.Preview = loaded.preview
+		if info.Preview == "" {
+			info.Preview = "(empty session)"
+		}
 		infos = append(infos, info)
 	}
 	sort.Slice(infos, func(i, j int) bool {
@@ -428,48 +436,28 @@ func LatestForCWD(dir, cwd string) (*Session, error) {
 }
 
 func latest(dir, cwd string) (*Session, error) {
-	items, err := os.ReadDir(dir)
+	infos, err := List(dir)
 	if err != nil {
-		return nil, fmt.Errorf("read session directory %q: %w", dir, err)
+		return nil, err
 	}
-	type candidate struct {
-		path string
-		mod  time.Time
-	}
-	var files []candidate
-	for _, item := range items {
-		if item.IsDir() || !strings.HasSuffix(item.Name(), fileExtension) {
-			continue
-		}
-		info, err := item.Info()
-		if err != nil {
-			return nil, fmt.Errorf("stat session %q: %w", filepath.Join(dir, item.Name()), err)
-		}
-		files = append(files, candidate{filepath.Join(dir, item.Name()), info.ModTime()})
-	}
-	if len(files) == 0 {
+	if len(infos) == 0 {
 		return nil, fmt.Errorf("latest session in %q: %w", dir, os.ErrNotExist)
 	}
-	sort.Slice(files, func(i, j int) bool {
-		if files[i].mod.Equal(files[j].mod) {
-			return files[i].path > files[j].path
-		}
-		return files[i].mod.After(files[j].mod)
-	})
 	var loadErr error
-	sawValid := false
-	for _, file := range files {
-		loaded, err := Load(file.path)
-		if err == nil {
-			sawValid = true
-			if cwd == "" || filepath.Clean(loaded.Header.CWD) == cwd {
-				return loaded, nil
-			}
-			_ = loaded.Close()
+	matchedCWD := false
+	for _, info := range infos {
+		if cwd != "" && filepath.Clean(info.Header.CWD) != cwd {
+			continue
 		}
+		matchedCWD = true
+		loaded, err := Load(info.Path)
+		if err == nil {
+			return loaded, nil
+		}
+		// The file may have changed after discovery; keep trying older matches.
 		loadErr = errors.Join(loadErr, err)
 	}
-	if cwd != "" && sawValid {
+	if cwd != "" && !matchedCWD {
 		return nil, fmt.Errorf("latest session for working directory %q in %q: %w", cwd, dir, os.ErrNotExist)
 	}
 	return nil, fmt.Errorf("latest valid session in %q: %w", dir, loadErr)
@@ -485,7 +473,6 @@ func (s *Session) AppendMessage(message model.Message) error {
 	}
 	return s.appendLine(line, func() {
 		s.Messages = append(s.Messages, message)
-		s.Entries = append(s.Entries, cloneRaw(line[:len(line)-1]))
 	})
 }
 
@@ -503,7 +490,6 @@ func (s *Session) AppendCompaction(summary string, messages []model.Message, aut
 	}
 	return s.appendLine(line, func() {
 		s.Messages = snapshot
-		s.Entries = append(s.Entries, cloneRaw(line[:len(line)-1]))
 	})
 }
 
@@ -517,7 +503,7 @@ func (s *Session) AppendReset() error {
 	}
 	return s.appendLine(line, func() {
 		s.Messages = nil
-		s.Entries = append(s.Entries, cloneRaw(line[:len(line)-1]))
+		s.Entries = nil
 	})
 }
 
@@ -556,7 +542,6 @@ func (s *Session) AppendUsage(provider, modelName string, usage TokenUsage, stop
 	}
 	return s.appendLine(line, func() {
 		s.UsageEntries = append(s.UsageEntries, entry)
-		s.Entries = append(s.Entries, cloneRaw(line[:len(line)-1]))
 	})
 }
 
@@ -592,8 +577,8 @@ func (s *Session) AppendEntry(entry any, value ...any) error {
 	var kind struct {
 		Type string `json:"type"`
 	}
-	if err := json.Unmarshal(line, &kind); err == nil && kind.Type == "metadata" {
-		return errors.New("append session entry: metadata is only valid as the header")
+	if err := json.Unmarshal(line, &kind); err == nil && reservedCustomEntryTypes[strings.TrimSpace(kind.Type)] {
+		return fmt.Errorf("append session entry: type %q is reserved", kind.Type)
 	}
 	return s.appendLine(line, func() {
 		s.Entries = append(s.Entries, cloneRaw(line[:len(line)-1]))
@@ -647,20 +632,8 @@ func (s *Session) CustomEntries(kind string) ([]json.RawMessage, error) {
 		return nil, errors.New("read custom session entries: type is required")
 	}
 	snapshot := s.EntriesSnapshot()
-	start := 0
-	for i, raw := range snapshot {
-		var header struct {
-			Type string `json:"type"`
-		}
-		if err := json.Unmarshal(raw, &header); err != nil {
-			continue
-		}
-		if header.Type == "reset" {
-			start = i + 1
-		}
-	}
 	var data []json.RawMessage
-	for _, raw := range snapshot[start:] {
+	for _, raw := range snapshot {
 		var entry struct {
 			Type string          `json:"type"`
 			Data json.RawMessage `json:"data"`
@@ -673,8 +646,8 @@ func (s *Session) CustomEntries(kind string) ([]json.RawMessage, error) {
 	return data, nil
 }
 
-// EntriesSnapshot returns independent copies of every record after the session
-// header. It is safe to call while other goroutines append entries.
+// EntriesSnapshot returns independent copies of custom records in the current
+// logical conversation. Standard records are available through structured state.
 func (s *Session) EntriesSnapshot() []json.RawMessage {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -797,19 +770,43 @@ func (s *Session) decode(r io.Reader) error {
 					if entry.Message == nil {
 						return fmt.Errorf("line %d: message entry has no message", lineNumber)
 					}
-					s.Messages = append(s.Messages, *entry.Message)
+					if s.lightweight {
+						s.messageCount++
+						if s.preview == "" {
+							candidate := sessionPreview([]model.Message{*entry.Message})
+							if candidate != "(empty session)" {
+								s.preview = candidate
+							}
+						}
+					} else {
+						s.Messages = append(s.Messages, *entry.Message)
+					}
 				case "compaction":
 					var entry CompactionEntry
 					if decodeErr := decodeStrict(trimmed, &entry); decodeErr != nil {
 						return fmt.Errorf("line %d: invalid compaction entry: %w", lineNumber, decodeErr)
 					}
-					s.Messages = cloneMessages(entry.Messages)
+					if s.lightweight {
+						s.messageCount = len(entry.Messages)
+						s.preview = sessionPreview(entry.Messages)
+						if s.preview == "(empty session)" {
+							s.preview = ""
+						}
+					} else {
+						s.Messages = cloneMessages(entry.Messages)
+					}
 				case "reset":
 					var entry ResetEntry
 					if decodeErr := decodeStrict(trimmed, &entry); decodeErr != nil {
 						return fmt.Errorf("line %d: invalid reset entry: %w", lineNumber, decodeErr)
 					}
-					s.Messages = nil
+					if s.lightweight {
+						s.messageCount = 0
+						s.preview = ""
+					} else {
+						s.Messages = nil
+						s.Entries = nil
+					}
 				case "usage":
 					var entry UsageEntry
 					if decodeErr := decodeStrict(trimmed, &entry); decodeErr != nil {
@@ -829,9 +826,14 @@ func (s *Session) decode(r io.Reader) error {
 							return fmt.Errorf("line %d: invalid delegated usage cost", lineNumber)
 						}
 					}
-					s.UsageEntries = append(s.UsageEntries, entry)
+					if !s.lightweight {
+						s.UsageEntries = append(s.UsageEntries, entry)
+					}
+				default:
+					if !s.lightweight {
+						s.Entries = append(s.Entries, cloneRaw(trimmed))
+					}
 				}
-				s.Entries = append(s.Entries, cloneRaw(trimmed))
 			}
 		}
 		if err == io.EOF {

@@ -46,6 +46,9 @@ type Event struct {
 	Usage           *Usage                `json:"usage,omitempty"`
 	ContextUsage    *ContextUsage         `json:"context_usage,omitempty"`
 	Auto            bool                  `json:"auto,omitempty"`
+	Aborted         bool                  `json:"aborted,omitempty"`
+	Canceled        bool                  `json:"canceled,omitempty"`
+	WillRetry       bool                  `json:"will_retry,omitempty"`
 	Queue           []QueuedMessage       `json:"queue,omitempty"`
 	Queued          *QueuedMessage        `json:"queued,omitempty"`
 	Message         *model.Message        `json:"message,omitempty"`
@@ -746,6 +749,10 @@ func addUsage(total *Usage, current Usage) {
 }
 
 func (a *Agent) streamWithRetry(ctx context.Context, request model.Request, emit func(Event)) (model.Response, error) {
+	return a.streamWithRetryMode(ctx, request, emit, true)
+}
+
+func (a *Agent) streamWithRetryMode(ctx context.Context, request model.Request, emit func(Event), forwardOutput bool) (model.Response, error) {
 	for attempt := 1; ; attempt++ {
 		emitted := false
 		response, err := a.provider.Stream(ctx, request, func(event model.StreamEvent) {
@@ -753,7 +760,9 @@ func (a *Agent) streamWithRetry(ctx context.Context, request model.Request, emit
 			switch event.Type {
 			case "text_delta", "thinking_delta":
 				emitted = true
-				emit(Event{Type: event.Type, Text: event.Text})
+				if forwardOutput {
+					emit(Event{Type: event.Type, Text: event.Text})
+				}
 			}
 		})
 		if err == nil {

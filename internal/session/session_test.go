@@ -69,6 +69,11 @@ func TestCustomEntriesExcludeRecordsBeforeResetAndReserveCoreTypes(t *testing.T)
 	if err := s.AppendEntry("message", map[string]any{}); err == nil || !strings.Contains(err.Error(), "reserved") {
 		t.Fatalf("AppendEntry(reserved) = %v", err)
 	}
+	for _, kind := range []string{"metadata", "session", "message", "compaction", "reset", "usage"} {
+		if err := s.AppendEntry(map[string]any{"type": kind}); err == nil || !strings.Contains(err.Error(), "reserved") {
+			t.Fatalf("AppendEntry(raw %q) = %v", kind, err)
+		}
+	}
 }
 
 func TestNewAppendLoad(t *testing.T) {
@@ -123,8 +128,8 @@ func TestNewAppendLoad(t *testing.T) {
 	if len(loaded.Messages) != 1 || loaded.Messages[0].Role != "user" {
 		t.Fatalf("bad messages: %+v", loaded.Messages)
 	}
-	if len(loaded.Entries) != 4 {
-		t.Fatalf("got %d entries", len(loaded.Entries))
+	if len(loaded.Entries) != 2 {
+		t.Fatalf("got %d custom entries", len(loaded.Entries))
 	}
 	if len(loaded.UsageEntries) != 1 || loaded.UsageEntries[0].Provider != "anthropic" || loaded.UsageEntries[0].Model != "test-model" || loaded.UsageEntries[0].Usage.InputTokens != 12 || loaded.UsageEntries[0].Usage.OutputTokens != 7 || loaded.UsageEntries[0].Usage.CacheReadTokens != 5 || loaded.UsageEntries[0].Usage.CacheWriteTokens != 3 || loaded.UsageEntries[0].Usage.ReasoningTokens != 2 || loaded.UsageEntries[0].Usage.CostUSD == nil || *loaded.UsageEntries[0].Usage.CostUSD != cost || loaded.UsageEntries[0].Usage.ProviderCostUSD == nil || *loaded.UsageEntries[0].Usage.ProviderCostUSD != providerCost || loaded.UsageEntries[0].Usage.EstimatedCostUSD == nil || *loaded.UsageEntries[0].Usage.EstimatedCostUSD != estimatedCost || loaded.UsageEntries[0].Usage.CostSource != "provider" || loaded.UsageEntries[0].Usage.PricingVersion != "test-v1" || loaded.UsageEntries[0].StopReason != "end_turn" {
 		t.Fatalf("bad usage entries: %+v", loaded.UsageEntries)
@@ -133,7 +138,7 @@ func TestNewAppendLoad(t *testing.T) {
 		t.Fatalf("bad delegated usage: %+v", loaded.UsageEntries[0].Delegated)
 	}
 	var custom CustomEntry
-	if err := json.Unmarshal(loaded.Entries[1], &custom); err != nil {
+	if err := json.Unmarshal(loaded.Entries[0], &custom); err != nil {
 		t.Fatal(err)
 	}
 	if custom.Type != "bookmark" {
@@ -210,25 +215,15 @@ func TestCompactionResetRoundTrip(t *testing.T) {
 	if !reflect.DeepEqual(loaded.Messages, []model.Message{final}) {
 		t.Fatalf("loaded effective messages = %+v, want %+v", loaded.Messages, []model.Message{final})
 	}
-	if len(loaded.Entries) != 6 {
-		t.Fatalf("loaded entries = %d, want 6", len(loaded.Entries))
+	if len(loaded.Entries) != 0 {
+		t.Fatalf("loaded custom entries = %d, want 0", len(loaded.Entries))
 	}
-	var compaction CompactionEntry
-	if err := json.Unmarshal(loaded.Entries[2], &compaction); err != nil {
+	contents, err := os.ReadFile(path)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if compaction.Type != "compaction" || compaction.Summary != "summary" || !compaction.Auto || len(compaction.Messages) != 1 {
-		t.Fatalf("bad compaction entry: %+v", compaction)
-	}
-	if compaction.Timestamp.IsZero() {
-		t.Fatal("compaction timestamp is zero")
-	}
-	var reset ResetEntry
-	if err := json.Unmarshal(loaded.Entries[4], &reset); err != nil {
-		t.Fatal(err)
-	}
-	if reset.Type != "reset" || reset.Timestamp.IsZero() {
-		t.Fatalf("bad reset entry: %+v", reset)
+	if !bytes.Contains(contents, []byte(`"type":"compaction"`)) || !bytes.Contains(contents, []byte(`"summary":"summary"`)) || !bytes.Contains(contents, []byte(`"type":"reset"`)) {
+		t.Fatalf("durable session is missing compaction or reset records: %s", contents)
 	}
 }
 
@@ -752,8 +747,8 @@ func TestConcurrentAppend(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer loaded.Close()
-	if len(loaded.Messages) != count || len(loaded.Entries) != count {
-		t.Fatalf("messages=%d entries=%d", len(loaded.Messages), len(loaded.Entries))
+	if len(loaded.Messages) != count || len(loaded.Entries) != 0 {
+		t.Fatalf("messages=%d custom entries=%d", len(loaded.Messages), len(loaded.Entries))
 	}
 }
 
@@ -796,8 +791,8 @@ func TestConcurrentMessageCompactionAndReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer loaded.Close()
-	if len(loaded.Entries) != count {
-		t.Fatalf("entries = %d, want %d", len(loaded.Entries), count)
+	if len(loaded.Entries) != 0 {
+		t.Fatalf("custom entries = %d, want 0", len(loaded.Entries))
 	}
 	if !reflect.DeepEqual(loaded.Messages, want) {
 		t.Fatalf("loaded messages = %+v, in-memory messages = %+v", loaded.Messages, want)
