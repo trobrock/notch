@@ -84,3 +84,11 @@ type ModelInfo struct {
 type ModelLister interface {
 	ListModels(ctx context.Context) ([]ModelInfo, error)
 }
+
+// DiscoverableProvider is the common capability set implemented by Notch's
+// built-in providers. Keeping model discovery as a separate capability lets
+// future providers support generation even when their API has no catalog.
+type DiscoverableProvider interface {
+	Provider
+	ModelLister
+}
