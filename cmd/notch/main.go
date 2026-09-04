@@ -200,6 +200,7 @@ func run(args []string) error {
 	}
 	workspaceRoot := cwd
 	workspaceTrustKey := cwd
+	workspaceTrusted := false
 	gitBranch := ""
 	var cfg config.Config
 	switch {
@@ -219,10 +220,9 @@ func run(args []string) error {
 		workspaceRoot = workspaceInfo.Root
 		workspaceTrustKey = workspaceInfo.TrustKey
 		gitBranch = workspaceInfo.Branch
-		var trusted bool
-		trusted, err = resolveWorkspaceTrust(home, workspaceRoot, workspaceTrustKey, opts, os.Stdin, os.Stderr, terminalsInteractive(os.Stdin, os.Stdout))
+		workspaceTrusted, err = resolveWorkspaceTrust(home, workspaceRoot, workspaceTrustKey, opts, os.Stdin, os.Stderr, terminalsInteractive(os.Stdin, os.Stdout))
 		if err == nil {
-			cfg, err = config.LoadWorkspace(home, workspaceRoot, trusted)
+			cfg, err = config.LoadWorkspace(home, workspaceRoot, workspaceTrusted)
 		}
 	}
 	if err != nil {
@@ -268,6 +268,13 @@ func run(args []string) error {
 		cfg.SystemPrompt = string(data)
 	} else if opts.systemPrompt != "" {
 		cfg.SystemPrompt = opts.systemPrompt
+	}
+	workspaceInstructions := ""
+	if workspaceTrusted {
+		workspaceInstructions, err = workspace.Instructions(workspaceRoot)
+		if err != nil {
+			return err
+		}
 	}
 	if opts.noExtensions {
 		cfg.ExtensionDirs = nil
@@ -446,6 +453,9 @@ func run(args []string) error {
 	terminal.SetRegistry(registry)
 
 	systemPrompt := cfg.SystemPrompt
+	if workspaceInstructions != "" {
+		systemPrompt += "\n\n" + workspaceInstructions
+	}
 	if summary := catalog.SystemSummary(skillToolAvailable); summary != "" {
 		systemPrompt += "\n\n" + summary
 	}
@@ -910,7 +920,7 @@ func resolveWorkspaceTrust(home, root, trustKey string, opts options, in io.Read
 	if !interactive {
 		return false, nil
 	}
-	fmt.Fprintf(diagnostic, "Trust workspace %s and load its .notch/.agents inputs? [y/N] ", root)
+	fmt.Fprintf(diagnostic, "Trust workspace %s and load its project config, resources, extensions, and AGENTS instructions? [y/N] ", root)
 	reader := bufio.NewReader(in)
 	answer, readErr := reader.ReadString('\n')
 	if readErr != nil && !errors.Is(readErr, io.EOF) {

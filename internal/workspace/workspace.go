@@ -14,7 +14,10 @@ import (
 	"strings"
 )
 
-const trustFileName = "trusted-workspaces.json"
+const (
+	trustFileName       = "trusted-workspaces.json"
+	maxInstructionsSize = 1 << 20
+)
 
 // Info separates the active worktree root, where project inputs are loaded,
 // from the repository-wide trust key shared by all linked worktrees. Branch is
@@ -149,6 +152,8 @@ func HasProjectInputs(root string) (bool, error) {
 	for _, path := range []string{
 		filepath.Join(root, ".notch", "config.json"),
 		filepath.Join(root, ".notch", "mcp.json"),
+		filepath.Join(root, "AGENTS.md"),
+		filepath.Join(root, "AGENTS.local.md"),
 	} {
 		if _, err := os.Lstat(path); err == nil {
 			return true, nil
@@ -173,6 +178,46 @@ func HasProjectInputs(root string) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+// Instructions loads trusted root-level agent instructions in precedence
+// order. AGENTS.local.md is appended last so local guidance can override the
+// shared AGENTS.md guidance.
+func Instructions(root string) (string, error) {
+	var sections []string
+	total := 0
+	for _, name := range []string{"AGENTS.md", "AGENTS.local.md"} {
+		path := filepath.Join(root, name)
+		data, err := readInstructionFile(path, maxInstructionsSize-total)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return "", fmt.Errorf("read workspace instructions %q: %w", path, err)
+		}
+		total += len(data)
+		content := strings.TrimSpace(string(data))
+		if content != "" {
+			sections = append(sections, "## Workspace instructions from "+name+"\n\n"+content)
+		}
+	}
+	return strings.Join(sections, "\n\n"), nil
+}
+
+func readInstructionFile(path string, remaining int) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, int64(remaining)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > remaining {
+		return nil, fmt.Errorf("workspace instructions exceed %d bytes", maxInstructionsSize)
+	}
+	return data, nil
 }
 
 func nonEmptyPath(path string) (bool, error) {
