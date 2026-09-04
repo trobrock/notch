@@ -79,10 +79,15 @@ type processRunner struct {
 	executable      string
 	defaultCWD      string
 	heartbeatPeriod time.Duration
+	settingSources  string
 }
 
 // NewRunner creates a subprocess runner using the current Notch executable.
 func NewRunner(host extension.Host) (Runner, error) {
+	return NewRunnerWithSettingSources(host, "user,project")
+}
+
+func NewRunnerWithSettingSources(host extension.Host, settingSources string) (Runner, error) {
 	if host == nil {
 		return nil, errors.New("create subagent runner: host is required")
 	}
@@ -90,15 +95,19 @@ func NewRunner(host extension.Host) (Runner, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve Notch executable: %w", err)
 	}
-	return &processRunner{executable: executable, defaultCWD: host.CWD()}, nil
+	return &processRunner{executable: executable, defaultCWD: host.CWD(), settingSources: settingSources}, nil
 }
 
 // Register registers run_subagent using the current Notch executable.
 func Register(registry *extension.Registry, host extension.Host) error {
+	return RegisterWithSettingSources(registry, host, "user,project")
+}
+
+func RegisterWithSettingSources(registry *extension.Registry, host extension.Host, settingSources string) error {
 	if registry == nil || host == nil {
 		return errors.New("register subagent: registry and host are required")
 	}
-	runner, err := NewRunner(host)
+	runner, err := NewRunnerWithSettingSources(host, settingSources)
 	if err != nil {
 		return err
 	}
@@ -259,7 +268,11 @@ func (r *processRunner) Run(ctx context.Context, input Input, update func(string
 		return Result{}, fmt.Errorf("write subagent system prompt: %w", err)
 	}
 
-	args := []string{"--json", "--no-session", "--no-tui", "--no-extensions", "--no-resources", "--tools", input.Tools,
+	settingSources := r.settingSources
+	if settingSources == "" {
+		settingSources = "user,project"
+	}
+	args := []string{"--json", "--setting-sources", settingSources, "--no-session", "--no-tui", "--no-extensions", "--no-resources", "--tools", input.Tools,
 		"--thinking", input.Thinking, "--system-prompt-file", systemPath}
 	args = append(args, modelArgs(input.Model)...)
 	args = append(args, "--print")

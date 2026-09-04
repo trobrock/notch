@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/trobrock/notch/internal/agent"
 	"github.com/trobrock/notch/internal/config"
 	"github.com/trobrock/notch/internal/credentials"
 	"github.com/trobrock/notch/internal/extension"
@@ -532,5 +535,23 @@ func TestCurrentBuildInfoUsesInjectedValues(t *testing.T) {
 	}
 	if info.GoVersion == "" || info.Platform == "" {
 		t.Fatalf("incomplete build info = %#v", info)
+	}
+}
+
+func TestBenchmarkFlags(t *testing.T) {
+	var opts options
+	flags := newRootFlagSet(&opts)
+	if err := flags.Parse([]string{"--max-turns", "7", "--max-cost-usd", "2.5", "--idle-timeout", "30s", "--setting-sources", "project"}); err != nil {
+		t.Fatal(err)
+	}
+	if opts.maxTurns != 7 || opts.maxCostUSD != 2.5 || opts.idleTimeout != 30*time.Second || opts.settingSources != "project" {
+		t.Fatalf("options = %+v", opts)
+	}
+	user, project, err := parseSettingSources(opts.settingSources)
+	if err != nil || user || !project {
+		t.Fatalf("sources = %v, %v, %v", user, project, err)
+	}
+	if processExitCode(agent.ErrMaxTurns) != 2 || processExitCode(agent.ErrMaxCost) != 2 || processExitCode(errors.New("bad key")) != 1 {
+		t.Fatal("unexpected exit code classification")
 	}
 }

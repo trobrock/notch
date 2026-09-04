@@ -8,6 +8,7 @@ var anthropicCatalog = []Entry{
 	{ID: "claude-opus-5", Name: "Claude Opus 5", ContextWindow: 1000000, Reasoning: true},
 	{ID: "claude-sonnet-4-5", Name: "Claude Sonnet 4.5", ContextWindow: 1000000, Reasoning: true},
 	{ID: "claude-sonnet-4-6", Name: "Claude Sonnet 4.6", ContextWindow: 1000000, Reasoning: true},
+	{ID: "claude-fable-5-1", Name: "Claude Fable 5.1", ContextWindow: 1000000, Reasoning: true},
 	{ID: "claude-sonnet-5", Name: "Claude Sonnet 5", ContextWindow: 1000000, Reasoning: true},
 }
 

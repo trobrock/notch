@@ -232,3 +232,26 @@ func TestProcessRunnerRejectsCleanExitWithoutTurn(t *testing.T) {
 		t.Fatalf("result = %#v", result)
 	}
 }
+
+func TestProcessRunnerPropagatesSettingSources(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script test")
+	}
+	path := t.TempDir() + "/args-subagent.sh"
+	script := `#!/bin/sh
+previous=""
+for arg in "$@"; do
+  if [ "$previous" = "--setting-sources" ] && [ "$arg" != "project" ]; then exit 7; fi
+  previous="$arg"
+done
+printf '{"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}\n'
+`
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runner := &processRunner{executable: path, defaultCWD: t.TempDir(), settingSources: "project"}
+	result, err := runner.Run(context.Background(), Input{Prompt: "go", Tools: defaultTools, Thinking: DefaultThinking, TimeoutSeconds: 1, MaxOutputChars: 2000}, nil)
+	if err != nil || result.ExitCode != 0 {
+		t.Fatalf("Run() = %#v, %v", result, err)
+	}
+}

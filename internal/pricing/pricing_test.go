@@ -32,3 +32,10 @@ func TestEstimateOpenAITierAndUnknownModel(t *testing.T) {
 		t.Fatal("OpenRouter must use provider-reported cost")
 	}
 }
+
+func TestEstimateClaudeFable(t *testing.T) {
+	cost, ok := Estimate("anthropic", "claude-fable-5-1", "short", model.Response{InputTokens: 1_000_000, OutputTokens: 100_000})
+	if !ok || math.Abs(cost-3) > 1e-9 {
+		t.Fatalf("estimate = %v, %v", cost, ok)
+	}
+}

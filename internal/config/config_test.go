@@ -397,3 +397,41 @@ func writeJSON(t *testing.T, path, content string) {
 		t.Fatal(err)
 	}
 }
+
+func TestLoadWorkspaceSourcesProjectOnlyExcludesUserInputs(t *testing.T) {
+	for _, name := range []string{"NOTCH_PROVIDER", "NOTCH_MODEL", "NOTCH_EXPLORE_MODEL", "NOTCH_THINKING_LEVEL"} {
+		t.Setenv(name, "")
+	}
+	home := t.TempDir()
+	root := t.TempDir()
+	configRoot := filepath.Join(home, ".config", "notch")
+	if err := os.MkdirAll(configRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configRoot, "config.json"), []byte(`{"model":"user-model","skill_dirs":["custom-skills"]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	projectRoot := filepath.Join(root, ".notch")
+	if err := os.MkdirAll(projectRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectRoot, "config.json"), []byte(`{"model":"project-model"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadWorkspaceSources(home, root, false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Model != "project-model" {
+		t.Fatalf("model = %q", cfg.Model)
+	}
+	if cfg.MCPConfig != "" {
+		t.Fatalf("user MCP config retained: %q", cfg.MCPConfig)
+	}
+	for _, dir := range append(append([]string{}, cfg.SkillDirs...), cfg.AgentSkillDirs...) {
+		if strings.HasPrefix(dir, home) {
+			t.Fatalf("user input directory was retained: %q", dir)
+		}
+	}
+}
