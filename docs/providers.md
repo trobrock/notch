@@ -21,7 +21,7 @@ Notch embeds a small offline model catalog and maintains a mode-0600 cache at `$
 - `anthropic` and `anthropic-claude-code` both use `GET /v1/models` with configured authentication.
 - OpenRouter uses its public `GET /models` catalog and records context/reasoning metadata.
 - OpenAI and compatible local servers use `GET /v1/models`.
-- ChatGPT Codex currently uses the embedded fallback because its subscription Responses endpoint does not expose a supported listing API.
+- ChatGPT Codex uses its authenticated subscription model catalog, with the embedded registry as an offline fallback.
 
 Use `notch models [provider]` for a terminal listing or `notch models --refresh [provider]` to force a refresh. `notch models --json [provider]` emits a versioned machine-readable catalog, and `--all` includes every supported provider. This standalone command loads global config only: project provider, model, and `base_url` values do not affect it; the model cache path is fixed below the XDG data root. In fullscreen mode `/model` opens searchable provider/model selectors; `/model refresh` bypasses a fresh cache. Runtime changes preserve context and affect later requests and newly created sessions, but do not modify user/project config.
 

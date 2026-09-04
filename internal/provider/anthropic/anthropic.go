@@ -53,6 +53,8 @@ type provider struct {
 	httpClient         *http.Client
 }
 
+var _ model.DiscoverableProvider = (*provider)(nil)
+
 // New returns a provider backed by Anthropic's native Messages API.
 func New(cfg Config) model.Provider {
 	baseURL := strings.TrimRight(cfg.BaseURL, "/")
@@ -456,8 +458,14 @@ func (p *provider) ListModels(ctx context.Context) ([]model.ModelInfo, error) {
 	}
 	var envelope struct {
 		Data []struct {
-			ID          string `json:"id"`
-			DisplayName string `json:"display_name"`
+			ID             string `json:"id"`
+			DisplayName    string `json:"display_name"`
+			MaxInputTokens int    `json:"max_input_tokens"`
+			Capabilities   struct {
+				Thinking struct {
+					Supported bool `json:"supported"`
+				} `json:"thinking"`
+			} `json:"capabilities"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(io.LimitReader(httpResp.Body, 16<<20)).Decode(&envelope); err != nil {
@@ -465,10 +473,14 @@ func (p *provider) ListModels(ctx context.Context) ([]model.ModelInfo, error) {
 	}
 	models := make([]model.ModelInfo, 0, len(envelope.Data))
 	for _, item := range envelope.Data {
-		if strings.TrimSpace(item.ID) == "" {
+		id := strings.TrimSpace(item.ID)
+		if id == "" {
 			continue
 		}
-		models = append(models, model.ModelInfo{ID: item.ID, Name: item.DisplayName, Reasoning: true})
+		models = append(models, model.ModelInfo{
+			ID: id, Name: strings.TrimSpace(item.DisplayName),
+			ContextWindow: item.MaxInputTokens, Reasoning: item.Capabilities.Thinking.Supported,
+		})
 	}
 	return models, nil
 }

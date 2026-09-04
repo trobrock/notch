@@ -93,9 +93,29 @@ func TestListModels(t *testing.T) {
 	if err != nil || len(models) != 2 || models[0].ID != "gpt-5" || !models[0].Reasoning {
 		t.Fatalf("models = %#v, %v", models, err)
 	}
-	codex := New(Config{CodexMode: true})
-	if _, err := codex.(model.ModelLister).ListModels(context.Background()); err == nil {
-		t.Fatal("codex listing unexpectedly succeeded")
+	codexServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/codex/models" || r.URL.Query().Get("client_version") != "0.0.0" {
+			t.Errorf("request URL = %s", r.URL.String())
+		}
+		if r.Header.Get("Authorization") != "Bearer codex-secret" || r.Header.Get("ChatGPT-Account-ID") != "account-id" {
+			t.Errorf("auth=%q account=%q", r.Header.Get("Authorization"), r.Header.Get("ChatGPT-Account-ID"))
+		}
+		fmt.Fprint(w, `{"models":[{"slug":"gpt-visible","display_name":"GPT Visible","visibility":"list","context_window":272000,"supported_reasoning_levels":[{"effort":"medium"}]},{"slug":"gpt-max-context","display_name":"","visibility":"list","max_context_window":128000,"default_reasoning_level":"low"},{"slug":"gpt-hidden","display_name":"GPT Hidden","visibility":"hide","context_window":272000}]}`)
+	}))
+	defer codexServer.Close()
+	codex := New(Config{
+		APIKey: "codex-secret", BaseURL: codexServer.URL, HTTPClient: codexServer.Client(),
+		CodexMode: true, Headers: map[string]string{"ChatGPT-Account-ID": "account-id"},
+	})
+	models, err = codex.(model.ModelLister).ListModels(context.Background())
+	if err != nil || len(models) != 2 {
+		t.Fatalf("codex models = %#v, %v", models, err)
+	}
+	if models[0].ID != "gpt-visible" || models[0].Name != "GPT Visible" || models[0].ContextWindow != 272000 || !models[0].Reasoning {
+		t.Errorf("visible model = %#v", models[0])
+	}
+	if models[1].ID != "gpt-max-context" || models[1].Name != "gpt-max-context" || models[1].ContextWindow != 128000 || !models[1].Reasoning {
+		t.Errorf("max-context model = %#v", models[1])
 	}
 }
 

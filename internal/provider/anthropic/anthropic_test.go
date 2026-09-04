@@ -102,13 +102,40 @@ func TestListModels(t *testing.T) {
 		if r.URL.Path != "/v1/models" || r.URL.Query().Get("limit") != "1000" || r.Header.Get("x-api-key") != "secret" {
 			t.Errorf("request = %s?%s", r.URL.Path, r.URL.RawQuery)
 		}
-		fmt.Fprint(w, `{"data":[{"id":"claude-test","display_name":"Claude Test"}]}`)
+		fmt.Fprint(w, `{"data":[{"id":"claude-test","display_name":"Claude Test","max_input_tokens":200000,"capabilities":{"thinking":{"supported":true}}}]}`)
 	}))
 	defer server.Close()
 	provider := New(Config{APIKey: "secret", BaseURL: server.URL, HTTPClient: server.Client()})
 	models, err := provider.(model.ModelLister).ListModels(context.Background())
-	if err != nil || len(models) != 1 || models[0].ID != "claude-test" || models[0].Name != "Claude Test" || !models[0].Reasoning {
+	if err != nil || len(models) != 1 || models[0].ID != "claude-test" || models[0].Name != "Claude Test" || models[0].ContextWindow != 200000 || !models[0].Reasoning {
 		t.Fatalf("models = %#v, %v", models, err)
+	}
+}
+
+func TestListModelsOAuth(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" || r.URL.Query().Get("limit") != "1000" {
+			t.Errorf("request URL = %s", r.URL.String())
+		}
+		if r.Header.Get("Authorization") != "Bearer oauth-secret" || r.Header.Get("x-api-key") != "" {
+			t.Errorf("authorization=%q x-api-key=%q", r.Header.Get("Authorization"), r.Header.Get("x-api-key"))
+		}
+		if r.Header.Get("anthropic-beta") != oauthBeta || r.Header.Get("x-app") != "cli" || r.Header.Get("User-Agent") != oauthUserAgent {
+			t.Errorf("OAuth headers = beta %q app %q agent %q", r.Header.Get("anthropic-beta"), r.Header.Get("x-app"), r.Header.Get("User-Agent"))
+		}
+		fmt.Fprint(w, `{"data":[{"id":"claude-oauth","display_name":"Claude OAuth","max_input_tokens":1000000,"capabilities":{"thinking":{"supported":false}}},{"id":"claude-unknown","display_name":"Claude Unknown"}]}`)
+	}))
+	defer server.Close()
+	provider := New(Config{
+		APIKey: "must-not-be-sent", OAuthToken: "oauth-secret", OAuthMode: true,
+		BaseURL: server.URL, HTTPClient: server.Client(),
+	})
+	models, err := provider.(model.ModelLister).ListModels(context.Background())
+	if err != nil || len(models) != 2 || models[0].ID != "claude-oauth" || models[0].ContextWindow != 1000000 || models[0].Reasoning {
+		t.Fatalf("models = %#v, %v", models, err)
+	}
+	if models[1].ID != "claude-unknown" || models[1].Reasoning {
+		t.Fatalf("model with omitted capabilities = %#v", models[1])
 	}
 }
 

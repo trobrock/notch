@@ -36,6 +36,8 @@ type provider struct {
 	referer    string
 }
 
+var _ model.DiscoverableProvider = (*provider)(nil)
+
 // New returns a provider backed by OpenRouter's Chat Completions API.
 func New(cfg Config) model.Provider {
 	baseURL := strings.TrimRight(cfg.BaseURL, "/")

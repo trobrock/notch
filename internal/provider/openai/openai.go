@@ -47,6 +47,8 @@ type provider struct {
 	httpClient        *http.Client
 }
 
+var _ model.DiscoverableProvider = (*provider)(nil)
+
 // New returns a provider backed by OpenAI's native Responses API.
 func New(cfg Config) model.Provider {
 	baseURL := strings.TrimRight(cfg.BaseURL, "/")
@@ -359,11 +361,14 @@ func (p *provider) token(ctx context.Context, stale string) (string, error) {
 }
 
 func (p *provider) ListModels(ctx context.Context) ([]model.ModelInfo, error) {
+	path := "/v1/models"
 	if p.codexMode {
-		return nil, errors.New("openai-codex: model listing is unavailable; using bundled registry")
+		// The catalog interprets this as a Codex CLI compatibility version, not
+		// the calling application's version. Zero requests the unfiltered catalog.
+		path = "/codex/models?client_version=0.0.0"
 	}
 	httpResp, err := p.send(ctx, func(token string) (*http.Request, error) {
-		httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+"/v1/models", nil)
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+path, nil)
 		if err != nil {
 			return nil, fmt.Errorf("openai: create model-list request: %w", err)
 		}
@@ -385,6 +390,42 @@ func (p *provider) ListModels(ctx context.Context) ([]model.ModelInfo, error) {
 	defer httpResp.Body.Close()
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		return nil, httpStatusError(httpResp)
+	}
+	if p.codexMode {
+		var envelope struct {
+			Models []struct {
+				Slug                     string            `json:"slug"`
+				DisplayName              string            `json:"display_name"`
+				Visibility               string            `json:"visibility"`
+				ContextWindow            int               `json:"context_window"`
+				MaxContextWindow         int               `json:"max_context_window"`
+				DefaultReasoningLevel    string            `json:"default_reasoning_level"`
+				SupportedReasoningLevels []json.RawMessage `json:"supported_reasoning_levels"`
+			} `json:"models"`
+		}
+		if err := json.NewDecoder(io.LimitReader(httpResp.Body, 16<<20)).Decode(&envelope); err != nil {
+			return nil, fmt.Errorf("openai-codex: decode model list: %w", err)
+		}
+		models := make([]model.ModelInfo, 0, len(envelope.Models))
+		for _, item := range envelope.Models {
+			id := strings.TrimSpace(item.Slug)
+			if id == "" || !strings.EqualFold(strings.TrimSpace(item.Visibility), "list") {
+				continue
+			}
+			name := strings.TrimSpace(item.DisplayName)
+			if name == "" {
+				name = id
+			}
+			contextWindow := item.ContextWindow
+			if contextWindow == 0 {
+				contextWindow = item.MaxContextWindow
+			}
+			models = append(models, model.ModelInfo{
+				ID: id, Name: name, ContextWindow: contextWindow,
+				Reasoning: strings.TrimSpace(item.DefaultReasoningLevel) != "" || len(item.SupportedReasoningLevels) != 0,
+			})
+		}
+		return models, nil
 	}
 	var envelope struct {
 		Data []struct {
