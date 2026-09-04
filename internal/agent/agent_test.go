@@ -611,6 +611,53 @@ func TestManualCompactionPersists(t *testing.T) {
 	}
 }
 
+func TestCompactionTrimsLargeToolResultsBeforeSummarizing(t *testing.T) {
+	store, err := session.New(t.TempDir(), t.TempDir(), "fake", "fake")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	large := strings.Repeat("tool output ", 100000)
+	for _, message := range []model.Message{
+		model.TextMessage("user", "old task"),
+		{Role: "assistant", Content: []model.Block{{Type: "tool_use", ID: "1", Name: "read", Arguments: json.RawMessage(`{"path":"large"}`)}}},
+		{Role: "user", Content: []model.Block{{Type: "tool_result", Text: large, ToolUseID: "1"}}},
+		model.TextMessage("assistant", "old answer"),
+		model.TextMessage("user", "recent task"),
+		model.TextMessage("assistant", "recent answer"),
+	} {
+		if err := store.AppendMessage(message); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	provider := &recordingProvider{}
+	a, err := New(Config{
+		Provider: provider, Registry: extension.NewRegistry(), Session: store, Model: "fake",
+		Compaction: CompactionConfig{Enabled: false, ContextWindow: 128000, ReserveTokens: 16384, KeepRecentTokens: 20000},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Compact(context.Background(), "", false, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	if len(provider.requests) != 1 {
+		t.Fatalf("requests = %d, want 1", len(provider.requests))
+	}
+	payload := provider.requests[0].Messages[0].Content[0].Text
+	if !strings.Contains(payload, "older tool result trimmed") {
+		t.Fatal("summary payload did not mark the trimmed tool result")
+	}
+	if strings.Contains(payload, large) || len(payload) > maxRecentToolResultBytes+2000 {
+		t.Fatalf("summary payload retained oversized tool output: %d bytes", len(payload))
+	}
+}
+
 func TestAutomaticCompactionAndReset(t *testing.T) {
 	store, err := session.New(t.TempDir(), t.TempDir(), "fake", "fake")
 	if err != nil {

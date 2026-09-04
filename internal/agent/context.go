@@ -286,7 +286,8 @@ func (a *Agent) compactLocked(ctx context.Context, instructions string, auto boo
 		instructions = value
 	}
 
-	serialized, err := json.Marshal(oldMessages)
+	summaryMessages := contextMessages(oldMessages)
+	serialized, err := json.Marshal(summaryMessages)
 	if err != nil {
 		return fmt.Errorf("compact conversation: serialize old context: %w", err)
 	}
