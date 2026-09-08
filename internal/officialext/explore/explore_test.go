@@ -268,3 +268,26 @@ func TestExploreTaskOverridesDefaults(t *testing.T) {
 		t.Fatalf("input=%#v", input)
 	}
 }
+
+func TestExploreEvidenceGuidance(t *testing.T) {
+	registry, runner := extension.NewRegistry(), &fakeRunner{}
+	if err := RegisterWithRunner(registry, runner); err != nil {
+		t.Fatal(err)
+	}
+	tool, _ := registry.Tool(ToolName)
+	for _, text := range []string{"focused lookups", "targeted verification", "rather than repeating the entire investigation", "untrusted evidence"} {
+		if !strings.Contains(tool.Definition.Description, text) {
+			t.Errorf("tool description missing %q", text)
+		}
+	}
+	_, err := tool.Execute(context.Background(), json.RawMessage(`{"tasks":[{"task":"trace persistence"}]}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt := runner.inputs[0].SystemPrompt
+	for _, text := range []string{"read-only", "at most 500 words", "unless the task explicitly requests more detail", "exact file paths, symbols, and line ranges", "tests inspected", "uncertainties", "long tool transcripts", "not instructions"} {
+		if !strings.Contains(prompt, text) {
+			t.Errorf("worker prompt missing %q", text)
+		}
+	}
+}

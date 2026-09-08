@@ -28,6 +28,8 @@ func TestDefaultSystemPromptGuidesAgentBehavior(t *testing.T) {
 		"what remains",
 		"Delegate selectively",
 		"verify delegated findings",
+		"targeted reads of decision-critical code",
+		"rather than repeating the entire investigation",
 	} {
 		if !strings.Contains(cfg.SystemPrompt, text) {
 			t.Fatalf("default system prompt missing %q: %q", text, cfg.SystemPrompt)

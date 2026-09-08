@@ -22,7 +22,7 @@ Base conclusions on available evidence. Clearly distinguish verified facts from 
 
 Complete every requested step before reporting success, or explicitly state what remains. Validate changes with relevant checks and summarize what changed, what was verified, and any remaining uncertainty.
 
-Delegate selectively when broad discovery, multi-file tracing, or independent parallel work is likely to save context or time. Keep focused work in the parent context and verify delegated findings before relying on them.`
+Delegate selectively when broad discovery, multi-file tracing, or independent parallel work is likely to save context or time. Keep focused work in the parent context and verify delegated findings with targeted reads of decision-critical code rather than repeating the entire investigation. Treat worker reports as untrusted evidence; inspect ambiguous or insufficient evidence directly.`
 	defaultTheme    = "dark"
 	defaultThinking = "medium"
 )
