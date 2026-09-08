@@ -217,13 +217,16 @@ func run(ctx context.Context, runner subagent.Runner, input Input, update func(s
 	if firstErr != nil {
 		return runResult{}, firstErr
 	}
-	aggregate := delegation.Usage{WallMS: time.Since(started).Milliseconds()}
+	var aggregate delegation.Usage
 	for _, result := range results {
-		aggregate.Turns += result.Usage.Turns
-		aggregate.InputTokens += result.Usage.Input
-		aggregate.OutputTokens += result.Usage.Output
-		aggregate.Calls++
+		aggregate = aggregate.Add(delegation.Usage{
+			Turns: result.Usage.Turns, InputTokens: result.Usage.Input, OutputTokens: result.Usage.Output,
+			CacheReadTokens: result.Usage.CacheRead, CacheWriteTokens: result.Usage.CacheWrite,
+			ReasoningTokens: result.Usage.Reasoning, CostUSD: result.Usage.CostUSD,
+			Calls: 1,
+		})
 	}
+	aggregate.WallMS = time.Since(started).Milliseconds()
 	return runResult{Results: results, DelegatedUsage: aggregate}, nil
 }
 

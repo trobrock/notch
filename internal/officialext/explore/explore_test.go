@@ -88,6 +88,83 @@ func TestExploreSingleTaskUsesReadOnlyRunner(t *testing.T) {
 	}
 }
 
+type usageRunner struct {
+	usages map[string]subagent.Usage
+}
+
+func (r usageRunner) Run(_ context.Context, input subagent.Input, _ func(string)) (subagent.Result, error) {
+	usage := r.usages[strings.TrimPrefix(input.Prompt, "Explore task: ")]
+	return subagent.Result{Output: "found " + input.Prompt, Usage: usage}, nil
+}
+
+func cost(value float64) *float64 { return &value }
+
+func executeExplore(t *testing.T, runner subagent.Runner, raw string) extension.ToolResult {
+	t.Helper()
+	registry := extension.NewRegistry()
+	if err := RegisterWithRunner(registry, runner); err != nil {
+		t.Fatal(err)
+	}
+	tool, _ := registry.Tool(ToolName)
+	result, err := tool.Execute(context.Background(), json.RawMessage(raw), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+
+func TestExploreToolResultAggregatesSingleWorkerUsage(t *testing.T) {
+	result := executeExplore(t, usageRunner{usages: map[string]subagent.Usage{
+		"one": {Turns: 2, Input: 11, Output: 3, CacheRead: 5, CacheWrite: 7, Reasoning: 13, CostUSD: cost(1.25), WallMS: 1000},
+	}}, `{"tasks":[{"task":"one"}]}`)
+	usage, ok := result.Details["delegated_usage"].(delegation.Usage)
+	if !ok {
+		t.Fatalf("delegated usage type = %T", result.Details["delegated_usage"])
+	}
+	if usage.Turns != 2 || usage.InputTokens != 11 || usage.OutputTokens != 3 || usage.CacheReadTokens != 5 || usage.CacheWriteTokens != 7 || usage.ReasoningTokens != 13 || usage.Calls != 1 {
+		t.Fatalf("delegated usage = %#v", usage)
+	}
+	if usage.CostUSD == nil || *usage.CostUSD != 1.25 {
+		t.Fatalf("cost = %#v", usage.CostUSD)
+	}
+	if usage.WallMS >= 1000 {
+		t.Fatalf("wall_ms should be batch elapsed rather than child duration: %#v", usage)
+	}
+}
+
+func TestExploreToolResultAggregatesMultipleWorkerCosts(t *testing.T) {
+	tests := []struct {
+		name       string
+		firstCost  *float64
+		secondCost *float64
+		wantCost   *float64
+	}{
+		{name: "known", firstCost: cost(1.25), secondCost: cost(0.75), wantCost: cost(2)},
+		{name: "known zero", firstCost: cost(0), secondCost: cost(0), wantCost: cost(0)},
+		{name: "unknown then known", firstCost: nil, secondCost: cost(1), wantCost: nil},
+		{name: "known then unknown", firstCost: cost(1), secondCost: nil, wantCost: nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := executeExplore(t, usageRunner{usages: map[string]subagent.Usage{
+				"one": {Turns: 1, Input: 10, Output: 2, CacheRead: 3, CacheWrite: 4, Reasoning: 5, CostUSD: tt.firstCost},
+				"two": {Turns: 2, Input: 20, Output: 6, CacheRead: 7, CacheWrite: 8, Reasoning: 9, CostUSD: tt.secondCost},
+			}}, `{"tasks":[{"task":"one"},{"task":"two"}]}`)
+			usage := result.Details["delegated_usage"].(delegation.Usage)
+			if usage.Turns != 3 || usage.InputTokens != 30 || usage.OutputTokens != 8 || usage.CacheReadTokens != 10 || usage.CacheWriteTokens != 12 || usage.ReasoningTokens != 14 || usage.Calls != 2 {
+				t.Fatalf("delegated usage = %#v", usage)
+			}
+			if tt.wantCost == nil {
+				if usage.CostUSD != nil {
+					t.Fatalf("cost = %v, want unknown", *usage.CostUSD)
+				}
+			} else if usage.CostUSD == nil || *usage.CostUSD != *tt.wantCost {
+				t.Fatalf("cost = %#v, want %v", usage.CostUSD, *tt.wantCost)
+			}
+		})
+	}
+}
+
 func TestExploreParallelPreservesOrderAndLimitsConcurrency(t *testing.T) {
 	registry, runner := extension.NewRegistry(), &fakeRunner{}
 	if err := RegisterWithRunner(registry, runner); err != nil {

@@ -244,6 +244,56 @@ func TestPromptAggregatesDelegatedUsageAndPersistsAfterTools(t *testing.T) {
 	}
 }
 
+type zeroCostDelegatedToolProvider struct{ calls int }
+
+func (p *zeroCostDelegatedToolProvider) Stream(_ context.Context, _ model.Request, _ func(model.StreamEvent)) (model.Response, error) {
+	p.calls++
+	zero := 0.0
+	if p.calls == 1 {
+		return model.Response{Content: []model.Block{{Type: "tool_use", ID: "d1", Name: "delegate", Arguments: json.RawMessage(`{}`)}}, StopReason: "tool_use", CostUSD: &zero}, nil
+	}
+	return model.Response{Content: []model.Block{{Type: "text", Text: "done"}}, StopReason: "end_turn", CostUSD: &zero}, nil
+}
+
+func TestPromptCostLimitHandlesDelegatedZeroAndUnknownCosts(t *testing.T) {
+	for _, unknown := range []bool{false, true} {
+		name := "known zero"
+		if unknown {
+			name = "unknown"
+		}
+		t.Run(name, func(t *testing.T) {
+			zero := 0.0
+			delegated := delegation.Usage{Calls: 1, CostUSD: &zero}
+			if unknown {
+				delegated.CostUSD = nil
+			}
+			reg := extension.NewRegistry()
+			if err := reg.RegisterTool(extension.Tool{
+				Definition: model.ToolDefinition{Name: "delegate", InputSchema: map[string]any{"type": "object"}},
+				Source:     "test",
+				Execute: func(context.Context, json.RawMessage, func(string)) (extension.ToolResult, error) {
+					return extension.ToolResult{Content: "ok", Details: map[string]any{"delegated_usage": delegated}}, nil
+				},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			provider := &zeroCostDelegatedToolProvider{}
+			a, err := New(Config{Provider: provider, Registry: reg, Model: "model-a", MaxCostUSD: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = a.Prompt(context.Background(), "go", func(Event) {})
+			if unknown {
+				if !errors.Is(err, ErrPricingUnknown) {
+					t.Fatalf("error = %v, want %v", err, ErrPricingUnknown)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 type recordingProvider struct {
 	mu       sync.Mutex
 	requests []model.Request
