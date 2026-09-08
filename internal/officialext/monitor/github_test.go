@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -27,7 +28,7 @@ func TestGithubMonitorBuildsSafeArgv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Details["id"] != "mon-1" {
+	if result.Details["id"] != "mon-1" || !strings.Contains(result.Content, waitGuidance) {
 		t.Fatalf("result=%#v", result)
 	}
 	waitFor(t, func() bool { _, err := os.Stat(output); return err == nil })

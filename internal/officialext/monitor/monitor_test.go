@@ -69,6 +69,19 @@ func waitFor(t *testing.T, condition func() bool) {
 	}
 }
 
+func TestMonitorToolsTellAgentNotToWait(t *testing.T) {
+	r, _ := setup(t)
+	for _, name := range []string{"monitor_command", "monitor_github_pr_checks"} {
+		tool, ok := r.Tool(name)
+		if !ok {
+			t.Fatalf("tool %q not registered", name)
+		}
+		if !strings.Contains(strings.ToLower(tool.Definition.Description), "do not use sleep or polling") {
+			t.Fatalf("%s description does not discourage waiting: %q", name, tool.Definition.Description)
+		}
+	}
+}
+
 func TestMonitorLifecycleHooks(t *testing.T) {
 	r, _ := setup(t)
 	started := make(chan map[string]any, 1)
@@ -123,7 +136,7 @@ func TestMonitorCommandExitAndList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(result.Content, "Started monitor mon-1") {
+	if !strings.Contains(result.Content, "Started monitor mon-1") || !strings.Contains(result.Content, waitGuidance) {
 		t.Fatalf("result=%#v", result)
 	}
 	waitFor(t, func() bool { h.mu.Lock(); defer h.mu.Unlock(); return len(h.followups) == 1 })

@@ -24,6 +24,7 @@ const (
 	maxOutput         = 16000
 	maxCompleted      = 25
 	lifecycleHookWait = 5 * time.Second
+	waitGuidance      = "Continue other useful work if available. Otherwise, do not call sleep or poll for status; finish your response and the monitor notification will continue the agent automatically."
 )
 
 type state struct {
@@ -74,7 +75,7 @@ func Register(registry *extension.Registry, host extension.Host) error {
 
 func (s *state) commandTool() extension.Tool {
 	return extension.Tool{Source: Source, Definition: model.ToolDefinition{
-		Name: "monitor_command", Description: "Run a long-running shell command in the background and notify the agent when it exits, times out, or output matches a regex.",
+		Name: "monitor_command", Description: "Run a long-running shell command in the background and notify the agent when it exits, times out, or output matches a regex. Do not use sleep or polling to wait for it; the notification continues the agent automatically.",
 		InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 			"command": map[string]any{"type": "string", "minLength": 1}, "name": map[string]any{"type": "string"},
 			"trigger": map[string]any{"type": "string", "enum": []string{"exit", "output_match", "timeout"}},
@@ -93,13 +94,13 @@ func (s *state) commandTool() extension.Tool {
 		s.mu.Lock()
 		id, name, status, command, trigger := monitor.ID, monitor.Name, monitor.Status, monitor.Command, monitor.Trigger
 		s.mu.Unlock()
-		return extension.ToolResult{Content: fmt.Sprintf("Started monitor %s: %s. The agent will be notified when %s triggers.", id, name, trigger), Details: map[string]any{"id": id, "status": status, "command": command, "trigger": trigger}}, nil
+		return extension.ToolResult{Content: fmt.Sprintf("Started monitor %s: %s. The agent will be notified when %s triggers. %s", id, name, trigger, waitGuidance), Details: map[string]any{"id": id, "status": status, "command": command, "trigger": trigger}}, nil
 	}}
 }
 
 func (s *state) githubTool() extension.Tool {
 	return extension.Tool{Source: Source, Definition: model.ToolDefinition{
-		Name: "monitor_github_pr_checks", Description: "Watch GitHub PR checks with gh and notify the agent when checks pass or fail.",
+		Name: "monitor_github_pr_checks", Description: "Watch GitHub PR checks with gh and notify the agent when checks pass or fail. Do not use sleep or polling to wait for them; the notification continues the agent automatically.",
 		InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 			"pr":   map[string]any{"type": "string", "description": "PR number, branch, or URL. Defaults to current branch."},
 			"repo": map[string]any{"type": "string", "description": "Repository in OWNER/REPO form."},
@@ -160,7 +161,7 @@ func (s *state) githubTool() extension.Tool {
 		s.mu.Lock()
 		id, monitorName, status, command := monitor.ID, monitor.Name, monitor.Status, monitor.Command
 		s.mu.Unlock()
-		return extension.ToolResult{Content: fmt.Sprintf("Started GitHub PR checks monitor %s: %s.", id, monitorName), Details: map[string]any{"id": id, "status": status, "command": command}}, nil
+		return extension.ToolResult{Content: fmt.Sprintf("Started GitHub PR checks monitor %s: %s. %s", id, monitorName, waitGuidance), Details: map[string]any{"id": id, "status": status, "command": command}}, nil
 	}}
 }
 
