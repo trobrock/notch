@@ -86,6 +86,12 @@ func TestPlanHooksInjectPromptAndDenyWrites(t *testing.T) {
 	if err != nil || denied["denied"] != true {
 		t.Fatalf("denied=%#v", denied)
 	}
+	for _, name := range []string{"mcp_search", "mcp__demo__write"} {
+		denied, err := r.RunHooks(context.Background(), "tool_call", map[string]any{"name": name})
+		if err != nil || denied["denied"] != true {
+			t.Fatalf("plan mode allowed %s: %#v %v", name, denied, err)
+		}
+	}
 	denied, err = r.RunHooks(context.Background(), "tool_call", map[string]any{"name": "run_subagent", "arguments": map[string]any{"tools": "read,write", "allowWriteTools": true}})
 	if err != nil || denied["denied"] != true {
 		t.Fatalf("write subagent denied=%#v", denied)

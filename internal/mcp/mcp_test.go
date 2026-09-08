@@ -132,6 +132,19 @@ func TestHTTPServerHandshakeAndTool(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer manager.Close()
+	if defs := registry.Definitions(); len(defs) != 1 || defs[0].Name != DiscoveryToolName {
+		t.Fatalf("initial schemas: %#v", defs)
+	}
+	search, ok := registry.Tool(DiscoveryToolName)
+	if !ok {
+		t.Fatal("missing discovery tool")
+	}
+	if _, err := search.Execute(context.Background(), json.RawMessage(`{"query":"demo echo"}`), nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(registry.Definitions()) != 2 {
+		t.Fatal("discovery did not reveal remote schema")
+	}
 	tool, ok := registry.Tool("mcp__demo__echo")
 	if !ok {
 		t.Fatal("namespaced tool was not registered")
@@ -202,6 +215,32 @@ func TestManagerCloseUnregistersTools(t *testing.T) {
 	}
 	if _, ok := registry.Tool("mcp__one__owned"); ok {
 		t.Fatal("tool remained registered after manager Close")
+	}
+	if _, ok := registry.Tool(DiscoveryToolName); ok {
+		t.Fatal("discovery survived manager close")
+	}
+	if _, err := ConnectConfigured(context.Background(), Config{MCPServers: map[string]ServerConfig{"one": {URL: server.URL, DirectTools: []string{"missing"}}}}, registry); err == nil || !strings.Contains(err.Error(), "directTools references unavailable") {
+		t.Fatalf("invalid directTools: %v", err)
+	}
+	if len(registry.Tools()) != 0 {
+		t.Fatal("invalid pin left registrations behind")
+	}
+	for _, direct := range [][]string{nil, {"owned"}, {"*"}} {
+		reloaded, err := ConnectConfigured(context.Background(), Config{MCPServers: map[string]ServerConfig{"one": {URL: server.URL, DirectTools: direct}}}, registry)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := 1
+		if len(direct) != 0 {
+			want = 2
+		}
+		if len(registry.Definitions()) != want {
+			t.Fatalf("direct=%v schemas=%#v", direct, registry.Definitions())
+		}
+		registry.RevealTools([]string{"mcp__one__owned"})
+		if err := reloaded.Close(); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

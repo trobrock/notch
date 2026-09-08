@@ -119,7 +119,7 @@ func checkContext(ctx context.Context) error {
 func NewRead(cwd string) extension.Tool {
 	return extension.Tool{
 		Source: builtinSource,
-		Definition: definition("read", "Read a text file, optionally selecting a range of lines.", objectSchema(map[string]any{
+		Definition: definition("read", "Read a text file, optionally selecting a range of lines. Truncated results include line ranges and continuation guidance.", objectSchema(map[string]any{
 			"path":   stringProperty("File to read."),
 			"offset": map[string]any{"type": "integer", "minimum": 1, "description": "One-based first line to read."},
 			"limit":  map[string]any{"type": "integer", "minimum": 1, "description": "Maximum number of lines to read."},
@@ -166,7 +166,9 @@ func NewRead(cwd string) extension.Tool {
 			scanner.Buffer(make([]byte, 32*1024), maxLineBytes)
 			var out strings.Builder
 			line, selected := 0, 0
-			truncated := false
+			truncated, partialLine := false, false
+			// Keep the model-visible continuation notice inside the output cap.
+			const contentLimit = OutputLimit - 256
 			for scanner.Scan() {
 				if err := checkContext(ctx); err != nil {
 					return extension.ToolResult{}, err
@@ -187,14 +189,13 @@ func NewRead(cwd string) extension.Tool {
 				if selected > 0 {
 					separator = 1
 				}
-				remaining := OutputLimit - out.Len()
+				remaining := contentLimit - out.Len()
 				if separator+len(text) > remaining {
-					if separator != 0 && remaining > 0 {
-						out.WriteByte('\n')
-						remaining--
-					}
-					if remaining > 0 {
+					// Stop at a line boundary so the next read cannot skip data.
+					// A single oversized line cannot be paginated by line offset.
+					if selected == 0 {
 						out.WriteString(validPrefix(text, remaining))
+						partialLine = true
 					}
 					truncated = true
 					break
@@ -210,7 +211,16 @@ func NewRead(cwd string) extension.Tool {
 			}
 			result := extension.ToolResult{Content: out.String()}
 			if truncated {
-				result.Details = map[string]any{"truncated": true}
+				result.Details = map[string]any{"truncated": true, "start_line": args.Offset}
+				if partialLine {
+					result.Details["partial_line"] = line
+					result.Content += fmt.Sprintf("\n\n[Read truncated within line %d: this line exceeds the output byte limit. Line offsets cannot retrieve its remainder. If available, use a byte-range-capable tool; do not retry the same line offset.]", line)
+				} else {
+					end := args.Offset + selected - 1
+					result.Details["end_line"] = end
+					result.Details["next_offset"] = end + 1
+					result.Content += fmt.Sprintf("\n\n[Read truncated: showing lines %d-%d. If more is needed, continue with offset=%d for the same file.]", args.Offset, end, end+1)
+				}
 			}
 			return result, nil
 		},

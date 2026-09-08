@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/trobrock/notch/internal/extension"
 )
@@ -61,7 +62,7 @@ func TestReadWriteAndEdit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Content != "two\nthree" {
+	if result.Content != "two\nthree\n\n[Read truncated: showing lines 2-3. If more is needed, continue with offset=4 for the same file.]" {
 		t.Fatalf("read content = %q", result.Content)
 	}
 
@@ -100,8 +101,11 @@ func TestReadCapsOutputAndAllowsParentPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Content) != OutputLimit {
-		t.Fatalf("output length = %d, want %d", len(result.Content), OutputLimit)
+	if len(result.Content) > OutputLimit || !strings.Contains(result.Content, "truncated within line 1") {
+		t.Fatalf("output length = %d, want bounded output with partial-line notice", len(result.Content))
+	}
+	if _, ok := result.Details["next_offset"]; ok {
+		t.Fatal("oversized line must not offer a continuation that skips its remainder")
 	}
 	if truncated, _ := result.Details["truncated"].(bool); !truncated {
 		t.Fatalf("details = %#v, want truncated", result.Details)
@@ -175,5 +179,98 @@ func TestBashExitAndCancellation(t *testing.T) {
 	_, err = tool.Execute(ctx, raw, nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled bash error = %v", err)
+	}
+}
+
+func TestReadContinuation(t *testing.T) {
+	for _, tc := range []struct {
+		name, text          string
+		offset, limit, next int
+		prefix, remainder   string
+	}{
+		{"line-limit", "one\ntwo\nthree\nfour\n", 2, 2, 4, "two\nthree", "four"},
+		{"empty-lines", "\n\nx\n", 1, 2, 3, "\n", "x"},
+		{"trailing-empty-line", "a\n\nb\n", 1, 2, 3, "a\n", "b"},
+		{"byte-limit", strings.Repeat("x", OutputLimit-300) + "\ntail line that exceeds the remaining budget by quite a bit\nlast\n", 1, 100, 2, strings.Repeat("x", OutputLimit-300), "tail line that exceeds the remaining budget by quite a bit\nlast"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "file"), []byte(tc.text), 0600); err != nil {
+				t.Fatal(err)
+			}
+			tool := NewRead(dir)
+			result, err := execute(t, tool, map[string]any{"path": "file", "offset": tc.offset, "limit": tc.limit})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(result.Content) > OutputLimit || !strings.HasPrefix(result.Content, tc.prefix+"\n\n[Read truncated:") {
+				t.Fatalf("unexpected bounded content: len=%d", len(result.Content))
+			}
+			if result.Details["next_offset"] != tc.next || result.Details["start_line"] != tc.offset || result.Details["end_line"] != tc.next-1 {
+				t.Fatalf("details=%#v", result.Details)
+			}
+			next, err := execute(t, tool, map[string]any{"path": "file", "offset": tc.next})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if next.Content != tc.remainder || len(next.Details) != 0 {
+				t.Fatalf("continuation=%#v", next)
+			}
+		})
+	}
+}
+
+func TestReadCompleteAndEmptyRangesUnchanged(t *testing.T) {
+	for _, tc := range []struct {
+		name, text    string
+		offset, limit int
+		want          string
+	}{
+		{"empty", "", 1, 1, ""},
+		{"exact-limit", "a\nb\n", 1, 2, "a\nb"},
+		{"unterminated", "a\nb", 1, 2, "a\nb"},
+		{"past-eof", "a\n", 5, 1, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "file"), []byte(tc.text), 0600); err != nil {
+				t.Fatal(err)
+			}
+			r, err := execute(t, NewRead(dir), map[string]any{"path": "file", "offset": tc.offset, "limit": tc.limit})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if r.Content != tc.want || len(r.Details) != 0 {
+				t.Fatalf("result=%#v", r)
+			}
+		})
+	}
+}
+
+func TestReadOversizedUnicodeLine(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "file"), []byte(strings.Repeat("界", OutputLimit)+"\nnext"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := execute(t, NewRead(dir), map[string]any{"path": "file"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !utf8.ValidString(r.Content) || len(r.Content) > OutputLimit || r.Details["partial_line"] != 1 {
+		t.Fatalf("invalid partial-line result: %#v", r.Details)
+	}
+	if _, ok := r.Details["next_offset"]; ok {
+		t.Fatal("partial line must not skip data")
+	}
+}
+
+func TestReadScannerLimitStillErrors(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "file"), []byte(strings.Repeat("x", maxLineBytes+1)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := execute(t, NewRead(dir), map[string]any{"path": "file"})
+	if err == nil || !strings.Contains(err.Error(), "token too long") {
+		t.Fatalf("error = %v", err)
 	}
 }

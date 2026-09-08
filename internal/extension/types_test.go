@@ -180,3 +180,62 @@ func TestLimitToolResultKeepsHeadAndTail(t *testing.T) {
 		t.Fatalf("result length=%d", len(result.Content))
 	}
 }
+
+func TestDeferredToolVisibilityPreservesAccessPolicy(t *testing.T) {
+	makeRegistry := func() *Registry {
+		r := NewRegistry()
+		for _, name := range []string{"one", "two"} {
+			if err := r.RegisterTool(Tool{Definition: model.ToolDefinition{Name: name}, Deferred: true, Execute: func(context.Context, json.RawMessage, func(string)) (ToolResult, error) { return ToolResult{}, nil }}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return r
+	}
+	t.Run("reveal-is-not-permission", func(t *testing.T) {
+		r := makeRegistry()
+		if len(r.Definitions()) != 0 || len(r.Tools()) != 2 {
+			t.Fatal("deferred schemas were advertised or tools lost")
+		}
+		if _, ok := r.Tool("one"); !ok {
+			t.Fatal("deferral must not disable execution")
+		}
+		if missing := r.RevealTools([]string{"one"}); len(missing) != 0 {
+			t.Fatal(missing)
+		}
+		if defs := r.Definitions(); len(defs) != 1 || defs[0].Name != "one" {
+			t.Fatal(defs)
+		}
+		r.RemoveTools([]string{"two"})
+		if missing := r.RevealTools([]string{"two"}); !reflect.DeepEqual(missing, []string{"two"}) {
+			t.Fatal(missing)
+		}
+	})
+	t.Run("explicit-allowlist", func(t *testing.T) {
+		r := makeRegistry()
+		r.RestrictTools([]string{"one"})
+		if defs := r.Definitions(); len(defs) != 1 || defs[0].Name != "one" {
+			t.Fatal(defs)
+		}
+		if missing := r.RevealTools([]string{"two"}); len(missing) != 1 {
+			t.Fatal("allowlist bypass")
+		}
+	})
+	t.Run("active-filter", func(t *testing.T) {
+		r := makeRegistry()
+		r.SetActiveTools([]string{"one"})
+		if defs := r.Definitions(); len(defs) != 1 || defs[0].Name != "one" {
+			t.Fatal(defs)
+		}
+		if missing := r.RevealTools([]string{"two"}); len(missing) != 1 {
+			t.Fatal("active policy bypass")
+		}
+		r.SetActiveTools(nil)
+		if defs := r.Definitions(); len(defs) != 1 {
+			t.Fatal("inactive tool was revealed", defs)
+		}
+		r.RevealTools([]string{"two"})
+		if len(r.Definitions()) != 2 {
+			t.Fatal("failed to reveal restored tool")
+		}
+	})
+}

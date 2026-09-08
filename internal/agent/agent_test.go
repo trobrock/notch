@@ -13,11 +13,13 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/trobrock/notch/internal/delegation"
 	"github.com/trobrock/notch/internal/extension"
+	"github.com/trobrock/notch/internal/mcp"
 	"github.com/trobrock/notch/internal/model"
 	openaiProvider "github.com/trobrock/notch/internal/provider/openai"
 	"github.com/trobrock/notch/internal/session"
@@ -1396,5 +1398,128 @@ func TestPromptIdleTimeoutEmitsErrorRunEnd(t *testing.T) {
 	})
 	if !errors.Is(err, ErrIdleTimeout) || end.StopReason != "error" {
 		t.Fatalf("error = %v, run_end = %#v", err, end)
+	}
+}
+
+// The second response deliberately attempts the underlying name even when it
+// was excluded/inactive, proving discovery cannot grant execution permission.
+type discoveryProvider struct{ requests []model.Request }
+
+func (p *discoveryProvider) Stream(_ context.Context, req model.Request, _ func(model.StreamEvent)) (model.Response, error) {
+	p.requests = append(p.requests, req)
+	switch len(p.requests) {
+	case 1:
+		return model.Response{Content: []model.Block{{Type: "tool_use", ID: "search", Name: mcp.DiscoveryToolName, Arguments: json.RawMessage(`{"query":"echo"}`)}}}, nil
+	case 2:
+		return model.Response{Content: []model.Block{{Type: "tool_use", ID: "remote", Name: "mcp__demo__echo", Arguments: json.RawMessage(`{"value":42}`)}}}, nil
+	default:
+		return model.Response{Content: []model.Block{{Type: "text", Text: "done"}}}, nil
+	}
+}
+
+func TestMCPDiscoveryUsesNormalExecutionAndPolicies(t *testing.T) {
+	for _, mode := range []string{"allowed", "hook-denied", "excluded", "inactive"} {
+		t.Run(mode, func(t *testing.T) {
+			var calls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodDelete {
+					w.WriteHeader(http.StatusNoContent)
+					return
+				}
+				var request struct {
+					ID     int64           `json:"id"`
+					Method string          `json:"method"`
+					Params json.RawMessage `json:"params"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Error(err)
+					return
+				}
+				var result any
+				switch request.Method {
+				case "initialize":
+					result = map[string]any{"protocolVersion": "2025-06-18", "capabilities": map[string]any{}}
+				case "notifications/initialized":
+					w.WriteHeader(http.StatusAccepted)
+					return
+				case "tools/list":
+					result = map[string]any{"tools": []any{map[string]any{"name": "echo", "description": "Echo input", "inputSchema": map[string]any{"type": "object"}}}}
+				case "tools/call":
+					calls.Add(1)
+					var params struct {
+						Name      string         `json:"name"`
+						Arguments map[string]int `json:"arguments"`
+					}
+					if err := json.Unmarshal(request.Params, &params); err != nil || params.Name != "echo" || params.Arguments["value"] != 42 {
+						t.Errorf("params=%s err=%v", request.Params, err)
+					}
+					result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "echoed"}}}
+				default:
+					t.Errorf("unexpected MCP method %s", request.Method)
+					w.WriteHeader(400)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": result})
+			}))
+			defer server.Close()
+			registry := extension.NewRegistry()
+			manager, err := mcp.ConnectConfigured(context.Background(), mcp.Config{MCPServers: map[string]mcp.ServerConfig{"demo": {URL: server.URL}}}, registry)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer manager.Close()
+			if mode == "excluded" {
+				registry.RemoveTools([]string{"mcp__demo__echo"})
+			}
+			if mode == "inactive" {
+				registry.SetActiveTools([]string{mcp.DiscoveryToolName})
+			}
+			var intercepted, executed bool
+			registry.On("tool_call", "test", func(_ context.Context, event map[string]any) (map[string]any, error) {
+				if event["name"] == "mcp__demo__echo" {
+					intercepted = true
+					if mode == "hook-denied" {
+						return map[string]any{"denied": true, "reason": "blocked"}, nil
+					}
+				}
+				return nil, nil
+			})
+			registry.On("tool_execution_end", "test", func(_ context.Context, event map[string]any) (map[string]any, error) {
+				if event["name"] == "mcp__demo__echo" {
+					executed = true
+				}
+				return nil, nil
+			})
+			provider := &discoveryProvider{}
+			a, err := New(Config{Provider: provider, Registry: registry, Model: "fake"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := a.Prompt(context.Background(), "find and call echo", func(e Event) {
+				if e.Type == "session_start" && !reflect.DeepEqual(e.SessionInfo.Tools, []string{mcp.DiscoveryToolName}) {
+					t.Errorf("initial tools=%v", e.SessionInfo.Tools)
+				}
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if len(provider.requests) != 3 {
+				t.Fatalf("requests=%d", len(provider.requests))
+			}
+			if len(provider.requests[0].Tools) != 1 {
+				t.Fatal("deferred schema leaked into initial request")
+			}
+			wantSchemas := 2
+			if mode == "excluded" || mode == "inactive" {
+				wantSchemas = 1
+			}
+			if len(provider.requests[1].Tools) != wantSchemas {
+				t.Fatalf("discovered schemas=%v", provider.requests[1].Tools)
+			}
+			wantCall := mode == "allowed"
+			if (calls.Load() == 1) != wantCall || executed != wantCall || !intercepted {
+				t.Fatalf("calls=%d executed=%v intercepted=%v", calls.Load(), executed, intercepted)
+			}
+		})
 	}
 }

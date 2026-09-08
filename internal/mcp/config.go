@@ -20,6 +20,10 @@ type OAuthConfig struct {
 // ServerConfig describes either a stdio server (Command) or a Streamable HTTP
 // server (URL). Enabled defaults to true when omitted from JSON.
 type ServerConfig struct {
+	// DirectTools names remote tools whose schemas are exposed without discovery.
+	// A single "*" entry exposes all tools from this server.
+	DirectTools []string `json:"directTools,omitempty"`
+
 	Command string            `json:"command,omitempty"`
 	Args    []string          `json:"args,omitempty"`
 	Env     map[string]string `json:"env,omitempty"`

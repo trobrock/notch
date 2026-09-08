@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"sync"
 
@@ -20,6 +21,8 @@ type clientConnection struct {
 
 // Manager owns the connections and processes backing configured MCP servers.
 type Manager struct {
+	discovery *extension.Registration
+
 	mu          sync.Mutex
 	connections []clientConnection
 	closed      bool
@@ -95,12 +98,20 @@ func ConnectConfigured(ctx context.Context, cfg Config, registry *extension.Regi
 			manager.connections = append(manager.connections, clientConnection{client: prepared[i].client})
 		}
 	}
+	toolCount := 0
 	for i, server := range prepared {
 		if server.err != nil {
 			_ = manager.Close()
 			return nil, server.err
 		}
 		name := enabledNames[i]
+		for _, direct := range cfg.MCPServers[name].DirectTools {
+			if direct != "*" && !slices.ContainsFunc(server.tools, func(tool listedTool) bool { return tool.Name == direct }) {
+				_ = manager.Close()
+				return nil, fmt.Errorf("MCP server %q directTools references unavailable tool %q", name, direct)
+			}
+		}
+		toolCount += len(server.tools)
 		serverTools := make([]extension.Tool, 0, len(server.tools))
 		for _, remote := range server.tools {
 			if remote.Name == "" {
@@ -114,6 +125,7 @@ func ConnectConfigured(ctx context.Context, cfg Config, registry *extension.Regi
 			clientForTool := server.client
 			remoteName := remote.Name
 			tool := extension.Tool{
+				Deferred: !slices.Contains(cfg.MCPServers[name].DirectTools, "*") && !slices.Contains(cfg.MCPServers[name].DirectTools, remote.Name),
 				Definition: model.ToolDefinition{
 					Name:        namespacedToolName(name, remote.Name),
 					Description: remote.Description,
@@ -146,6 +158,14 @@ func ConnectConfigured(ctx context.Context, cfg Config, registry *extension.Regi
 			return nil, fmt.Errorf("register MCP server %q tools: %w", name, err)
 		}
 		manager.connections[server.connectionIndex].lease = lease
+	}
+	if toolCount != 0 {
+		lease, err := registry.RegisterBatch(extension.Batch{Tools: []extension.Tool{discoveryTool(registry)}})
+		if err != nil {
+			_ = manager.Close()
+			return nil, fmt.Errorf("register MCP discovery: %w", err)
+		}
+		manager.discovery = lease
 	}
 	return manager, nil
 }
@@ -192,10 +212,15 @@ func (m *Manager) Close() error {
 	}
 	m.closed = true
 	connections := append([]clientConnection(nil), m.connections...)
+	discovery := m.discovery
+	m.discovery = nil
 	m.connections = nil
 	m.mu.Unlock()
 
 	var errs []error
+	if err := discovery.Close(); err != nil {
+		errs = append(errs, err)
+	}
 	for i := len(connections) - 1; i >= 0; i-- {
 		if err := connections[i].lease.Close(); err != nil {
 			errs = append(errs, err)

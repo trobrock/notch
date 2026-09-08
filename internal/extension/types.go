@@ -56,6 +56,9 @@ type ToolResult struct {
 type ToolHandler func(ctx context.Context, args json.RawMessage, onUpdate func(string)) (ToolResult, error)
 
 type Tool struct {
+	// Deferred hides only the schema until discovery. It is not a permission boundary.
+	Deferred bool
+
 	Definition model.ToolDefinition
 	Execute    ToolHandler
 	Source     string
@@ -321,6 +324,10 @@ func (r *Registry) RestrictTools(names []string) []string {
 		if !allowed[name] {
 			delete(r.tools, name)
 			delete(r.toolOwners, name)
+		} else {
+			tool := r.tools[name]
+			tool.Deferred = false
+			r.tools[name] = tool
 		}
 	}
 	var missing []string
@@ -386,6 +393,9 @@ func (r *Registry) SetActiveTools(names []string) []string {
 			missing = append(missing, name)
 			continue
 		}
+		tool := r.tools[name]
+		tool.Deferred = false
+		r.tools[name] = tool
 		active[name] = true
 	}
 	r.activeTools = active
@@ -433,9 +443,11 @@ func (r *Registry) Tools() []Tool {
 
 func (r *Registry) Definitions() []model.ToolDefinition {
 	tools := r.Tools()
-	out := make([]model.ToolDefinition, len(tools))
-	for i := range tools {
-		out[i] = tools[i].Definition
+	out := make([]model.ToolDefinition, 0, len(tools))
+	for _, tool := range tools {
+		if !tool.Deferred {
+			out = append(out, tool.Definition)
+		}
 	}
 	return out
 }
@@ -501,4 +513,23 @@ func (r *Registry) RunHooksBestEffort(ctx context.Context, name string, event ma
 		}
 	}
 	return event, errors.Join(hookErrors...)
+}
+
+// RevealTools makes schemas visible without granting access. Removed or inactive
+// tools cannot be revealed. Returned names were unavailable at the time of reveal.
+func (r *Registry) RevealTools(names []string) []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var missing []string
+	for _, name := range names {
+		tool, ok := r.tools[name]
+		if !ok || (r.activeTools != nil && !r.activeTools[name]) {
+			missing = append(missing, name)
+			continue
+		}
+		tool.Deferred = false
+		r.tools[name] = tool
+	}
+	sort.Strings(missing)
+	return missing
 }

@@ -497,8 +497,8 @@ func (a *Agent) promptWithStart(ctx context.Context, text string, emit func(Even
 	sessionInfo := a.sessionInfo
 	sessionInfo.Provider, sessionInfo.Model, sessionInfo.ThinkingLevel = a.providerName, a.model, a.ThinkingLevel()
 	sessionInfo.Tools = sessionInfo.Tools[:0]
-	for _, tool := range a.registry.Tools() {
-		sessionInfo.Tools = append(sessionInfo.Tools, tool.Definition.Name)
+	for _, tool := range a.registry.Definitions() {
+		sessionInfo.Tools = append(sessionInfo.Tools, tool.Name)
 	}
 	emit(Event{Type: "session_start", SessionInfo: &sessionInfo})
 	defer func() {
