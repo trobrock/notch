@@ -25,6 +25,7 @@ func TestRequestBodyReasoningLevels(t *testing.T) {
 	}{
 		{name: "off", model: "claude-opus-4-6", level: "off"},
 		{name: "medium adaptive", model: "claude-sonnet-4-7", level: "medium", wantType: "adaptive", wantEffort: "medium"},
+		{name: "fable adaptive", model: "claude-fable-5-1", level: "high", wantType: "adaptive", wantEffort: "high"},
 		{name: "xhigh adaptive", model: "claude-opus-5", level: "xhigh", wantType: "adaptive", wantEffort: "max"},
 		{name: "medium budget", model: "claude-sonnet-4-5", level: "medium", wantType: "enabled", wantBudget: true},
 		{name: "xhigh budget capped", model: "claude-haiku-4-5", level: "xhigh", wantType: "enabled", wantBudget: true},
