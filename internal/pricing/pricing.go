@@ -9,7 +9,7 @@ import (
 	"github.com/trobrock/notch/internal/model"
 )
 
-const Version = "builtin-2026-05-22"
+const Version = "builtin-2026-09-08"
 
 type Rates struct {
 	Input      float64
@@ -41,6 +41,7 @@ var catalog = map[string]map[string]entry{
 		"claude-sonnet-5":   {Rates: Rates{Input: 2, Output: 10, CacheRead: 0.2, CacheWrite: 2.5}},
 	},
 	"openai": {
+		"gpt-6-astra":         {Rates: Rates{Input: 10, Output: 50, CacheRead: 1}},
 		"gpt-5":               {Rates: Rates{Input: 1.25, Output: 10, CacheRead: 0.125}},
 		"gpt-5-mini":          {Rates: Rates{Input: 0.25, Output: 2, CacheRead: 0.025}},
 		"gpt-5.3-codex-spark": {Rates: Rates{Input: 1.75, Output: 14, CacheRead: 0.175}},

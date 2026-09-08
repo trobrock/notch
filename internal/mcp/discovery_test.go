@@ -59,3 +59,55 @@ func TestDiscoveryValidation(t *testing.T) {
 		t.Fatal("ignored cancellation")
 	}
 }
+
+func TestDiscoveryRanksToolNamesAboveDescriptionReferences(t *testing.T) {
+	for _, query := range []string{"sentry list issues", "search_issues", "sentry search_issues", "SENTRY SEARCH_ISSUES", "mcp__sentry__search_issues"} {
+		t.Run(query, func(t *testing.T) {
+			r := extension.NewRegistry()
+			for _, def := range []model.ToolDefinition{
+				{Name: "mcp__sentry__get_sentry_resource", Description: "List issues. Use search_issues (mcp__sentry__search_issues) for listing."},
+				{Name: "mcp__sentry__search_events", Description: "List issues and events; use search_issues for issues."},
+				{Name: "mcp__sentry__aaa_search_issues", Description: "Alternative endpoint for issues."},
+				{Name: "mcp__sentry__search_issues", Description: "Search grouped issues. Returns a list of issues."},
+			} {
+				if err := r.RegisterTool(extension.Tool{Source: "mcp:sentry", Deferred: true, Definition: def, Execute: func(context.Context, json.RawMessage, func(string)) (extension.ToolResult, error) {
+					t.Fatal("search executed remote tool")
+					return extension.ToolResult{}, nil
+				}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			raw, _ := json.Marshal(map[string]any{"query": query, "limit": 1})
+			result, err := discoveryTool(r).Execute(context.Background(), raw, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defs := r.Definitions()
+			if len(defs) != 1 || defs[0].Name != "mcp__sentry__search_issues" {
+				t.Fatalf("wrong first result: %#v; %s", defs, result.Content)
+			}
+		})
+	}
+}
+
+func TestDiscoveryRankTiesRemainAlphabeticalAndAllTermsRequired(t *testing.T) {
+	r := extension.NewRegistry()
+	for _, name := range []string{"zebra", "alpha", "missing"} {
+		desc := "matching description"
+		if name == "missing" {
+			desc = "unrelated"
+		}
+		if err := r.RegisterTool(extension.Tool{Source: "mcp:demo", Deferred: true, Definition: model.ToolDefinition{Name: "mcp__demo__" + name, Description: desc}, Execute: func(context.Context, json.RawMessage, func(string)) (extension.ToolResult, error) {
+			return extension.ToolResult{}, nil
+		}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result, err := discoveryTool(r).Execute(context.Background(), json.RawMessage(`{"query":"demo matching","limit":1}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Details["matches"] != 2 || len(r.Definitions()) != 1 || r.Definitions()[0].Name != "mcp__demo__alpha" {
+		t.Fatalf("result=%#v definitions=%#v", result, r.Definitions())
+	}
+}

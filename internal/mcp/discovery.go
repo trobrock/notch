@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -21,7 +22,7 @@ func discoveryTool(registry *extension.Registry) extension.Tool {
 		Source: "mcp:discovery",
 		Definition: model.ToolDefinition{
 			Name:        DiscoveryToolName,
-			Description: "Find MCP integration tools by server name, tool name, or description keywords. All space-separated keywords must match (case-insensitive); use concise keywords, not a sentence. Reveals up to 3 matching tool schemas for subsequent direct calls under their original names. Refine the query if there are more matches. Does not execute tools or change permissions.",
+			Description: "Find MCP integration tools by server name, tool name, or description keywords. All space-separated keywords must match (case-insensitive); use concise keywords, not a sentence. Reveals up to 3 matching tool schemas for subsequent direct calls under their original names. Exact tool names rank first, then name-keyword matches, then description-only matches. Refine the query if there are more matches. Does not execute tools or change permissions.",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"query": map[string]any{"type": "string", "minLength": 1, "maxLength": 200, "description": "Server/tool name or space-separated keywords, e.g. sentry issues."},
 				"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 5, "description": "Maximum tools to reveal (default 3)."},
@@ -49,9 +50,11 @@ func discoveryTool(registry *extension.Registry) extension.Tool {
 				return extension.ToolResult{}, errors.New("limit must be between 1 and 5")
 			}
 			terms := strings.Fields(strings.ToLower(input.Query))
-			var names []string
-			descriptions := map[string]string{}
-			matches := 0
+			type match struct {
+				tool             extension.Tool
+				exact, nameTerms int
+			}
+			var candidates []match
 			for _, tool := range registry.Tools() {
 				if err := ctx.Err(); err != nil {
 					return extension.ToolResult{}, err
@@ -59,30 +62,57 @@ func discoveryTool(registry *extension.Registry) extension.Tool {
 				if tool.Definition.Name == DiscoveryToolName || !strings.HasPrefix(tool.Source, "mcp:") {
 					continue
 				}
-				text := strings.ToLower(tool.Definition.Name + " " + tool.Definition.Description)
+				name := strings.ToLower(tool.Definition.Name)
+				remoteName := strings.TrimPrefix(name, "mcp__"+strings.ToLower(strings.TrimPrefix(tool.Source, "mcp:"))+"__")
+				text := name + " " + strings.ToLower(tool.Definition.Description)
+				candidate := match{tool: tool}
 				matched := true
 				for _, term := range terms {
 					if !strings.Contains(text, term) {
 						matched = false
 						break
 					}
-				}
-				if !matched {
-					continue
-				}
-				matches++
-				if len(names) < input.Limit {
-					names = append(names, tool.Definition.Name)
-					description := tool.Definition.Description
-					if len(description) > 400 {
-						description = description[:400]
-						for !utf8.ValidString(description) {
-							description = description[:len(description)-1]
-						}
-						description += "…"
+					if strings.Contains(name, term) {
+						candidate.nameTerms++
 					}
-					descriptions[tool.Definition.Name] = description
+					if term == remoteName {
+						candidate.exact = max(candidate.exact, 1)
+					}
+					if term == name {
+						candidate.exact = 2
+					}
 				}
+				if matched {
+					candidates = append(candidates, candidate)
+				}
+			}
+			// Metadata references must not outrank the tool they refer to. Keep
+			// alphabetical ordering only as a deterministic relevance tie-breaker.
+			sort.Slice(candidates, func(i, j int) bool {
+				a, b := candidates[i], candidates[j]
+				if a.exact != b.exact {
+					return a.exact > b.exact
+				}
+				if a.nameTerms != b.nameTerms {
+					return a.nameTerms > b.nameTerms
+				}
+				return a.tool.Definition.Name < b.tool.Definition.Name
+			})
+			matches := len(candidates)
+			var names []string
+			descriptions := map[string]string{}
+			for _, candidate := range candidates[:min(matches, input.Limit)] {
+				tool := candidate.tool
+				names = append(names, tool.Definition.Name)
+				description := tool.Definition.Description
+				if len(description) > 400 {
+					description = description[:400]
+					for !utf8.ValidString(description) {
+						description = description[:len(description)-1]
+					}
+					description += "…"
+				}
+				descriptions[tool.Definition.Name] = description
 			}
 			missing := registry.RevealTools(names)
 			unavailable := map[string]bool{}
