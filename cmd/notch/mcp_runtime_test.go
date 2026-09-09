@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -22,9 +23,14 @@ func TestMCPRuntimeLoginStoresCredentialAndReconnects(t *testing.T) {
 	store := mcpoauth.NewStore(filepath.Join(t.TempDir(), "mcp-auth.json"))
 	runtime := newMCPRuntime(config, extension.NewRegistry(), store, &mcpoauth.Authorizer{Store: store}, nil)
 
-	var gotResource, gotScope string
-	runtime.login = func(_ context.Context, resource, scope string, out io.Writer) (mcpoauth.Credential, error) {
+	var gotResource, gotScope, gotCallback, gotPrompt, gotPlaceholder string
+	runtime.login = func(_ context.Context, resource, scope string, out io.Writer, callbackInput io.Reader) (mcpoauth.Credential, error) {
 		gotResource, gotScope = resource, scope
+		callback, err := bufio.NewReader(callbackInput).ReadString('\n')
+		if err != nil {
+			return mcpoauth.Credential{}, err
+		}
+		gotCallback = strings.TrimSpace(callback)
 		_, _ = io.WriteString(out, "Open this URL in your browser")
 		return validTestMCPCredential(serverURL), nil
 	}
@@ -35,12 +41,21 @@ func TestMCPRuntimeLoginStoresCredentialAndReconnects(t *testing.T) {
 	}
 
 	var output bytes.Buffer
-	text, err := runtime.command(&output).Execute(context.Background(), "login demo")
+	text, err := runtime.command(&output, func(_ context.Context, prompt, placeholder string) (string, error) {
+		gotPrompt, gotPlaceholder = prompt, placeholder
+		return "http://localhost:1234/callback?code=test&state=state", nil
+	}).Execute(context.Background(), "login demo")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if gotResource != serverURL || gotScope != "read write" {
 		t.Fatalf("login resource=%q scope=%q", gotResource, gotScope)
+	}
+	if gotCallback != "http://localhost:1234/callback?code=test&state=state" {
+		t.Fatalf("callback URL = %q", gotCallback)
+	}
+	if !strings.Contains(gotPrompt, "final OAuth redirect URL") || gotPlaceholder == "" {
+		t.Fatalf("callback prompt=%q placeholder=%q", gotPrompt, gotPlaceholder)
 	}
 	if connects != 1 {
 		t.Fatalf("connect calls = %d, want 1", connects)
@@ -63,11 +78,11 @@ func TestMCPRuntimeLoginValidatesCommandBeforeOpeningBrowser(t *testing.T) {
 		"plain": {URL: "https://mcp.example.test/mcp"},
 	}}
 	runtime := newMCPRuntime(config, extension.NewRegistry(), mcpoauth.NewStore(filepath.Join(t.TempDir(), "auth.json")), nil, nil)
-	runtime.login = func(context.Context, string, string, io.Writer) (mcpoauth.Credential, error) {
+	runtime.login = func(context.Context, string, string, io.Writer, io.Reader) (mcpoauth.Credential, error) {
 		t.Fatal("login called for invalid command")
 		return mcpoauth.Credential{}, nil
 	}
-	command := runtime.command(io.Discard)
+	command := runtime.command(io.Discard, nil)
 	for _, args := range []string{"", "status", "login missing", "login local", "login plain"} {
 		if _, err := command.Execute(context.Background(), args); err == nil {
 			t.Fatalf("%q succeeded", args)
@@ -80,14 +95,14 @@ func TestMCPRuntimeReportsReloadFailureAfterSuccessfulLogin(t *testing.T) {
 	config := mcp.Config{MCPServers: map[string]mcp.ServerConfig{"demo": {URL: serverURL, Auth: "oauth"}}}
 	store := mcpoauth.NewStore(filepath.Join(t.TempDir(), "auth.json"))
 	runtime := newMCPRuntime(config, extension.NewRegistry(), store, &mcpoauth.Authorizer{Store: store}, nil)
-	runtime.login = func(context.Context, string, string, io.Writer) (mcpoauth.Credential, error) {
+	runtime.login = func(context.Context, string, string, io.Writer, io.Reader) (mcpoauth.Credential, error) {
 		return validTestMCPCredential(serverURL), nil
 	}
 	runtime.connect = func(context.Context, mcp.Config, *extension.Registry, ...*mcpoauth.Authorizer) (*mcp.Manager, error) {
 		return nil, errors.New("handshake failed")
 	}
 
-	text, err := runtime.command(io.Discard).Execute(context.Background(), "login demo")
+	text, err := runtime.command(io.Discard, nil).Execute(context.Background(), "login demo")
 	if text != "Logged in to MCP server demo." || err == nil || !strings.Contains(err.Error(), "reload MCP tools") {
 		t.Fatalf("text=%q err=%v", text, err)
 	}
