@@ -14,7 +14,8 @@ import (
 	"github.com/trobrock/notch/internal/mcpoauth"
 )
 
-type mcpLoginFunc func(context.Context, string, string, io.Writer) (mcpoauth.Credential, error)
+type mcpLoginFunc func(context.Context, string, string, io.Writer, io.Reader) (mcpoauth.Credential, error)
+type mcpInputFunc func(context.Context, string, string) (string, error)
 type mcpConnectFunc func(context.Context, mcp.Config, *extension.Registry, ...*mcpoauth.Authorizer) (*mcp.Manager, error)
 
 // mcpRuntime owns the active MCP connections so an interactive login can
@@ -34,8 +35,10 @@ type mcpRuntime struct {
 func newMCPRuntime(config mcp.Config, registry *extension.Registry, store *mcpoauth.Store, authorizer *mcpoauth.Authorizer, applyPolicy func()) *mcpRuntime {
 	return &mcpRuntime{
 		config: config, registry: registry, store: store, authorizer: authorizer,
-		login: func(ctx context.Context, resource, scope string, out io.Writer) (mcpoauth.Credential, error) {
-			return mcpoauth.NewClient().Login(ctx, resource, scope, out)
+		login: func(ctx context.Context, resource, scope string, out io.Writer, callbackInput io.Reader) (mcpoauth.Credential, error) {
+			client := mcpoauth.NewClient()
+			client.CallbackInput = callbackInput
+			return client.Login(ctx, resource, scope, out)
 		},
 		connect: mcp.ConnectConfigured, applyPolicy: applyPolicy,
 	}
@@ -72,7 +75,7 @@ func (r *mcpRuntime) Close() error {
 	return err
 }
 
-func (r *mcpRuntime) command(out io.Writer) extension.Command {
+func (r *mcpRuntime) command(out io.Writer, input mcpInputFunc) extension.Command {
 	return extension.Command{
 		Name: "mcp", Description: "log in to an MCP server and reload its tools", Source: "builtin:mcp",
 		Execute: func(ctx context.Context, args string) (string, error) {
@@ -97,7 +100,11 @@ func (r *mcpRuntime) command(out io.Writer) extension.Command {
 			}
 			loginCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 			defer cancel()
-			credential, err := r.login(loginCtx, server.URL, scope, out)
+			var callbackInput io.Reader
+			if input != nil {
+				callbackInput = &mcpPromptReader{ctx: loginCtx, input: input}
+			}
+			credential, err := r.login(loginCtx, server.URL, scope, out, callbackInput)
 			if err != nil {
 				return "", err
 			}
@@ -110,6 +117,30 @@ func (r *mcpRuntime) command(out io.Writer) extension.Command {
 			return "Logged in to MCP server " + name + " and reloaded MCP tools.", nil
 		},
 	}
+}
+
+type mcpPromptReader struct {
+	ctx     context.Context
+	input   mcpInputFunc
+	pending *strings.Reader
+}
+
+func (r *mcpPromptReader) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if r.pending == nil || r.pending.Len() == 0 {
+		value, err := r.input(
+			r.ctx,
+			"Paste the final OAuth redirect URL from your browser:",
+			"http://localhost:…/callback?code=…&state=…",
+		)
+		if err != nil {
+			return 0, err
+		}
+		r.pending = strings.NewReader(value + "\n")
+	}
+	return r.pending.Read(p)
 }
 
 type mcpNoticeWriter struct{ host extension.Host }

@@ -525,7 +525,7 @@ func run(args []string) error {
 					}
 				})
 				if fullscreen != nil {
-					if err := registry.RegisterCommand(mcpRuntime.command(mcpNoticeWriter{host: extensionHost})); err != nil {
+					if err := registry.RegisterCommand(mcpRuntime.command(mcpNoticeWriter{host: extensionHost}, extensionHost.Input)); err != nil {
 						return err
 					}
 				}
