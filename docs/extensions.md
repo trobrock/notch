@@ -200,13 +200,13 @@ Return fields are currently ignored, but an error aborts normal handling for tha
 
 ### `tool_execution_end`
 
-Runs after execution:
+Runs after execution, including when the tool is canceled:
 
 ```json
 {"name":"read","id":"call-id","content":"...","is_error":false}
 ```
 
-Return fields are currently ignored. A hook error replaces the tool result with an error.
+If the tool context is already canceled when execution returns, end hooks receive a fresh context with a five-second deadline so they can perform cleanup. Otherwise they retain the original tool context and its normal cancellation behavior. Return fields are currently ignored. A hook error replaces the tool result with an error.
 
 ### `monitor_start` and `monitor_end`
 

@@ -29,6 +29,8 @@ var (
 	ErrIdleTimeout    = errors.New("agent idle timeout reached")
 )
 
+const toolExecutionEndCleanupTimeout = 5 * time.Second
+
 type QueuedMessage struct {
 	ID   string `json:"id"`
 	Mode string `json:"mode"`
@@ -941,9 +943,15 @@ func (a *Agent) executeTool(ctx context.Context, call model.Block, emit func(Eve
 		result = extension.ToolResult{Content: execErr.Error(), IsError: true}
 	}
 	result = extension.LimitToolResult(result)
-	_, hookErr := a.registry.RunHooks(ctx, "tool_execution_end", map[string]any{
+	hookCtx := ctx
+	cancelHook := func() {}
+	if ctx.Err() != nil {
+		hookCtx, cancelHook = context.WithTimeout(context.WithoutCancel(ctx), toolExecutionEndCleanupTimeout)
+	}
+	_, hookErr := a.registry.RunHooks(hookCtx, "tool_execution_end", map[string]any{
 		"name": call.Name, "id": call.ID, "content": result.Content, "is_error": result.IsError,
 	})
+	cancelHook()
 	if hookErr != nil {
 		result = extension.ToolResult{Content: hookErr.Error(), IsError: true}
 	}
