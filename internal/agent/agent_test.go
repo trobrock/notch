@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -19,13 +20,33 @@ import (
 
 	"github.com/trobrock/notch/internal/delegation"
 	"github.com/trobrock/notch/internal/extension"
+	"github.com/trobrock/notch/internal/luaext"
 	"github.com/trobrock/notch/internal/mcp"
 	"github.com/trobrock/notch/internal/model"
+	"github.com/trobrock/notch/internal/officialext/askuser"
 	openaiProvider "github.com/trobrock/notch/internal/provider/openai"
 	"github.com/trobrock/notch/internal/session"
 )
 
 type fakeProvider struct{ calls int }
+
+type cancelingAskHost struct {
+	extension.Host
+	cancel   context.CancelFunc
+	mu       sync.Mutex
+	statuses [][2]string
+}
+
+func (h *cancelingAskHost) Select(context.Context, string, []string) (string, error) {
+	h.cancel()
+	return "", context.Canceled
+}
+
+func (h *cancelingAskHost) SetStatus(key, value string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.statuses = append(h.statuses, [2]string{key, value})
+}
 
 func (f *fakeProvider) Stream(_ context.Context, req model.Request, emit func(model.StreamEvent)) (model.Response, error) {
 	f.calls++
@@ -35,6 +56,136 @@ func (f *fakeProvider) Stream(_ context.Context, req model.Request, emit func(mo
 	emit(model.StreamEvent{Type: "thinking_delta", Text: "checked"})
 	emit(model.StreamEvent{Type: "text_delta", Text: "done"})
 	return model.Response{Content: []model.Block{{Type: "text", Text: "done"}}, StopReason: "end_turn"}, nil
+}
+
+func TestToolExecutionEndUsesBoundedCleanupContextAfterCancellation(t *testing.T) {
+	type contextKey string
+	const testKey contextKey = "test-key"
+
+	registry := extension.NewRegistry()
+	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), testKey, "test-value"))
+	if err := registry.RegisterTool(extension.Tool{
+		Definition: model.ToolDefinition{Name: "cancel"},
+		Source:     "test",
+		Execute: func(context.Context, json.RawMessage, func(string)) (extension.ToolResult, error) {
+			cancel()
+			return extension.ToolResult{}, context.Canceled
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var hookRan bool
+	var hookContextErr error
+	var hookDeadline time.Time
+	var hookHasDeadline bool
+	var hookValue any
+	registry.On("tool_execution_end", "test", func(ctx context.Context, _ map[string]any) (map[string]any, error) {
+		hookRan = true
+		hookContextErr = ctx.Err()
+		hookDeadline, hookHasDeadline = ctx.Deadline()
+		hookValue = ctx.Value(testKey)
+		return nil, nil
+	})
+
+	result := (&Agent{registry: registry}).executeTool(ctx, model.Block{Type: "tool_use", ID: "1", Name: "cancel"}, func(Event) {})
+	if !result.IsError || !strings.Contains(result.Content, context.Canceled.Error()) {
+		t.Fatalf("result = %#v", result)
+	}
+	if !hookRan {
+		t.Fatal("tool_execution_end hook did not run")
+	}
+	if hookContextErr != nil {
+		t.Fatalf("hook context was canceled while running: %v", hookContextErr)
+	}
+	if !hookHasDeadline {
+		t.Fatal("hook context has no cleanup deadline")
+	}
+	remaining := time.Until(hookDeadline)
+	if remaining <= 0 || remaining > toolExecutionEndCleanupTimeout {
+		t.Fatalf("hook context deadline remaining = %v", remaining)
+	}
+	if hookValue != "test-value" {
+		t.Fatalf("hook context value = %v", hookValue)
+	}
+}
+
+func TestToolExecutionEndRetainsActiveContextCancellation(t *testing.T) {
+	registry := extension.NewRegistry()
+	if err := registry.RegisterTool(extension.Tool{
+		Definition: model.ToolDefinition{Name: "complete"},
+		Source:     "test",
+		Execute: func(context.Context, json.RawMessage, func(string)) (extension.ToolResult, error) {
+			return extension.ToolResult{Content: "done"}, nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	hookStarted := make(chan struct{})
+	registry.On("tool_execution_end", "test", func(ctx context.Context, _ map[string]any) (map[string]any, error) {
+		close(hookStarted)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	resultCh := make(chan extension.ToolResult, 1)
+	go func() {
+		resultCh <- (&Agent{registry: registry}).executeTool(ctx, model.Block{Type: "tool_use", ID: "1", Name: "complete"}, func(Event) {})
+	}()
+	select {
+	case <-hookStarted:
+	case <-time.After(time.Second):
+		t.Fatal("tool_execution_end hook did not start")
+	}
+	cancel()
+	select {
+	case result := <-resultCh:
+		if !result.IsError || !strings.Contains(result.Content, context.Canceled.Error()) {
+			t.Fatalf("result = %#v", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("tool_execution_end hook did not observe cancellation")
+	}
+}
+
+func TestLuaToolExecutionEndCleansUpAfterAskUserCancellation(t *testing.T) {
+	registry := extension.NewRegistry()
+	ctx, cancel := context.WithCancel(context.Background())
+	host := &cancelingAskHost{cancel: cancel}
+	if err := askuser.Register(registry, host); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	script := `
+notch.on("tool_execution_end", function(event)
+  if event.name == "ask_user_question" then
+    notch.ui.set_status("awaiting-answer", "")
+  end
+end)
+`
+	if err := os.WriteFile(filepath.Join(dir, "cleanup.lua"), []byte(script), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager := luaext.NewManager(registry, host)
+	t.Cleanup(func() { _ = manager.Close() })
+	if err := manager.LoadDirs(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	result := (&Agent{registry: registry}).executeTool(ctx, model.Block{
+		Type: "tool_use", ID: "ask-1", Name: "ask_user_question",
+		Arguments: json.RawMessage(`{"question":"Continue?","options":[{"label":"Yes"}]}`),
+	}, func(Event) {})
+	if result.IsError || result.Details["cancelled"] != true {
+		t.Fatalf("ask_user_question result = %#v", result)
+	}
+	host.mu.Lock()
+	defer host.mu.Unlock()
+	if !reflect.DeepEqual(host.statuses, [][2]string{{"awaiting-answer", ""}}) {
+		t.Fatalf("cleanup statuses = %#v", host.statuses)
+	}
 }
 
 func TestPromptDoesNotMutateMessagesWhenSessionAppendFails(t *testing.T) {
