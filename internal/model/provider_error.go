@@ -29,7 +29,8 @@ func (e *ProviderError) Retryable() bool {
 	switch e.StatusCode {
 	case http.StatusRequestTimeout, http.StatusConflict, http.StatusTooEarly,
 		http.StatusTooManyRequests, http.StatusInternalServerError,
-		http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout,
+		520: // Cloudflare: web server returned an unknown error.
 		return true
 	}
 	code := strings.ToLower(strings.TrimSpace(e.Code))
@@ -46,6 +47,13 @@ func RetryInfo(err error) (bool, time.Duration) {
 	var netErr net.Error
 	if errors.As(err, &netErr) {
 		return netErr.Timeout() || netErr.Temporary(), 0
+	}
+	// Go's HTTP/2 transport does not expose peer-sent stream errors as
+	// net.Error, even though an INTERNAL_ERROR from the server is transient.
+	message := err.Error()
+	if strings.Contains(message, "stream error: stream ID ") &&
+		strings.Contains(message, "; INTERNAL_ERROR; received from peer") {
+		return true, 0
 	}
 	return false, 0
 }

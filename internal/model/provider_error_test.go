@@ -20,6 +20,7 @@ func TestProviderErrorRetryClassification(t *testing.T) {
 	}{
 		{&ProviderError{StatusCode: 429}, true},
 		{&ProviderError{StatusCode: 503}, true},
+		{&ProviderError{StatusCode: 520}, true},
 		{&ProviderError{StatusCode: 400}, false},
 		{&ProviderError{Code: "overloaded_error"}, true},
 		{&ProviderError{Code: "invalid_request_error"}, false},
@@ -34,6 +35,10 @@ func TestProviderErrorRetryClassification(t *testing.T) {
 	}
 	if ok, _ := RetryInfo(timeoutError{}); !ok {
 		t.Fatal("network timeout is not retryable")
+	}
+	streamErr := errors.New("openai: read SSE stream: stream error: stream ID 11; INTERNAL_ERROR; received from peer")
+	if ok, _ := RetryInfo(streamErr); !ok {
+		t.Fatal("peer-sent HTTP/2 INTERNAL_ERROR is not retryable")
 	}
 }
 
