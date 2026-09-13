@@ -11,6 +11,7 @@ import (
 	"github.com/trobrock/notch/internal/officialext/modelswitch"
 	"github.com/trobrock/notch/internal/officialext/monitor"
 	"github.com/trobrock/notch/internal/officialext/plan"
+	"github.com/trobrock/notch/internal/officialext/rtk"
 	"github.com/trobrock/notch/internal/officialext/subagent"
 	"github.com/trobrock/notch/internal/officialext/tasklist"
 )
@@ -33,6 +34,7 @@ func RegisterWithSettingSources(registry *extension.Registry, host extension.Hos
 		func() error { return monitor.Register(registry, host) },
 		func() error { return modelswitch.Register(registry, host) },
 		func() error { return plan.Register(registry, host) },
+		func() error { return rtk.Register(registry, host) },
 		func() error { return subagent.RegisterWithSettingSources(registry, host, settingSources) },
 		func() error { return tasklist.Register(registry, host) },
 	}
