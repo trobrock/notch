@@ -62,7 +62,7 @@ For each user prompt:
 
 A prompt has no fixed turn limit: tool calls, steering, extension follow-ups, and queued user follow-ups continue until the model settles, the run is aborted, or an error occurs. Queue state and an atomic effective-message count remain independent of the long-held conversation mutex, allowing RPC/TUI status and queued messages to stay responsive while provider or tool work is active. Tool calls in one assistant response execute sequentially, not concurrently. Context compaction summarizes old messages and retains recent complete turns; durable compaction records restore that effective context on resume. There is no branching, rewind, or session-tree navigation. See [compaction.md](compaction.md) for thresholds and persistence.
 
-`tool_call` hooks can deny a call or replace its arguments. `tool_execution_start` and `tool_execution_end` surround execution. See [extensions.md](extensions.md) for hook payloads.
+`tool_call` hooks can deny a call or replace its arguments. `tool_execution_start` and `tool_execution_end` surround execution. The official RTK hook detects `rtk` once at startup and, when available, uses `rtk rewrite` to route supported `bash` commands through its command-aware output filters. Missing RTK produces a startup warning and leaves bash unchanged; unsupported commands and rewrite errors silently use the original command. `--no-extensions` disables this hook along with the other official extensions. See [extensions.md](extensions.md) for hook payloads.
 
 ## Provider adapters
 
