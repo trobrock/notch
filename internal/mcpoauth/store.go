@@ -25,6 +25,31 @@ type Store struct {
 func NewStore(path string) *Store { return &Store{path: path} }
 func (s *Store) Path() string     { return s.path }
 
+// withRefreshLock serializes token refreshes across Notch processes that share
+// this store. The caller must reread the credential while holding the lock.
+func (s *Store) withRefreshLock(fn func() (string, error)) (string, error) {
+	directory := filepath.Dir(s.path)
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return "", fmt.Errorf("create MCP OAuth credential directory %q: %w", directory, err)
+	}
+	if err := os.Chmod(directory, 0o700); err != nil {
+		return "", fmt.Errorf("secure MCP OAuth credential directory %q: %w", directory, err)
+	}
+	file, err := os.OpenFile(s.path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return "", fmt.Errorf("open MCP OAuth refresh lock: %w", err)
+	}
+	defer file.Close()
+	if err := file.Chmod(0o600); err != nil {
+		return "", fmt.Errorf("secure MCP OAuth refresh lock: %w", err)
+	}
+	if err := lockFile(file); err != nil {
+		return "", fmt.Errorf("lock MCP OAuth credential refresh: %w", err)
+	}
+	defer unlockFile(file) // Best effort: closing the file also releases the lock.
+	return fn()
+}
+
 // Get returns name's credential only when it is bound to serverURL. This check
 // prevents a project config from redirecting a globally stored bearer token.
 func (s *Store) Get(name, serverURL string) (Credential, bool, error) {

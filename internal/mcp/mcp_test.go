@@ -316,11 +316,11 @@ func TestHTTPOAuthRefreshesAndRetriesUnauthorized(t *testing.T) {
 		writeRPCResult(t, w, request.ID, map[string]any{"protocolVersion": protocolVersion, "capabilities": map[string]any{}})
 	}))
 	defer server.Close()
-	var calls []bool
+	var calls []string
 	currentToken := "old-token"
-	client := newHTTPClient(ServerConfig{URL: server.URL}, func(_ context.Context, refresh bool) (string, error) {
-		calls = append(calls, refresh)
-		if refresh {
+	client := newHTTPClient(ServerConfig{URL: server.URL}, func(_ context.Context, stale string) (string, error) {
+		calls = append(calls, stale)
+		if stale != "" {
 			currentToken = "new-token"
 		}
 		return currentToken, nil
@@ -328,8 +328,8 @@ func TestHTTPOAuthRefreshesAndRetriesUnauthorized(t *testing.T) {
 	if err := initialize(context.Background(), client); err != nil {
 		t.Fatal(err)
 	}
-	if fmt.Sprint(calls) != "[false true false]" {
-		t.Fatalf("authorization calls = %v", calls)
+	if len(calls) != 3 || calls[0] != "" || calls[1] != "old-token" || calls[2] != "" {
+		t.Fatalf("authorization calls = %q", calls)
 	}
 	mu.Lock()
 	gotTokens := strings.Join(tokens, ",")

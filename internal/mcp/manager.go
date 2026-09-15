@@ -188,8 +188,8 @@ func connectServer(ctx context.Context, name string, cfg ServerConfig, authorize
 		if authorizer == nil {
 			return nil, errors.New("MCP OAuth is configured but no credential store is available")
 		}
-		return newHTTPClient(cfg, func(ctx context.Context, forceRefresh bool) (string, error) {
-			return authorizer.Token(ctx, name, cfg.URL, forceRefresh)
+		return newHTTPClient(cfg, func(ctx context.Context, stale string) (string, error) {
+			return authorizer.Token(ctx, name, cfg.URL, stale)
 		}), nil
 	default:
 		return nil, errors.New("configuration requires command or url")
