@@ -16,7 +16,7 @@ func TestHookRewritesBashAndPreservesArguments(t *testing.T) {
 	registerHook(registry, "/usr/local/bin/rtk", func(_ context.Context, path string, args []string) (string, string, int, error) {
 		gotPath = path
 		gotArgs = append([]string(nil), args...)
-		return "rtk git status\n", "", 3, nil
+		return "rtk git status\n", "", 3, errors.New("exit status 3")
 	})
 
 	result, err := registry.RunHooks(context.Background(), "tool_call", map[string]any{
