@@ -47,7 +47,7 @@ func registerHook(registry *extension.Registry, path string, run commandRunner) 
 		rewritten := strings.TrimSpace(stdout)
 		// RTK exits 0 for auto-allowed rewrites and 3 when its host permission
 		// policy would ask. Notch owns execution policy, so both are valid here.
-		if err != nil || (exitCode != 0 && exitCode != 3) || rewritten == "" || rewritten == command {
+		if (err != nil && exitCode != 3) || (exitCode != 0 && exitCode != 3) || rewritten == "" || rewritten == command {
 			return nil, nil
 		}
 
