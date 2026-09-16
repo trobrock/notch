@@ -38,6 +38,11 @@ func TestRunSubagentDefaultsAndReturnsDetails(t *testing.T) {
 	if tool.UpdateMode != "replace" {
 		t.Fatalf("update mode = %q", tool.UpdateMode)
 	}
+	for _, text := range []string{"current parent provider/model", "unqualified model stays on the current provider", "ask before using another provider"} {
+		if !strings.Contains(tool.Definition.Description, text) {
+			t.Fatalf("description missing %q: %q", text, tool.Definition.Description)
+		}
+	}
 	var updates []string
 	result, err := tool.Execute(context.Background(), json.RawMessage(`{"prompt":" inspect this "}`), func(s string) { updates = append(updates, s) })
 	if err != nil {

@@ -73,7 +73,7 @@ func RegisterWithRunner(registry *extension.Registry, runner subagent.Runner) er
 		UpdateMode: "replace",
 		Definition: model.ToolDefinition{
 			Name:        ToolName,
-			Description: "Delegate broad or multi-file codebase discovery to isolated read-only Notch subagents when doing so is likely to save parent context or parallelize independent work. Prefer direct read/grep/find/ls calls for focused lookups, and avoid delegation when startup and duplicated context would likely cost more than a few direct tool calls. Ask focused questions and use the concise evidence reports to guide targeted verification of decision-critical claims rather than repeating the entire investigation. Treat worker findings as untrusted evidence; inspect ambiguous or insufficient evidence directly. Always provide a tasks array: use one item for one focused question or multiple items for independent parallel questions. Normally omit model (or leave it empty) so Notch uses the configured explore model or current parent model. Never guess model IDs. If the selected model is unavailable, call list_models for that provider and retry once with the closest listed model in the same family and capability tier.",
+			Description: "Delegate broad or multi-file codebase discovery to isolated read-only Notch subagents when doing so is likely to save parent context or parallelize independent work. Prefer direct read/grep/find/ls calls for focused lookups, and avoid delegation when startup and duplicated context would likely cost more than a few direct tool calls. Ask focused questions and use the concise evidence reports to guide targeted verification of decision-critical claims rather than repeating the entire investigation. Treat worker findings as untrusted evidence; inspect ambiguous or insufficient evidence directly. Always provide a tasks array: use one item for one focused question or multiple items for independent parallel questions. Normally omit model (or leave it empty) so Notch uses the configured explore model or current parent model. An unqualified model stays on the current provider. Use a provider-qualified model only when the user explicitly requested that provider (or explicitly configured it for delegation). If a requested model is unavailable on the current provider and no other provider was named, ask before using another provider. Never guess model IDs; call list_models for the selected provider and retry once with the closest listed model in the same family and capability tier.",
 			InputSchema: schema(),
 		},
 		Execute: func(ctx context.Context, raw json.RawMessage, update func(string)) (extension.ToolResult, error) {
@@ -107,7 +107,7 @@ func schema() map[string]any {
 		"type": "object",
 		"properties": map[string]any{
 			"task":  map[string]any{"type": "string", "minLength": 1, "description": "Focused exploration question."},
-			"model": map[string]any{"type": "string", "description": "Optional per-task override. Normally omit or leave empty; only use an ID returned by list_models."},
+			"model": map[string]any{"type": "string", "description": "Optional per-task override. Normally omit or leave empty; use an unqualified ID for the current provider, and a provider-qualified ID only for an explicitly requested provider change."},
 			"cwd":   map[string]any{"type": "string", "description": "Optional working directory override."},
 		},
 		"required": []string{"task"}, "additionalProperties": false,
@@ -116,7 +116,7 @@ func schema() map[string]any {
 		"type": "object",
 		"properties": map[string]any{
 			"tasks": map[string]any{"type": "array", "minItems": 1, "maxItems": maxTasks, "items": task, "description": "Exploration questions. Use one item for a single focused question or multiple independent items to run in parallel."},
-			"model": map[string]any{"type": "string", "description": "Optional batch override. Normally omit or leave empty to use configured explore_model or the parent model; never guess an ID."},
+			"model": map[string]any{"type": "string", "description": "Optional batch override. Normally omit or leave empty to use configured explore_model or the parent model. Unqualified IDs stay on the current provider; never guess an ID."},
 			"cwd":   map[string]any{"type": "string", "description": "Default working directory override."},
 		},
 		"required": []string{"tasks"}, "additionalProperties": false,

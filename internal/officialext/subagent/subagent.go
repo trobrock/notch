@@ -124,7 +124,7 @@ func RegisterWithRunner(registry *extension.Registry, runner Runner) error {
 		UpdateMode: "replace",
 		Definition: model.ToolDefinition{
 			Name:        ToolName,
-			Description: "Spawn a focused Notch subagent in an isolated process. Defaults to read-only tools; enable write-capable tools only when the user explicitly wants delegated implementation.",
+			Description: "Spawn a focused Notch subagent in an isolated process. Defaults to read-only tools; enable write-capable tools only when the user explicitly wants delegated implementation. Omit model to use the current parent provider/model. An unqualified model stays on the current provider. Use a provider-qualified model only when the user explicitly requested that provider (or explicitly configured it for delegation); if a requested model is unavailable on the current provider and no other provider was named, ask before using another provider.",
 			InputSchema: schema(),
 		},
 		Execute: func(ctx context.Context, raw json.RawMessage, update func(string)) (extension.ToolResult, error) {
@@ -161,7 +161,7 @@ func schema() map[string]any {
 		"type": "object",
 		"properties": map[string]any{
 			"prompt":          map[string]any{"type": "string", "minLength": 1, "description": "Self-contained task or question for the subagent."},
-			"model":           map[string]any{"type": "string", "description": "Model ID, optionally provider/model. The parent agent supplies its current provider/model when omitted."},
+			"model":           map[string]any{"type": "string", "description": "Model ID, optionally provider/model. Omit to use the current parent provider/model. An unqualified ID stays on the current provider; qualify it only for a user-requested or explicitly configured provider change."},
 			"cwd":             map[string]any{"type": "string", "description": "Working directory. Defaults to the parent working directory."},
 			"tools":           map[string]any{"type": "string", "description": "Comma-separated tool allowlist. Defaults to read,grep,find,ls. Include write-capable tools only with allowWriteTools=true."},
 			"allowWriteTools": map[string]any{"type": "boolean", "description": "Permit tools outside the read-only default set."},
