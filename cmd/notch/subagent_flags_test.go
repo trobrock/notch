@@ -3,8 +3,17 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestDelegationProviderPolicyRequiresConsentBeforeCrossProviderFallback(t *testing.T) {
+	for _, text := range []string{"currently selected provider", "only when the user explicitly requests it", "ask before trying another provider", "never silently fall back across providers"} {
+		if !strings.Contains(delegationProviderPolicy, text) {
+			t.Fatalf("delegation provider policy missing %q: %q", text, delegationProviderPolicy)
+		}
+	}
+}
 
 func TestSystemPromptFileFlag(t *testing.T) {
 	// Parsing and provider startup are composed in run, so verify the mutually

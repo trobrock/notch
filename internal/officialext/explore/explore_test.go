@@ -49,7 +49,7 @@ func TestExploreSchemaAndDescriptionGuideCorrectUse(t *testing.T) {
 	if tool.UpdateMode != "replace" {
 		t.Fatalf("update mode = %q", tool.UpdateMode)
 	}
-	for _, text := range []string{"save parent context", "tasks array", "avoid delegation", "Normally omit model", "Never guess model IDs", "call list_models"} {
+	for _, text := range []string{"save parent context", "tasks array", "avoid delegation", "Normally omit model", "unqualified model stays on the current provider", "ask before using another provider", "Never guess model IDs", "call list_models"} {
 		if !strings.Contains(tool.Definition.Description, text) {
 			t.Fatalf("description missing %q: %q", text, tool.Definition.Description)
 		}

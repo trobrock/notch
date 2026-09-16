@@ -1374,7 +1374,17 @@ func TestDelegationToolsUseConfiguredDefaults(t *testing.T) {
 	explicit := model.Block{Name: "explore_codebase", Arguments: json.RawMessage(`{"tasks":[{"task":"inspect"}],"model":"anthropic/custom"}`)}
 	a.applyDelegationModelDefault(&explicit)
 	if !strings.Contains(string(explicit.Arguments), `"anthropic/custom"`) {
-		t.Fatalf("explicit model changed: %s", explicit.Arguments)
+		t.Fatalf("explicit provider-qualified model changed: %s", explicit.Arguments)
+	}
+	unqualified := model.Block{Name: "run_subagent", Arguments: json.RawMessage(`{"prompt":"inspect","model":"gpt-custom"}`)}
+	a.applyDelegationModelDefault(&unqualified)
+	if !strings.Contains(string(unqualified.Arguments), `"openrouter/gpt-custom"`) {
+		t.Fatalf("unqualified model did not stay on current provider: %s", unqualified.Arguments)
+	}
+	perTask := model.Block{Name: "explore_codebase", Arguments: json.RawMessage(`{"tasks":[{"task":"one","model":"gpt-task"},{"task":"two","model":"anthropic/claude-task"}]}`)}
+	a.applyDelegationModelDefault(&perTask)
+	if !strings.Contains(string(perTask.Arguments), `"openrouter/gpt-task"`) || !strings.Contains(string(perTask.Arguments), `"anthropic/claude-task"`) {
+		t.Fatalf("per-task models not resolved safely: %s", perTask.Arguments)
 	}
 	ordinary := model.Block{Name: "read", Arguments: json.RawMessage(`{"path":"x"}`)}
 	a.applyDelegationModelDefault(&ordinary)

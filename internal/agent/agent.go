@@ -850,23 +850,50 @@ func (a *Agent) applyDelegationModelDefault(call *model.Block) {
 	if len(call.Arguments) != 0 && json.Unmarshal(call.Arguments, &arguments) != nil {
 		return
 	}
-	if value, _ := arguments["model"].(string); strings.TrimSpace(value) != "" {
-		return
+	providerName := strings.TrimSpace(a.providerName)
+	qualify := func(value string) string {
+		value = strings.TrimSpace(value)
+		if value == "" || providerName == "" || strings.Contains(value, "/") {
+			return value
+		}
+		return providerName + "/" + value
 	}
-	modelName := ""
-	if call.Name == "explore_codebase" {
-		modelName = strings.TrimSpace(a.exploreModel)
-	}
-	if modelName == "" {
-		modelName = strings.TrimSpace(a.model)
+
+	modelName, _ := arguments["model"].(string)
+	if strings.TrimSpace(modelName) != "" {
+		arguments["model"] = qualify(modelName)
+	} else {
+		if call.Name == "explore_codebase" {
+			modelName = strings.TrimSpace(a.exploreModel)
+			if modelName != "" {
+				arguments["model"] = qualify(modelName)
+			}
+		}
 		if modelName == "" {
-			return
-		}
-		if provider := strings.TrimSpace(a.providerName); provider != "" {
-			modelName = provider + "/" + modelName
+			modelName = strings.TrimSpace(a.model)
+			if modelName != "" {
+				if providerName != "" {
+					modelName = providerName + "/" + modelName
+				}
+				arguments["model"] = modelName
+			}
 		}
 	}
-	arguments["model"] = modelName
+
+	// Per-task explore overrides follow the same rule: an unqualified model is
+	// resolved on the current parent provider, while provider/model remains an
+	// explicit cross-provider selection.
+	if tasks, ok := arguments["tasks"].([]any); ok {
+		for _, rawTask := range tasks {
+			task, ok := rawTask.(map[string]any)
+			if !ok {
+				continue
+			}
+			if taskModel, _ := task["model"].(string); strings.TrimSpace(taskModel) != "" {
+				task["model"] = qualify(taskModel)
+			}
+		}
+	}
 	if raw, err := json.Marshal(arguments); err == nil {
 		call.Arguments = raw
 	}

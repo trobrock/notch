@@ -68,6 +68,8 @@ Commands:
 
 Run 'notch COMMAND --help' for command-specific help.`
 
+const delegationProviderPolicy = "When using subagents, stay on the currently selected provider by default. Use a different provider only when the user explicitly requests it or has explicitly configured a provider-qualified delegation model. If the user requests a model that is unavailable on the current provider without naming another provider, ask before trying another provider; never silently fall back across providers."
+
 type options struct {
 	provider, modelName, thinking, prompt, systemPrompt, systemPromptFile, mcpConfig, resumeSession, mode, toolAllow, toolExclude string
 	settingSources                                                                                                                string
@@ -580,6 +582,7 @@ func run(args []string) error {
 	if summary := catalog.SystemSummary(skillToolAvailable); summary != "" {
 		systemPrompt += "\n\n" + summary
 	}
+	systemPrompt += "\n\n" + delegationProviderPolicy
 	if cfg.ExploreModel != "" {
 		systemPrompt += "\n\nThe configured default for explore_codebase is `" + cfg.ExploreModel + "`. Omit model to use it. If it is unavailable, call list_models for its provider and retry once with the closest listed model in the same family and capability tier; never guess an unlisted model ID."
 	}
