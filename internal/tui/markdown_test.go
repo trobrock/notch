@@ -38,6 +38,21 @@ func TestMarkdownSemanticBlocksAndInlineStyles(t *testing.T) {
 	}
 }
 
+func TestMarkdownCodeBlocksHaveNoCopyDecoration(t *testing.T) {
+	theme := DefaultTheme()
+	for name, source := range map[string]string{
+		"fenced":   "```go\nfunc main() {}\n```",
+		"indented": "    func main() {}",
+	} {
+		t.Run(name, func(t *testing.T) {
+			plain := markdownPlain(renderMarkdown(source, 80, theme, theme.Text))
+			if plain != "func main() {}" {
+				t.Fatalf("code block includes copy-hostile decoration: %q", plain)
+			}
+		})
+	}
+}
+
 func TestMarkdownWidthsUnicodeBreaksAndInjection(t *testing.T) {
 	theme := DefaultTheme()
 	input := "界界 **🙂🙂🙂** café  \nnext\n\n```\n  x  y\n```\n\x1b[31mred\x1b]0;title\a"

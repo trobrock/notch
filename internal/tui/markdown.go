@@ -85,9 +85,9 @@ func (r markdownRenderer) blocks(parent ast.Node) []markdownLine {
 		case *ast.Paragraph, *ast.TextBlock:
 			block = []markdownLine{{spans: r.inlines(n, "")}}
 		case *ast.FencedCodeBlock:
-			block = r.codeBlock(n.Lines())
+			block = r.code(n.Lines())
 		case *ast.CodeBlock:
-			block = r.codeBlock(n.Lines())
+			block = r.code(n.Lines())
 		case *ast.Blockquote:
 			block = r.blocks(n)
 			if len(block) == 0 {
@@ -149,14 +149,6 @@ func markdownLineBlank(line markdownLine) bool {
 		}
 	}
 	return true
-}
-
-func (r markdownRenderer) codeBlock(lines *textm.Segments) []markdownLine {
-	block := r.code(lines)
-	for i := range block {
-		block[i].spans = append([]markdownSpan{{text: "│ ", style: r.theme.CodeBlockBorder, preserve: true}}, block[i].spans...)
-	}
-	return block
 }
 
 func (r markdownRenderer) code(lines *textm.Segments) []markdownLine {

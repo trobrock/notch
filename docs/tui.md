@@ -113,7 +113,7 @@ User and assistant text is Markdown-aware. The renderer supports:
 - blockquotes and thematic rules;
 - Markdown hard line breaks, escapes, and character entities.
 
-Headings, links and URLs, code, quote bars, rules, and list bullets use semantic theme styles; bold, italic, and link underline use terminal attributes. User Markdown keeps the user's full-width background across inline style resets, while assistant Markdown remains unboxed. Fenced-code language tags do not enable syntax highlighting. Raw HTML is shown literally rather than interpreted. Extended Markdown is intentionally limited: tables are not laid out as tables, images are not displayed, and extensions such as task lists and strikethrough have no special rendering.
+Headings, links and URLs, code, quote bars, rules, and list bullets use semantic theme styles; bold, italic, and link underline use terminal attributes. Code blocks have no border or gutter so terminal selections copy only their contents. User Markdown keeps the user's full-width background across inline style resets, while assistant Markdown remains unboxed. Fenced-code language tags do not enable syntax highlighting. Raw HTML is shown literally rather than interpreted. Extended Markdown is intentionally limited: tables are not laid out as tables, images are not displayed, and extensions such as task lists and strikethrough have no special rendering.
 
 Wrapping uses terminal display cells rather than bytes, so wide Unicode, emoji, combining characters, and ordinary words wrap against the actual available width. Words move intact when possible; overlong tokens and verbatim code are split safely at rune boundaries. The renderer remains valid at very narrow widths and while Markdown is incomplete during streaming.
 

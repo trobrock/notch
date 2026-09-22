@@ -87,6 +87,6 @@ The shape intentionally follows Pi theme files: `$schema`, `export`, and known P
 
 An example is available at [`examples/themes/rose-pine.json`](../examples/themes/rose-pine.json).
 
-Themes color user and status-specific tool boxes, notices/errors, the footer, and editor borders for each thinking level. They also provide semantic transcript colors for Markdown headings, links and displayed URLs, inline and fenced code, blockquote/code bars, thematic rules, and list bullets. Bold, italic, and link underline use terminal attributes. User Markdown restores the user-card colors after each inline style, while assistant prose remains unboxed and no theme forces a page-wide terminal background.
+Themes color user and status-specific tool boxes, notices/errors, the footer, and editor borders for each thinking level. They also provide semantic transcript colors for Markdown headings, links and displayed URLs, inline and fenced code, blockquote bars, thematic rules, and list bullets. Code blocks intentionally have no border so terminal selections copy only their contents. Bold, italic, and link underline use terminal attributes. User Markdown restores the user-card colors after each inline style, while assistant prose remains unboxed and no theme forces a page-wide terminal background.
 
 See the [TUI layout](tui.md#pi-style-layout) and [thinking controls](tui.md#commands-and-thinking-level).
