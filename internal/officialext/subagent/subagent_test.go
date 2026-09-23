@@ -260,3 +260,22 @@ printf '{"type":"turn_end","message":{"role":"assistant","content":[{"type":"tex
 		t.Fatalf("Run() = %#v, %v", result, err)
 	}
 }
+
+func TestReadOnlyShellRejectionGivesSafeRecovery(t *testing.T) {
+	_, err := decodeInput(json.RawMessage(`{"prompt":"inspect","tools":"read,bash"}`))
+	if err == nil {
+		t.Fatal("bash accepted without authorization")
+	}
+	for _, text := range []string{"bash is write-capable", "read,grep,find,ls", "parent", "explicit user authorization"} {
+		if !strings.Contains(err.Error(), text) {
+			t.Errorf("error lacks %q: %v", text, err)
+		}
+	}
+	properties := schema()["properties"].(map[string]any)
+	for _, name := range []string{"tools", "allowWriteTools"} {
+		description := properties[name].(map[string]any)["description"].(string)
+		if !strings.Contains(description, "bash") {
+			t.Errorf("%s schema must warn about bash: %s", name, description)
+		}
+	}
+}

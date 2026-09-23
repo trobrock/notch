@@ -274,3 +274,72 @@ func TestReadScannerLimitStillErrors(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 }
+
+func TestReadDefaultPageAndExplicitLimit(t *testing.T) {
+	dir := t.TempDir()
+	content := strings.Repeat("line\n", 250)
+	if err := os.WriteFile(filepath.Join(dir, "file"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := execute(t, NewRead(dir), map[string]any{"path": "file"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(result.Content, "line\n") != 200 || !strings.Contains(result.Content, "offset=201") {
+		t.Fatalf("default page: %q", result.Content)
+	}
+	next, err := execute(t, NewRead(dir), map[string]any{"path": "file", "offset": 201})
+	if err != nil || next.Content != strings.TrimSuffix(strings.Repeat("line\n", 50), "\n") {
+		t.Fatalf("continuation: %#v, %v", next, err)
+	}
+	full, err := execute(t, NewRead(dir), map[string]any{"path": "file", "limit": 250})
+	if err != nil || full.Content != strings.TrimSuffix(content, "\n") {
+		t.Fatalf("explicit limit: %#v, %v", full, err)
+	}
+}
+
+func TestGrepSkipsBinaryAndNestedGitWithOverrides(t *testing.T) {
+	dir := t.TempDir()
+	for name, content := range map[string]string{
+		"source.txt": "needle café\n", "image.png": "needle\x00binary\n", ".git/index": "needle\n", "nested/.git/config": "needle\n", "empty": "",
+	} {
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tt := range []struct {
+		name   string
+		args   map[string]any
+		want   []string
+		absent []string
+	}{
+		{"defaults", map[string]any{"pattern": "needle"}, []string{"source.txt:1:needle café"}, []string{"image.png", ".git"}},
+		{"binary", map[string]any{"pattern": "needle", "includeBinary": true}, []string{"image.png", "source.txt"}, []string{".git"}},
+		{"git", map[string]any{"pattern": "needle", "includeGit": true}, []string{".git/index", "nested/.git/config"}, []string{"image.png"}},
+		{"explicit git root", map[string]any{"pattern": "needle", "path": ".git"}, []string{".git/index"}, nil},
+		{"explicit binary remains skipped", map[string]any{"pattern": "needle", "path": "image.png"}, nil, []string{"needle"}},
+		{"explicit binary override", map[string]any{"pattern": "needle", "path": "image.png", "includeBinary": true}, []string{"needle"}, nil},
+		{"glob retained", map[string]any{"pattern": "needle", "glob": "*.txt", "includeGit": true, "includeBinary": true}, []string{"source.txt"}, []string{"image.png", ".git"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := execute(t, NewGrep(dir), tt.args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range tt.want {
+				if !strings.Contains(result.Content, want) {
+					t.Errorf("missing %q in %q", want, result.Content)
+				}
+			}
+			for _, absent := range tt.absent {
+				if strings.Contains(result.Content, absent) {
+					t.Errorf("unexpected %q in %q", absent, result.Content)
+				}
+			}
+		})
+	}
+}

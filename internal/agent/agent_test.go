@@ -25,6 +25,7 @@ import (
 	"github.com/trobrock/notch/internal/model"
 	"github.com/trobrock/notch/internal/officialext/askuser"
 	openaiProvider "github.com/trobrock/notch/internal/provider/openai"
+	"github.com/trobrock/notch/internal/resources"
 	"github.com/trobrock/notch/internal/session"
 )
 
@@ -1681,6 +1682,87 @@ func TestMCPDiscoveryUsesNormalExecutionAndPolicies(t *testing.T) {
 			if (calls.Load() == 1) != wantCall || executed != wantCall || !intercepted {
 				t.Fatalf("calls=%d executed=%v intercepted=%v", calls.Load(), executed, intercepted)
 			}
+		})
+	}
+}
+
+type repeatedSkillProvider struct{ calls int }
+
+func (p *repeatedSkillProvider) Stream(_ context.Context, _ model.Request, _ func(model.StreamEvent)) (model.Response, error) {
+	p.calls++
+	if p.calls%3 != 0 {
+		return model.Response{Content: []model.Block{{Type: "tool_use", ID: fmt.Sprint(p.calls), Name: "skill", Arguments: json.RawMessage(`{"name":"test"}`)}}, StopReason: "tool_use"}, nil
+	}
+	return model.Response{Content: []model.Block{{Type: "text", Text: "done"}}, StopReason: "end_turn"}, nil
+}
+
+func TestSkillDeduplicationUsesFilteredContext(t *testing.T) {
+	for _, tt := range []struct {
+		name, content string
+		filter        bool
+		dedup         bool
+	}{
+		{"retained", "instructions", false, true},
+		{"context hook removed", "instructions", true, false},
+		{"context truncated", strings.Repeat("instructions ", 2000), false, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			registry := extension.NewRegistry()
+			catalog := &resources.Catalog{Skills: map[string]resources.Skill{"test": {Name: "test", Content: tt.content}}}
+			if _, err := catalog.RegisterSkillTool(registry); err != nil {
+				t.Fatal(err)
+			}
+			if tt.filter {
+				registry.On("context", "test", func(_ context.Context, event map[string]any) (map[string]any, error) {
+					event["messages"] = []model.Message{model.TextMessage("user", "continue")}
+					return event, nil
+				})
+			}
+			a, err := New(Config{Provider: &repeatedSkillProvider{}, Registry: registry, Model: "fake"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertLoads := func() {
+				t.Helper()
+				var results []string
+				for _, message := range a.Messages() {
+					for _, block := range message.Content {
+						if block.Type == "tool_result" {
+							results = append(results, block.Text)
+						}
+					}
+				}
+				if len(results) != 2 || results[0] != tt.content {
+					t.Fatalf("expected first full load and second result; got %d results", len(results))
+				}
+				if got := strings.Contains(results[1], "already loaded"); got != tt.dedup {
+					t.Fatalf("second load dedup=%v want %v", got, tt.dedup)
+				}
+				if !tt.dedup && results[1] != tt.content {
+					t.Fatal("missing reloaded instructions")
+				}
+			}
+			if err := a.Prompt(context.Background(), "load twice", nil); err != nil {
+				t.Fatal(err)
+			}
+			assertLoads()
+			a.mu.Lock()
+			err = a.applyCompactionLocked("Prior skill load summarized", nil, false)
+			a.mu.Unlock()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := a.Prompt(context.Background(), "load twice after compaction", nil); err != nil {
+				t.Fatal(err)
+			}
+			assertLoads()
+			if _, err := a.ResetConversation(nil); err != nil {
+				t.Fatal(err)
+			}
+			if err := a.Prompt(context.Background(), "load twice after reset", nil); err != nil {
+				t.Fatal(err)
+			}
+			assertLoads()
 		})
 	}
 }

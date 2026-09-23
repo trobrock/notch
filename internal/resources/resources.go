@@ -299,7 +299,7 @@ func (c *Catalog) RegisterSkillTool(registry *extension.Registry) (bool, error) 
 			},
 		},
 		Source: "builtin:skills",
-		Execute: func(_ context.Context, raw json.RawMessage, _ func(string)) (extension.ToolResult, error) {
+		Execute: func(ctx context.Context, raw json.RawMessage, _ func(string)) (extension.ToolResult, error) {
 			var input struct {
 				Name      string `json:"name"`
 				Arguments string `json:"arguments"`
@@ -312,6 +312,9 @@ func (c *Catalog) RegisterSkillTool(registry *extension.Registry) (bool, error) 
 				return extension.ToolResult{Content: "skill not found: " + input.Name, IsError: true}, nil
 			}
 			content := strings.ReplaceAll(skill.Content, "$ARGUMENTS", strings.TrimSpace(input.Arguments))
+			if extension.HasContextToolResult(ctx, "skill", content) {
+				return extension.ToolResult{Content: "Skill " + skill.Name + " instructions are already loaded in the current context.", Details: map[string]any{"skill": skill.Name, "already_loaded": true}}, nil
+			}
 			return extension.ToolResult{Content: content, Details: map[string]any{"skill": skill.Name, "path": skill.Path}}, nil
 		},
 	})

@@ -615,6 +615,7 @@ func (a *Agent) promptWithStart(ctx context.Context, text string, emit func(Even
 		var delegatedTotals delegation.Usage
 		calls := toolCalls(response.Content)
 		if len(calls) != 0 {
+			toolCtx := extension.WithContextToolResults(ctx, requestMessages)
 			results := make([]model.Block, 0, len(calls))
 			recordToolResult := func(call model.Block, result extension.ToolResult) {
 				if delegated, ok := delegation.FromDetails(result.Details); ok {
@@ -625,9 +626,9 @@ func (a *Agent) promptWithStart(ctx context.Context, text string, emit func(Even
 				results = append(results, model.Block{Type: "tool_result", ToolUseID: call.ID, Text: result.Content, IsError: result.IsError})
 			}
 			if len(calls) == 1 {
-				recordToolResult(calls[0], a.executeTool(ctx, calls[0], emit))
+				recordToolResult(calls[0], a.executeTool(toolCtx, calls[0], emit))
 			} else {
-				for _, executed := range a.executeTools(ctx, calls, emit) {
+				for _, executed := range a.executeTools(toolCtx, calls, emit) {
 					recordToolResult(executed.call, executed.result)
 				}
 			}

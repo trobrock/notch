@@ -163,8 +163,8 @@ func schema() map[string]any {
 			"prompt":          map[string]any{"type": "string", "minLength": 1, "description": "Self-contained task or question for the subagent."},
 			"model":           map[string]any{"type": "string", "description": "Model ID, optionally provider/model. Omit to use the current parent provider/model. An unqualified ID stays on the current provider; qualify it only for a user-requested or explicitly configured provider change."},
 			"cwd":             map[string]any{"type": "string", "description": "Working directory. Defaults to the parent working directory."},
-			"tools":           map[string]any{"type": "string", "description": "Comma-separated tool allowlist. Defaults to read,grep,find,ls. Include write-capable tools only with allowWriteTools=true."},
-			"allowWriteTools": map[string]any{"type": "boolean", "description": "Permit tools outside the read-only default set."},
+			"tools":           map[string]any{"type": "string", "description": "Comma-separated tool allowlist. Defaults to read,grep,find,ls. bash is NOT read-only, even for inspection commands. Any other tool requires explicit delegated write authorization and allowWriteTools=true."},
+			"allowWriteTools": map[string]any{"type": "boolean", "description": "Permit tools outside read,grep,find,ls (including bash). Enable only when the user explicitly authorizes delegated write access; never enable just to run read-only shell commands."},
 			"timeoutSeconds":  map[string]any{"type": "integer", "minimum": 1, "maximum": maxTimeoutSeconds},
 			"maxOutputChars":  map[string]any{"type": "integer", "minimum": 1000, "maximum": maxOutputChars},
 			"systemPrompt":    map[string]any{"type": "string", "description": "Additional system instructions for the subagent."},
@@ -214,7 +214,7 @@ func decodeInput(raw json.RawMessage) (Input, error) {
 		}
 	}
 	if len(unsafe) > 0 && !input.AllowWriteTools {
-		return input, fmt.Errorf("tools include non-read-only tools (%s); set allowWriteTools only when delegated write access is intended", strings.Join(unsafe, ", "))
+		return input, fmt.Errorf("tools include non-read-only tools (%s). bash is write-capable regardless of the intended command. For read-only discovery omit tools or use read,grep,find,ls; run shell analysis in the parent. Set allowWriteTools=true only with explicit user authorization for delegated write access", strings.Join(unsafe, ", "))
 	}
 	input.Tools = strings.Join(tools, ",")
 	if input.Thinking == "" {

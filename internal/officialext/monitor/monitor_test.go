@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -141,7 +142,7 @@ func TestMonitorCommandExitAndList(t *testing.T) {
 	}
 	waitFor(t, func() bool { h.mu.Lock(); defer h.mu.Unlock(); return len(h.followups) == 1 })
 	list, _ := r.Tool("list_monitors")
-	listed, err := list.Execute(context.Background(), json.RawMessage(`{"includeOutput":true}`), nil)
+	listed, err := list.Execute(context.Background(), json.RawMessage(`{"id":"mon-1","includeOutput":true}`), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,11 +205,170 @@ func TestMonitorReportsWakeupDeliveryFailure(t *testing.T) {
 		return len(h.notices) != 0
 	})
 	list, _ := r.Tool("list_monitors")
-	result, err := list.Execute(context.Background(), json.RawMessage(`{}`), nil)
+	result, err := list.Execute(context.Background(), json.RawMessage(`{"status":"all"}`), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(result.Content, "Wake-up delivery failed: agent is idle") {
 		t.Fatalf("list=%q", result.Content)
+	}
+}
+
+func TestListMonitorsFiltersAndChanges(t *testing.T) {
+	now := time.Now().Add(-time.Minute)
+	output := &lockedBuffer{}
+	_, _ = output.Write([]byte("live output"))
+	s := &state{monitors: map[string]*Monitor{
+		"active": {ID: "active", Name: "active job", Status: "running", StartedAt: now, output: output},
+		"done":   {ID: "done", Name: "done job", Status: "completed", StartedAt: now, UpdatedAt: now, Output: "finished"},
+	}}
+	tool := s.listTool()
+	run := func(raw string) extension.ToolResult {
+		t.Helper()
+		result, err := tool.Execute(context.Background(), json.RawMessage(raw), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	initial := run(`{}`)
+	if !strings.Contains(initial.Content, "active [running]") || strings.Contains(initial.Content, "done [completed]") || strings.Contains(initial.Content, "live output") {
+		t.Fatalf("defaults: %s", initial.Content)
+	}
+	all := run(`{"status":"all"}`)
+	if !strings.Contains(all.Content, "done [completed]") {
+		t.Fatalf("all: %s", all.Content)
+	}
+	targeted := run(`{"id":"done","includeOutput":true}`)
+	if !strings.Contains(targeted.Content, "finished") || strings.Contains(targeted.Content, "active job") {
+		t.Fatalf("targeted: %s", targeted.Content)
+	}
+	since := initial.Details["snapshot"].(string)
+	unchanged := run(`{"since":"` + since + `"}`)
+	if !strings.Contains(unchanged.Content, "No matching monitors.") {
+		t.Fatalf("unchanged: %s", unchanged.Content)
+	}
+	_, _ = output.Write([]byte(" updated"))
+	changed := run(`{"id":"active","includeOutput":true,"since":"` + since + `"}`)
+	if !strings.Contains(changed.Content, "live output updated") {
+		t.Fatalf("updated output: %s", changed.Content)
+	}
+	s.monitors["active"].Status = "completed"
+	s.monitors["active"].UpdatedAt = time.Now()
+	completed := run(`{"since":"` + changed.Details["snapshot"].(string) + `"}`)
+	if !strings.Contains(completed.Content, "active [completed]") {
+		t.Fatalf("completion delta: %s", completed.Content)
+	}
+	for _, raw := range []string{`{"includeOutput":true}`, `{"since":"bad"}`, `{"status":"bad"}`, `{"id":"absent"}`} {
+		if _, err := tool.Execute(context.Background(), json.RawMessage(raw), nil); err == nil {
+			t.Errorf("accepted %s", raw)
+		}
+	}
+}
+
+func TestLockedBufferCoalescesWriteNotifications(t *testing.T) {
+	b := &lockedBuffer{changed: make(chan struct{}, 1)}
+	for _, text := range []string{"rea", "dy"} {
+		if _, err := b.Write([]byte(text)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	select {
+	case <-b.changed:
+	default:
+		t.Fatal("no output notification")
+	}
+	select {
+	case <-b.changed:
+		t.Fatal("writes were not coalesced")
+	default:
+	}
+	if b.String() != "ready" {
+		t.Fatalf("lost output: %q", b.String())
+	}
+	if _, err := b.Write([]byte("!")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-b.changed:
+	default:
+		t.Fatal("no subsequent notification")
+	}
+}
+
+func TestOutputMatchOnImmediateExit(t *testing.T) {
+	r, h := setup(t)
+	tool, _ := r.Tool("monitor_command")
+	if _, err := tool.Execute(context.Background(), json.RawMessage(`{"command":"printf ready","trigger":"output_match","pattern":"ready"}`), nil); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { h.mu.Lock(); defer h.mu.Unlock(); return len(h.followups) > 0 })
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.followups) != 1 || !strings.Contains(h.followups[0], "output matched /ready/") {
+		t.Fatalf("followups: %#v", h.followups)
+	}
+}
+
+func TestMonitorTimeoutNotification(t *testing.T) {
+	r, h := setup(t)
+	tool, _ := r.Tool("monitor_command")
+	if _, err := tool.Execute(context.Background(), json.RawMessage(`{"command":"exec sleep 5","trigger":"timeout","timeoutSeconds":1,"stopOnTrigger":true}`), nil); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { h.mu.Lock(); defer h.mu.Unlock(); return len(h.followups) > 0 })
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.followups) != 1 || !strings.Contains(h.followups[0], "timeout after 1 seconds") {
+		t.Fatalf("followups: %#v", h.followups)
+	}
+}
+
+func TestTriggeredMonitorRemainsManaged(t *testing.T) {
+	for _, action := range []string{"stop", "shutdown"} {
+		t.Run(action, func(t *testing.T) {
+			h := &testHost{}
+			r := extension.NewRegistry()
+			s := &state{host: h, registry: r, cwd: ".", monitors: map[string]*Monitor{}}
+			t.Cleanup(s.close)
+			m, err := s.start(commandInput{Command: "printf ready; exec sleep 30", Trigger: "output_match", Pattern: "ready"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			waitFor(t, func() bool { s.mu.Lock(); defer s.mu.Unlock(); return m.Status == "triggered" })
+			s.mu.Lock()
+			for i := 0; i < maxCompleted+1; i++ {
+				id := fmt.Sprintf("done-%d", i)
+				s.monitors[id] = &Monitor{ID: id, Status: "completed", CompletedAt: time.Now()}
+			}
+			s.pruneLocked()
+			retained := s.monitors[m.ID] == m
+			s.mu.Unlock()
+			if !retained {
+				t.Fatal("live triggered monitor pruned")
+			}
+			active := false
+			r.On("test_activity", "test", func(_ context.Context, event map[string]any) (map[string]any, error) {
+				active = event["active"].(bool)
+				return nil, nil
+			})
+			s.emitLifecycle("test_activity", m)
+			if !active {
+				t.Fatal("triggered monitor absent from lifecycle activity")
+			}
+			if action == "stop" {
+				if err := s.stop(m.ID); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				s.close()
+			}
+			waitFor(t, func() bool { s.mu.Lock(); defer s.mu.Unlock(); return m.output == nil })
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			if m.Status != "cancelled" {
+				t.Fatalf("status=%s", m.Status)
+			}
+		})
 	}
 }

@@ -29,7 +29,7 @@ const (
 	// OutputLimit is the largest result returned by tools which can produce
 	// unbounded output.
 	OutputLimit      = 50 * 1024
-	defaultReadLines = 2000
+	defaultReadLines = 200
 	maxLineBytes     = 1024 * 1024
 	builtinSource    = "builtin"
 )
@@ -122,7 +122,7 @@ func NewRead(cwd string) extension.Tool {
 		Definition: definition("read", "Read a text file, optionally selecting a range of lines. Truncated results include line ranges and continuation guidance.", objectSchema(map[string]any{
 			"path":   stringProperty("File to read."),
 			"offset": map[string]any{"type": "integer", "minimum": 1, "description": "One-based first line to read."},
-			"limit":  map[string]any{"type": "integer", "minimum": 1, "description": "Maximum number of lines to read."},
+			"limit":  map[string]any{"type": "integer", "minimum": 1, "description": "Maximum number of lines to read (default 200)."},
 		}, "path")),
 		Execute: func(ctx context.Context, raw json.RawMessage, _ func(string)) (extension.ToolResult, error) {
 			var args struct {
@@ -438,16 +438,20 @@ func NewBash(cwd string) extension.Tool {
 func NewGrep(cwd string) extension.Tool {
 	return extension.Tool{
 		Source: builtinSource,
-		Definition: definition("grep", "Search files recursively using a Go regular expression.", objectSchema(map[string]any{
-			"pattern": stringProperty("Go regular expression to search for."),
-			"path":    stringProperty("File or directory to search (defaults to '.')."),
-			"glob":    stringProperty("Optional filepath glob restricting searched files."),
+		Definition: definition("grep", "Search text files recursively using a Go regular expression. Skips binary files and nested .git directories by default.", objectSchema(map[string]any{
+			"pattern":       stringProperty("Go regular expression to search for."),
+			"path":          stringProperty("File or directory to search (defaults to '.')."),
+			"glob":          stringProperty("Optional filepath glob restricting searched files."),
+			"includeBinary": map[string]any{"type": "boolean", "description": "Search binary files too (default false)."},
+			"includeGit":    map[string]any{"type": "boolean", "description": "Descend into nested .git directories (default false). An explicit .git path is always searched."},
 		}, "pattern")),
 		Execute: func(ctx context.Context, raw json.RawMessage, _ func(string)) (extension.ToolResult, error) {
 			var args struct {
-				Pattern string `json:"pattern"`
-				Path    string `json:"path"`
-				Glob    string `json:"glob"`
+				Pattern       string `json:"pattern"`
+				Path          string `json:"path"`
+				Glob          string `json:"glob"`
+				IncludeBinary bool   `json:"includeBinary"`
+				IncludeGit    bool   `json:"includeGit"`
 			}
 			if err := decode(raw, &args); err != nil {
 				return extension.ToolResult{}, err
@@ -483,7 +487,17 @@ func NewGrep(cwd string) extension.Tool {
 					return fmt.Errorf("grep open %q: %w", path, err)
 				}
 				defer file.Close()
-				scanner := bufio.NewScanner(file)
+				reader := bufio.NewReaderSize(file, 8192)
+				if !args.IncludeBinary {
+					sample, err := reader.Peek(8192)
+					if err != nil && err != io.EOF && err != bufio.ErrBufferFull {
+						return fmt.Errorf("grep sample %q: %w", path, err)
+					}
+					if bytes.IndexByte(sample, 0) >= 0 {
+						return nil
+					}
+				}
+				scanner := bufio.NewScanner(reader)
 				scanner.Buffer(make([]byte, 32*1024), maxLineBytes)
 				line := 0
 				for scanner.Scan() {
@@ -518,6 +532,9 @@ func NewGrep(cwd string) extension.Tool {
 						return err
 					}
 					if entry.IsDir() {
+						if path != root && entry.Name() == ".git" && !args.IncludeGit {
+							return filepath.SkipDir
+						}
 						return nil
 					}
 					if entry.Type()&os.ModeSymlink != 0 {

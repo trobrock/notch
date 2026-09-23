@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/trobrock/notch/internal/extension"
+	"github.com/trobrock/notch/internal/model"
 )
 
 func writeResource(t *testing.T, path, content string) {
@@ -148,5 +149,45 @@ func TestLoadReportsMalformedFrontMatterAndIgnoresMissingDirs(t *testing.T) {
 	}
 	if len(catalog.Skills) != 0 {
 		t.Fatalf("skills = %#v", catalog.Skills)
+	}
+}
+
+func TestSkillReloadDependsOnExactModelContext(t *testing.T) {
+	catalog := &Catalog{Skills: map[string]Skill{"review": {Name: "review", Content: "Review $ARGUMENTS carefully"}}}
+	registry := extension.NewRegistry()
+	if _, err := catalog.RegisterSkillTool(registry); err != nil {
+		t.Fatal(err)
+	}
+	tool, _ := registry.Tool("skill")
+	for _, tt := range []struct {
+		name, toolName, text, args string
+		isError, loaded            bool
+	}{
+		{"retained", "skill", "Review diff carefully", "diff", false, true},
+		{"changed arguments", "skill", "Review diff carefully", "other", false, false},
+		{"truncated", "skill", "Review diff [truncated]", "diff", false, false},
+		{"summary after compaction", "", "Review diff carefully", "diff", false, false},
+		{"other tool", "read", "Review diff carefully", "diff", false, false},
+		{"failed load", "skill", "Review diff carefully", "diff", true, false},
+		{"reset", "", "", "diff", false, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			messages := []model.Message{
+				{Role: "assistant", Content: []model.Block{{Type: "tool_use", ID: "load", Name: tt.toolName}}},
+				{Role: "tool", Content: []model.Block{{Type: "tool_result", ToolUseID: "load", Text: tt.text, IsError: tt.isError}}},
+			}
+			ctx := extension.WithContextToolResults(context.Background(), messages)
+			args, _ := json.Marshal(map[string]string{"name": "REVIEW", "arguments": tt.args})
+			result, err := tool.Execute(ctx, args, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if loaded, _ := result.Details["already_loaded"].(bool); loaded != tt.loaded {
+				t.Fatalf("result=%#v", result)
+			}
+			if !tt.loaded && result.Content != "Review "+tt.args+" carefully" {
+				t.Fatalf("missing instructions: %#v", result)
+			}
+		})
 	}
 }
