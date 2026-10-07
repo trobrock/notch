@@ -94,7 +94,7 @@ func TestListModels(t *testing.T) {
 		t.Fatalf("models = %#v, %v", models, err)
 	}
 	codexServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/codex/models" || r.URL.Query().Get("client_version") != "0.0.0" {
+		if r.URL.Path != "/codex/models" || r.URL.Query().Get("client_version") != codexCatalogClientVersion {
 			t.Errorf("request URL = %s", r.URL.String())
 		}
 		if r.Header.Get("Authorization") != "Bearer codex-secret" || r.Header.Get("ChatGPT-Account-ID") != "account-id" {
