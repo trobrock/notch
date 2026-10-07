@@ -17,7 +17,15 @@ import (
 	"github.com/trobrock/notch/internal/model"
 )
 
-const defaultBaseURL = "https://api.openai.com"
+const (
+	defaultBaseURL = "https://api.openai.com"
+
+	// The Codex catalog filters out models whose minimum Codex CLI version is
+	// newer than client_version. Notch does not share the CLI's release or
+	// feature version, so use a future compatibility sentinel to request the
+	// complete account-visible catalog and rely on the API's visibility field.
+	codexCatalogClientVersion = "999.0.0"
+)
 
 // Config configures an OpenAI provider.
 type Config struct {
@@ -363,9 +371,7 @@ func (p *provider) token(ctx context.Context, stale string) (string, error) {
 func (p *provider) ListModels(ctx context.Context) ([]model.ModelInfo, error) {
 	path := "/v1/models"
 	if p.codexMode {
-		// The catalog interprets this as a Codex CLI compatibility version, not
-		// the calling application's version. Zero requests the unfiltered catalog.
-		path = "/codex/models?client_version=0.0.0"
+		path = "/codex/models?client_version=" + codexCatalogClientVersion
 	}
 	httpResp, err := p.send(ctx, func(token string) (*http.Request, error) {
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+path, nil)
