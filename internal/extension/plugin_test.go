@@ -15,14 +15,29 @@ import (
 )
 
 type testHost struct {
-	mu             sync.Mutex
-	notifications  []string
-	statuses       [][2]string
-	sessionEntries []json.RawMessage
-	editorText     string
+	mu              sync.Mutex
+	notifications   []string
+	statuses        [][2]string
+	sessionEntries  []json.RawMessage
+	appendSessionID string
+	editorText      string
 }
 
 func (h *testHost) CWD() string { return "/host/work" }
+
+type cancelableHost struct {
+	testHost
+	started  chan struct{}
+	canceled chan struct{}
+}
+
+func (h *cancelableHost) Exec(ctx context.Context, _ string, _ []string) (string, string, int, error) {
+	close(h.started)
+	<-ctx.Done()
+	close(h.canceled)
+	return "", "", 1, ctx.Err()
+}
+
 func (h *testHost) Exec(_ context.Context, command string, args []string) (string, string, int, error) {
 	return command + " " + strings.Join(args, " "), "", 0, nil
 }
@@ -47,7 +62,8 @@ func (h *testHost) SwitchModel(context.Context, string, string) (string, int, er
 func (h *testHost) ListModels(context.Context, string, bool) ([]ModelInfo, error) {
 	return nil, nil
 }
-func (h *testHost) AppendSessionEntry(_ string, data any) error {
+func (h *testHost) AppendSessionEntry(sessionID, _ string, data any) error {
+	h.appendSessionID = sessionID
 	raw, _ := json.Marshal(data)
 	h.sessionEntries = append(h.sessionEntries, raw)
 	return nil
@@ -198,7 +214,7 @@ func TestDispatchHostMethods(t *testing.T) {
 		{"host.ui.input", `{"prompt":"name","placeholder":"here"}`},
 		{"host.ui.select", `{"prompt":"pick","options":["a","b"]}`},
 		{"host.ui.notify", `{"message":"done","level":"info"}`},
-		{"host.session.append", `{"kind":"notes","data":{"action":"add"}}`},
+		{"host.session.append", `{"session_id":"session-1","kind":"notes","data":{"action":"add"}}`},
 		{"host.session.entries", `{"kind":"notes"}`},
 		{"host.ui.editor_text", `{}`},
 		{"host.ui.set_editor_text", `{"text":"draft"}`},
@@ -206,11 +222,14 @@ func TestDispatchHostMethods(t *testing.T) {
 		{"host.ui.set_panel", `{"key":"tasks","title":"Tasks","lines":["one"]}`},
 	}
 	for _, test := range cases {
-		if _, rpcErr := plugin.dispatchHost(test.method, json.RawMessage(test.params)); rpcErr != nil {
+		if _, rpcErr := plugin.dispatchHost(context.Background(), test.method, json.RawMessage(test.params)); rpcErr != nil {
 			t.Errorf("%s: %v", test.method, rpcErr)
 		}
 	}
-	if _, rpcErr := plugin.dispatchHost("host.nope", nil); rpcErr == nil || rpcErr.Code != -32601 {
+	if _, rpcErr := plugin.dispatchHost(context.Background(), "host.exec", json.RawMessage(`{"command":"echo","timeout_ms":-1}`)); rpcErr == nil || rpcErr.Code != -32602 {
+		t.Fatalf("negative host.exec timeout error = %#v", rpcErr)
+	}
+	if _, rpcErr := plugin.dispatchHost(context.Background(), "host.nope", nil); rpcErr == nil || rpcErr.Code != -32601 {
 		t.Fatalf("unknown host method error = %#v", rpcErr)
 	}
 	host.mu.Lock()
@@ -221,8 +240,31 @@ func TestDispatchHostMethods(t *testing.T) {
 	if !reflect.DeepEqual(host.statuses, [][2]string{{"tasks", "tasks 1/3"}}) {
 		t.Fatalf("statuses = %v", host.statuses)
 	}
-	if len(host.sessionEntries) != 1 || !strings.Contains(string(host.sessionEntries[0]), `"add"`) || host.editorText != "draft" {
-		t.Fatalf("session entries = %q, editor = %q", host.sessionEntries, host.editorText)
+	if len(host.sessionEntries) != 1 || host.appendSessionID != "session-1" || !strings.Contains(string(host.sessionEntries[0]), `"add"`) || host.editorText != "draft" {
+		t.Fatalf("session entries = %q, session ID = %q, editor = %q", host.sessionEntries, host.appendSessionID, host.editorText)
+	}
+}
+
+func TestPluginCanCancelHostRequest(t *testing.T) {
+	host := &cancelableHost{started: make(chan struct{}), canceled: make(chan struct{})}
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	defer writer.Close()
+	plugin := &Plugin{host: host, ctx: context.Background(), stdin: writer, hostRequests: make(map[string]context.CancelFunc)}
+	plugin.handleRequest(rpcMessage{JSONRPC: "2.0", ID: json.RawMessage(`"host-1"`), Method: "host.exec", Params: json.RawMessage(`{"command":"wait"}`)})
+	select {
+	case <-host.started:
+	case <-time.After(time.Second):
+		t.Fatal("host request did not start")
+	}
+	plugin.handleRequest(rpcMessage{JSONRPC: "2.0", Method: "$/cancelRequest", Params: json.RawMessage(`{"id":"host-1"}`)})
+	select {
+	case <-host.canceled:
+	case <-time.After(time.Second):
+		t.Fatal("host request was not canceled")
 	}
 }
 

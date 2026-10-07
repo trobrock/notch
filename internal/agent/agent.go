@@ -609,6 +609,12 @@ func (a *Agent) promptWithStart(ctx context.Context, text string, emit func(Even
 		if err := a.appendMessage(assistant); err != nil {
 			return err
 		}
+		// message_end is observational: extensions may inspect each durable
+		// assistant message without delaying or changing the agent loop on failure.
+		_, _ = a.registry.RunHooksBestEffort(ctx, "message_end", map[string]any{
+			"message": assistant, "stop_reason": response.StopReason, "turn": turn,
+			"provider": requestProvider, "model": requestModel,
+		})
 		usage := &turnUsage
 		contextUsage := a.contextUsageLocked()
 		emit(Event{Type: "turn_end", Usage: usage, ContextUsage: &contextUsage, Message: &assistant, StopReason: response.StopReason})

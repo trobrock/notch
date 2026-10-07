@@ -647,11 +647,19 @@ func (c *Client) Notify(ctx context.Context, message, level string) error {
 // AppendSessionEntry durably appends extension-owned JSON data to the current
 // Notch session.
 func (c *Client) AppendSessionEntry(ctx context.Context, kind string, data any) error {
+	return c.AppendSessionEntryFor(ctx, "", kind, data)
+}
+
+// AppendSessionEntryFor durably appends extension-owned JSON data only when
+// sessionID is still the current Notch session. An empty sessionID accepts the
+// current session for compatibility with synchronous extensions.
+func (c *Client) AppendSessionEntryFor(ctx context.Context, sessionID, kind string, data any) error {
 	var result any
 	return c.call(ctx, "host.session.append", struct {
-		Kind string `json:"kind"`
-		Data any    `json:"data"`
-	}{kind, data}, &result)
+		SessionID string `json:"session_id,omitempty"`
+		Kind      string `json:"kind"`
+		Data      any    `json:"data"`
+	}{sessionID, kind, data}, &result)
 }
 
 // SessionEntries returns current-session data stored with kind.
@@ -756,6 +764,16 @@ func AppendSessionEntry(ctx context.Context, kind string, data any) error {
 		return err
 	}
 	return client.AppendSessionEntry(ctx, kind, data)
+}
+
+// AppendSessionEntryFor durably appends extension-owned JSON data only when
+// sessionID remains the active session.
+func AppendSessionEntryFor(ctx context.Context, sessionID, kind string, data any) error {
+	client, err := clientFor(ctx)
+	if err != nil {
+		return err
+	}
+	return client.AppendSessionEntryFor(ctx, sessionID, kind, data)
 }
 
 // SessionEntries returns current-session data stored with kind.

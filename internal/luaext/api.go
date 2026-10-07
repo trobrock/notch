@@ -146,7 +146,24 @@ func installAPI(L *lua.LState, decls *declarations, host extension.Host) {
 		if err != nil {
 			L.RaiseError("session append data: %v", err)
 		}
-		if err := host.AppendSessionEntry(kind, data); err != nil {
+		if err := host.AppendSessionEntry("", kind, data); err != nil {
+			L.RaiseError("session append: %v", err)
+		}
+		return 0
+	}))
+	L.SetField(sessionAPI, "append_for", L.NewFunction(func(L *lua.LState) int {
+		if host == nil {
+			L.RaiseError("notch.session.append_for is unavailable: extension host is nil")
+		}
+		sessionID, kind := L.CheckString(1), L.CheckString(2)
+		if L.CheckAny(3) == lua.LNil {
+			L.ArgError(3, "data must not be nil")
+		}
+		data, err := luaToGo(L.CheckAny(3))
+		if err != nil {
+			L.RaiseError("session append data: %v", err)
+		}
+		if err := host.AppendSessionEntry(sessionID, kind, data); err != nil {
 			L.RaiseError("session append: %v", err)
 		}
 		return 0

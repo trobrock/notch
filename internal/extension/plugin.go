@@ -41,18 +41,19 @@ type Plugin struct {
 	stdin   io.WriteCloser
 	writeMu sync.Mutex
 
-	nextID   atomic.Uint64
-	mu       sync.Mutex
-	pending  map[string]*pendingCall
-	canceled map[string]bool
-	stopErr  error
-	done     chan struct{}
-	waitDone chan struct{}
-	stop     sync.Once
-	lease    *Registration
-	host     Host
-	ctx      context.Context
-	cancel   context.CancelFunc
+	nextID       atomic.Uint64
+	mu           sync.Mutex
+	pending      map[string]*pendingCall
+	canceled     map[string]bool
+	hostRequests map[string]context.CancelFunc
+	stopErr      error
+	done         chan struct{}
+	waitDone     chan struct{}
+	stop         sync.Once
+	lease        *Registration
+	host         Host
+	ctx          context.Context
+	cancel       context.CancelFunc
 }
 
 type pendingCall struct {
@@ -217,7 +218,8 @@ func startPlugin(ctx context.Context, manifestPath string, manifest Manifest, re
 	plugin := &Plugin{
 		Name: manifest.Name, Dir: filepath.Dir(manifestPath), Manifest: manifest,
 		cmd: cmd, stdin: stdin, pending: make(map[string]*pendingCall), canceled: make(map[string]bool),
-		done: make(chan struct{}), waitDone: make(chan struct{}), host: host,
+		hostRequests: make(map[string]context.CancelFunc),
+		done:         make(chan struct{}), waitDone: make(chan struct{}), host: host,
 		ctx: pluginCtx, cancel: cancel,
 	}
 	go plugin.readLoop(stdout)
@@ -366,6 +368,9 @@ func (p *Plugin) register(registry *Registry, initialized initializeResult) erro
 }
 
 func (p *Plugin) call(ctx context.Context, method string, params, result any, onUpdate func(string)) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	id := p.nextID.Add(1)
 	idRaw := json.RawMessage(fmt.Sprintf("%d", id))
 	key := string(idRaw)
@@ -529,8 +534,37 @@ func (p *Plugin) handleRequest(message rpcMessage) {
 		p.handleUpdate(message.Params)
 		return
 	}
+	if message.Method == "$/cancelRequest" {
+		var request struct {
+			ID json.RawMessage `json:"id"`
+		}
+		if json.Unmarshal(message.Params, &request) == nil && len(request.ID) != 0 {
+			p.mu.Lock()
+			cancel := p.hostRequests[string(request.ID)]
+			p.mu.Unlock()
+			if cancel != nil {
+				cancel()
+			}
+		}
+		return
+	}
+	requestCtx, cancel := context.WithCancel(p.ctx)
+	key := string(message.ID)
+	if key != "" {
+		p.mu.Lock()
+		p.hostRequests[key] = cancel
+		p.mu.Unlock()
+	}
 	go func() {
-		result, rpcErr := p.dispatchHost(message.Method, message.Params)
+		defer cancel()
+		if key != "" {
+			defer func() {
+				p.mu.Lock()
+				delete(p.hostRequests, key)
+				p.mu.Unlock()
+			}()
+		}
+		result, rpcErr := p.dispatchHost(requestCtx, message.Method, message.Params)
 		if len(message.ID) == 0 { // notification
 			return
 		}
@@ -581,7 +615,7 @@ func (p *Plugin) handleUpdate(params json.RawMessage) {
 	}
 }
 
-func (p *Plugin) dispatchHost(method string, params json.RawMessage) (any, *rpcError) {
+func (p *Plugin) dispatchHost(ctx context.Context, method string, params json.RawMessage) (any, *rpcError) {
 	if p.host == nil {
 		return nil, &rpcError{Code: -32601, Message: "host methods are unavailable"}
 	}
@@ -597,13 +631,23 @@ func (p *Plugin) dispatchHost(method string, params json.RawMessage) (any, *rpcE
 		return p.host.CWD(), nil
 	case "host.exec":
 		var value struct {
-			Command string   `json:"command"`
-			Args    []string `json:"args"`
+			Command   string   `json:"command"`
+			Args      []string `json:"args"`
+			TimeoutMS int      `json:"timeout_ms"`
 		}
 		if err := json.Unmarshal(params, &value); err != nil {
 			return badParams(err)
 		}
-		stdout, stderr, code, err := p.host.Exec(p.ctx, value.Command, value.Args)
+		if value.TimeoutMS < 0 {
+			return badParams(errors.New("timeout_ms must be non-negative"))
+		}
+		execCtx := ctx
+		cancel := func() {}
+		if value.TimeoutMS > 0 {
+			execCtx, cancel = context.WithTimeout(ctx, time.Duration(value.TimeoutMS)*time.Millisecond)
+		}
+		defer cancel()
+		stdout, stderr, code, err := p.host.Exec(execCtx, value.Command, value.Args)
 		if err != nil {
 			return hostError(err)
 		}
@@ -620,7 +664,7 @@ func (p *Plugin) dispatchHost(method string, params json.RawMessage) (any, *rpcE
 		if err := json.Unmarshal(params, &value); err != nil {
 			return badParams(err)
 		}
-		answer, err := p.host.Input(p.ctx, value.Prompt, value.Placeholder)
+		answer, err := p.host.Input(ctx, value.Prompt, value.Placeholder)
 		if err != nil {
 			return hostError(err)
 		}
@@ -633,7 +677,7 @@ func (p *Plugin) dispatchHost(method string, params json.RawMessage) (any, *rpcE
 		if err := json.Unmarshal(params, &value); err != nil {
 			return badParams(err)
 		}
-		answer, err := p.host.Select(p.ctx, value.Prompt, value.Options)
+		answer, err := p.host.Select(ctx, value.Prompt, value.Options)
 		if err != nil {
 			return hostError(err)
 		}
@@ -650,8 +694,9 @@ func (p *Plugin) dispatchHost(method string, params json.RawMessage) (any, *rpcE
 		return nil, nil
 	case "host.session.append":
 		var value struct {
-			Kind string          `json:"kind"`
-			Data json.RawMessage `json:"data"`
+			SessionID string          `json:"session_id"`
+			Kind      string          `json:"kind"`
+			Data      json.RawMessage `json:"data"`
 		}
 		if err := json.Unmarshal(params, &value); err != nil {
 			return badParams(err)
@@ -668,7 +713,7 @@ func (p *Plugin) dispatchHost(method string, params json.RawMessage) (any, *rpcE
 		if data == nil {
 			return badParams(errors.New("data must not be null"))
 		}
-		if err := p.host.AppendSessionEntry(value.Kind, data); err != nil {
+		if err := p.host.AppendSessionEntry(value.SessionID, value.Kind, data); err != nil {
 			return hostError(err)
 		}
 		return nil, nil
@@ -685,7 +730,7 @@ func (p *Plugin) dispatchHost(method string, params json.RawMessage) (any, *rpcE
 		}
 		return entries, nil
 	case "host.ui.editor_text":
-		value, err := p.host.EditorText(p.ctx)
+		value, err := p.host.EditorText(ctx)
 		if err != nil {
 			return hostError(err)
 		}
@@ -697,7 +742,7 @@ func (p *Plugin) dispatchHost(method string, params json.RawMessage) (any, *rpcE
 		if err := json.Unmarshal(params, &value); err != nil {
 			return badParams(err)
 		}
-		if err := p.host.SetEditorText(p.ctx, value.Text); err != nil {
+		if err := p.host.SetEditorText(ctx, value.Text); err != nil {
 			return hostError(err)
 		}
 		return nil, nil

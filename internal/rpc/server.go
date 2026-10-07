@@ -148,12 +148,15 @@ func (s *Server) ListModels(context.Context, string, bool) ([]extension.ModelInf
 	return nil, errors.New("runtime model listing is unavailable in RPC mode")
 }
 
-func (s *Server) AppendSessionEntry(kind string, data any) error {
+func (s *Server) AppendSessionEntry(expectedSessionID, kind string, data any) error {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	current := s.session
-	s.mu.Unlock()
 	if current == nil {
 		return errors.New("session persistence is unavailable")
+	}
+	if expectedSessionID != "" && current.Header.ID != expectedSessionID {
+		return errors.New("active session changed before extension entry was persisted")
 	}
 	return current.AppendCustomEntry(kind, data)
 }

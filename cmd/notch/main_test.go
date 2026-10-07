@@ -556,6 +556,29 @@ func TestBenchmarkFlags(t *testing.T) {
 	}
 }
 
+func TestWorkspaceInstructionsRespectProjectSettingSource(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("project-only"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name                    string
+		trusted, includeProject bool
+		wantProject             bool
+	}{
+		{"trusted project source", true, true, true},
+		{"trusted user source", true, false, false},
+		{"untrusted project source", false, true, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := loadWorkspaceInstructions(root, test.trusted, test.includeProject)
+			if err != nil || strings.Contains(got, "project-only") != test.wantProject {
+				t.Fatalf("instructions = %q, %v", got, err)
+			}
+		})
+	}
+}
+
 func TestRootResumeFlagAllowsPickerOrExplicitSession(t *testing.T) {
 	for _, tc := range []struct {
 		args []string

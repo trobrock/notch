@@ -709,7 +709,7 @@ func TestAppSessionEntriesRoundTripAndFollowCurrentSession(t *testing.T) {
 
 	a := NewApp(AppConfig{})
 	a.currentSession = first
-	if err := a.AppendSessionEntry("notes", map[string]any{"action": "add"}); err != nil {
+	if err := a.AppendSessionEntry("", "notes", map[string]any{"action": "add"}); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := a.SessionEntries("notes")
@@ -790,6 +790,53 @@ func TestSessionChangeHookCanSetEditorText(t *testing.T) {
 	}
 	if a.state.editor.Text() != "from hook" {
 		t.Fatalf("editor = %q", a.state.editor.Text())
+	}
+}
+
+func TestSessionChangeHooksNeverDeliverSupersededSessionLast(t *testing.T) {
+	type contextKey string
+	const key contextKey = "session"
+
+	a := NewApp(AppConfig{})
+	registry := extension.NewRegistry()
+	seen := make(chan string, 2)
+	registry.On("session_change", "test", func(ctx context.Context, _ map[string]any) (map[string]any, error) {
+		name, _ := ctx.Value(key).(string)
+		seen <- name
+		if name == "old" {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+		return nil, nil
+	})
+	a.registry = registry
+
+	oldCtx, cancelOld := context.WithCancel(context.WithValue(context.Background(), key, "old"))
+	a.mu.Lock()
+	a.sessionContext = oldCtx
+	a.mu.Unlock()
+	a.sessionChanged()
+	cancelOld()
+	a.mu.Lock()
+	a.sessionContext = context.WithValue(context.Background(), key, "new")
+	a.mu.Unlock()
+	a.sessionChanged()
+
+	var delivered []string
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case name := <-seen:
+			delivered = append(delivered, name)
+			if name == "new" {
+				if len(delivered) == 2 && delivered[0] != "old" {
+					t.Fatalf("session changes delivered out of order: %v", delivered)
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatalf("new session change was not delivered; saw %v", delivered)
+		}
 	}
 }
 

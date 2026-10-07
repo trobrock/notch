@@ -40,7 +40,10 @@ func TestTerminalSessionEntriesUseConfiguredSession(t *testing.T) {
 	defer current.Close()
 	terminal := NewTerminal(strings.NewReader(""), io.Discard, io.Discard, "/work")
 	terminal.SetSession(current)
-	if err := terminal.AppendSessionEntry("example", map[string]any{"value": "saved"}); err != nil {
+	if err := terminal.AppendSessionEntry("stale-session", "example", map[string]any{"value": "wrong"}); err == nil {
+		t.Fatal("stale session append succeeded")
+	}
+	if err := terminal.AppendSessionEntry(current.Header.ID, "example", map[string]any{"value": "saved"}); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := terminal.SessionEntries("example")
