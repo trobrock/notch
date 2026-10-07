@@ -29,7 +29,22 @@ var (
 	ErrIdleTimeout    = errors.New("agent idle timeout reached")
 )
 
-const toolExecutionEndCleanupTimeout = 5 * time.Second
+const (
+	toolExecutionEndCleanupTimeout = 5 * time.Second
+	claudeBashPrompt               = "Do not prefix a bash command with 'cd ...;' or 'cd ... &&' when the tool is already in the right working directory. Run the command directly. When a different directory is needed, set the bash tool's 'cwd' instead."
+)
+
+func systemPromptForModel(base, providerName, modelName string) string {
+	providerName = strings.ToLower(strings.TrimSpace(providerName))
+	modelName = strings.ToLower(strings.TrimSpace(modelName))
+	if providerName != "anthropic" && providerName != "anthropic-claude-code" && !strings.Contains(modelName, "claude") {
+		return base
+	}
+	if strings.TrimSpace(base) == "" {
+		return claudeBashPrompt
+	}
+	return base + "\n\n" + claudeBashPrompt
+}
 
 type QueuedMessage struct {
 	ID   string `json:"id"`
@@ -555,7 +570,7 @@ func (a *Agent) promptWithStart(ctx context.Context, text string, emit func(Even
 		if a.maxTurns > 0 && turn >= a.maxTurns {
 			return ErrMaxTurns
 		}
-		system := a.system
+		system := systemPromptForModel(a.system, a.providerName, a.model)
 		before, err := a.registry.RunHooks(ctx, "before_agent_start", map[string]any{
 			"system_prompt": system, "model": a.model, "turn": turn,
 		})

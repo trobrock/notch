@@ -33,6 +33,29 @@ type fakeProvider struct{ calls int }
 
 type responseProvider struct{ response model.Response }
 
+func TestSystemPromptForModelAddsBashGuidanceOnlyForClaude(t *testing.T) {
+	for _, tc := range []struct {
+		name, provider, model string
+		wantGuidance          bool
+	}{
+		{name: "Anthropic", provider: "anthropic", model: "claude-sonnet-4-5", wantGuidance: true},
+		{name: "Claude Code", provider: "anthropic-claude-code", model: "sonnet", wantGuidance: true},
+		{name: "Claude through OpenRouter", provider: "openrouter", model: "anthropic/claude-sonnet-4.5", wantGuidance: true},
+		{name: "other model", provider: "openai", model: "gpt-5"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := systemPromptForModel("base prompt", tc.provider, tc.model)
+			hasGuidance := strings.Contains(got, "Do not prefix a bash command")
+			if hasGuidance != tc.wantGuidance {
+				t.Fatalf("systemPromptForModel() = %q, want guidance %v", got, tc.wantGuidance)
+			}
+			if !strings.HasPrefix(got, "base prompt") {
+				t.Fatalf("systemPromptForModel() lost base prompt: %q", got)
+			}
+		})
+	}
+}
+
 func (p responseProvider) Stream(_ context.Context, _ model.Request, _ func(model.StreamEvent)) (model.Response, error) {
 	return p.response, nil
 }
