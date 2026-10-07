@@ -20,6 +20,9 @@ func TestDefaultSystemPromptGuidesAgentBehavior(t *testing.T) {
 		t.Fatalf("automatic updates are not enabled by default: %+v", cfg.AutoUpdate)
 	}
 	for _, text := range []string{
+		"Use language a fifth-grade student can understand when possible",
+		"Keep sentences short and clear",
+		"explain them in plain language",
 		"Inspect relevant context before acting",
 		"Preserve unrelated user changes",
 		"distinguish verified facts from hypotheses",
