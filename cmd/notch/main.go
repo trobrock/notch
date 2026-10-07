@@ -334,12 +334,9 @@ func run(args []string) error {
 	} else if opts.systemPrompt != "" {
 		cfg.SystemPrompt = opts.systemPrompt
 	}
-	workspaceInstructions := ""
-	if workspaceTrusted {
-		workspaceInstructions, err = workspace.Instructions(workspaceRoot)
-		if err != nil {
-			return err
-		}
+	workspaceInstructions, err := loadWorkspaceInstructions(workspaceRoot, workspaceTrusted, includeProject)
+	if err != nil {
+		return err
 	}
 	if opts.noExtensions {
 		cfg.ExtensionDirs = nil
@@ -668,8 +665,13 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	executable, executableErr := os.Executable()
+	if executableErr != nil {
+		executable = "notch"
+	}
 	lifecycleEvent := map[string]any{
 		"cwd": cwd, "provider": normalizeProvider(cfg.Provider), "model": cfg.Model,
+		"explore_model": cfg.ExploreModel, "executable": executable,
 		"thinking_level": cfg.ThinkingLevel, "mode": runMode(rpcMode, useFullscreen, opts),
 		"resumed": opts.continueSession || opts.resumeSpecified,
 	}
@@ -850,6 +852,13 @@ func parseSettingSources(value string) (bool, bool, error) {
 		}
 	}
 	return user, project, nil
+}
+
+func loadWorkspaceInstructions(root string, trusted, includeProject bool) (string, error) {
+	if !trusted || !includeProject {
+		return "", nil
+	}
+	return workspace.Instructions(root)
 }
 
 func benchmarkSessionInfo(cfg config.Config, cwd, workspaceRoot string, trusted bool, registry *extension.Registry, catalog *resources.Catalog) agent.SessionInfo {

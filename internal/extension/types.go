@@ -113,7 +113,9 @@ type Host interface {
 	ListModels(ctx context.Context, provider string, refresh bool) ([]ModelInfo, error)
 	// AppendSessionEntry durably appends extension-owned JSON data to the
 	// current session. kind is scoped to the calling extension by convention.
-	AppendSessionEntry(kind string, data any) error
+	// When expectedSessionID is non-empty, the append fails if the active
+	// session has changed, preventing stale background work from crossing sessions.
+	AppendSessionEntry(expectedSessionID, kind string, data any) error
 	// SessionEntries returns data from current-session entries with the exact
 	// kind. Returned JSON values are independent snapshots.
 	SessionEntries(kind string) ([]json.RawMessage, error)

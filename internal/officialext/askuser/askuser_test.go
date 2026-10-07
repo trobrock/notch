@@ -44,7 +44,7 @@ func (h *testHost) SwitchModel(context.Context, string, string) (string, int, er
 func (h *testHost) ListModels(context.Context, string, bool) ([]extension.ModelInfo, error) {
 	return nil, nil
 }
-func (*testHost) AppendSessionEntry(string, any) error             { return nil }
+func (*testHost) AppendSessionEntry(string, string, any) error     { return nil }
 func (*testHost) SessionEntries(string) ([]json.RawMessage, error) { return nil, nil }
 func (*testHost) EditorText(context.Context) (string, error)       { return "", nil }
 func (*testHost) SetEditorText(context.Context, string) error      { return nil }

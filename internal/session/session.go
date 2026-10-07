@@ -632,7 +632,7 @@ func (s *Session) CustomEntries(kind string) ([]json.RawMessage, error) {
 		return nil, errors.New("read custom session entries: type is required")
 	}
 	snapshot := s.EntriesSnapshot()
-	var data []json.RawMessage
+	data := make([]json.RawMessage, 0)
 	for _, raw := range snapshot {
 		var entry struct {
 			Type string          `json:"type"`

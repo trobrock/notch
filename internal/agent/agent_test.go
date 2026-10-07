@@ -31,6 +31,12 @@ import (
 
 type fakeProvider struct{ calls int }
 
+type responseProvider struct{ response model.Response }
+
+func (p responseProvider) Stream(_ context.Context, _ model.Request, _ func(model.StreamEvent)) (model.Response, error) {
+	return p.response, nil
+}
+
 type cancelingAskHost struct {
 	extension.Host
 	cancel   context.CancelFunc
@@ -47,6 +53,39 @@ func (h *cancelingAskHost) SetStatus(key, value string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.statuses = append(h.statuses, [2]string{key, value})
+}
+
+func TestMessageEndHookObservesDurableAssistantMessage(t *testing.T) {
+	registry := extension.NewRegistry()
+	var observed map[string]any
+	registry.On("message_end", "failing", func(_ context.Context, _ map[string]any) (map[string]any, error) {
+		return nil, errors.New("observational failure")
+	})
+	registry.On("message_end", "test", func(_ context.Context, event map[string]any) (map[string]any, error) {
+		observed = event
+		return nil, nil
+	})
+	provider := responseProvider{response: model.Response{
+		Content: []model.Block{{Type: "text", Text: "done"}}, StopReason: "end_turn",
+	}}
+	a, err := New(Config{Provider: provider, ProviderName: "fake-provider", Registry: registry, Model: "fake"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Prompt(context.Background(), "work", nil); err != nil {
+		t.Fatalf("Prompt() returned observational hook error: %v", err)
+	}
+	message, ok := observed["message"].(model.Message)
+	if !ok || message.Role != "assistant" || len(message.Content) != 1 || message.Content[0].Text != "done" {
+		t.Fatalf("message_end message = %#v", observed["message"])
+	}
+	if observed["stop_reason"] != "end_turn" || observed["turn"] != 0 ||
+		observed["provider"] != "fake-provider" || observed["model"] != "fake" {
+		t.Fatalf("message_end event = %#v", observed)
+	}
+	if messages := a.Messages(); len(messages) != 2 || messages[1].Role != "assistant" {
+		t.Fatalf("durable messages = %#v", messages)
+	}
 }
 
 func (f *fakeProvider) Stream(_ context.Context, req model.Request, emit func(model.StreamEvent)) (model.Response, error) {

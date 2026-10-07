@@ -224,7 +224,7 @@ func TestServerSessionEntriesUseConfiguredSession(t *testing.T) {
 	defer current.Close()
 	server := New(strings.NewReader(""), io.Discard, "/work")
 	server.SetSession(current)
-	if err := server.AppendSessionEntry("example", map[string]any{"value": "saved"}); err != nil {
+	if err := server.AppendSessionEntry("", "example", map[string]any{"value": "saved"}); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := server.SessionEntries("example")

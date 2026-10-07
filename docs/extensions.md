@@ -9,6 +9,8 @@ Notch has two first-class extension formats:
 
 Both register the same three concepts: model-callable tools, interactive slash commands, and agent hooks. Executable plugins are the portable option for Go, Python, Rust, shell, or any other language; they do not imply a Node/npm runtime.
 
+Published extension packages include [Notch Notes](https://github.com/trobrock/notch-notes) and [You Should Know](https://github.com/trobrock/notch-you-should-know), a Jev-gated independent coding-session observer.
+
 Extensions are trusted. Neither format is sandboxed, and host operations execute with the Notch user's privileges. There are no per-command approvals: after an extension is loaded, its operations and model-requested tools execute automatically. Project extensions are loaded only for a trusted workspace.
 
 ## Discovery and ordering
@@ -122,10 +124,11 @@ notch.ui.set_status("tasks", "tasks 1/3") -- empty value clears it
 notch.ui.set_panel("tasks", "Tasks", {"● Implement", "○ Test"}) -- empty title/lines clears it
 
 notch.session.append("example-state", {action = "add", value = "durable"})
+notch.session.append_for(session_id, "example-state", {action = "background-result"})
 local entries = notch.session.entries("example-state")
 ```
 
-`notch.session.append` stores extension-owned JSON data in the current append-only session; `notch.session.entries` returns matching records from the current logical conversation (records before the latest `/new` reset are omitted). Use a stable, package-specific kind to avoid accidental sharing; core record kinds are reserved. These calls fail when session persistence is disabled. Fullscreen `/resume` switches subsequent calls to the resumed session and emits `session_change`; fullscreen `/new` switches to a fresh session and emits the same hook.
+`notch.session.append` stores extension-owned JSON data in the current append-only session. Background work should capture `session_id` from `session_start` or `session_change` and use `append_for`; it fails rather than crossing into a newly active session. `notch.session.entries` returns matching records from the current logical conversation (records before the latest `/new` reset are omitted). Use a stable, package-specific kind to avoid accidental sharing; core record kinds are reserved. These calls fail when session persistence is disabled. Fullscreen `/resume` switches subsequent calls to the resumed session and emits `session_change`; fullscreen `/new` switches to a fresh session and emits the same hook.
 
 `notch.ui.editor_text` and `notch.ui.set_editor_text` access the fullscreen prompt composer. They fail in line/RPC modes and while another extension prompt is active. Use them from interactive commands rather than agent hooks or model tools.
 
@@ -149,8 +152,10 @@ The current agent emits these hook names and fields:
 Runs once after the initial session and agent are ready, before any interactive or one-shot work starts:
 
 ```json
-{"cwd":"/work","provider":"anthropic","model":"claude-sonnet-4-5","thinking_level":"medium","mode":"tui","resumed":false,"session_id":"...","session_file":"..."}
+{"cwd":"/work","provider":"anthropic","model":"claude-sonnet-4-5","explore_model":"openai/gpt-5.6-luna","executable":"/usr/local/bin/notch","thinking_level":"medium","mode":"tui","resumed":false,"session_id":"...","session_file":"..."}
 ```
+
+`explore_model` is empty when no dedicated explore model is configured. `executable` is the current Notch executable path when it can be resolved, otherwise `notch`.
 
 `mode` is `tui`, `line`, `print`, `json`, or `rpc`. The session fields are omitted with `--no-session`. Return fields are ignored; an error aborts startup.
 
@@ -235,6 +240,16 @@ the remaining running monitors, so extensions can publish external activity
 state without maintaining their own monitor registry. These observational hooks
 are best-effort: failures are reported as warnings and do not change monitor
 behavior.
+
+### `message_end`
+
+Runs after each assistant message has been appended to durable history, including messages that request tools:
+
+```json
+{"message":{"role":"assistant","content":[{"type":"text","text":"Done."}]},"stop_reason":"end_turn","turn":0,"provider":"anthropic","model":"claude-sonnet-4-5"}
+```
+
+This hook is observational. Return fields are ignored, and hook failures do not change the agent run.
 
 ### `agent_end`
 
@@ -358,7 +373,7 @@ If the context for an outstanding plugin request is canceled, Notch sends a noti
 {"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":2}}
 ```
 
-The plugin should stop work if possible. A late response for that canceled ID is permitted and ignored.
+The plugin should stop work if possible. A late response for that canceled ID is permitted and ignored. Plugins may send the same `$/cancelRequest` notification with the ID of an outstanding plugin-to-host request to cancel host work such as `host.exec`.
 
 ### Calls from a plugin to Notch
 
@@ -373,8 +388,10 @@ Get the working directory:
 Run a program without a shell. Host execution is cancellation-aware, terminates the child process group where supported, and retains at most 1 MiB each of stdout and stderr while continuing to drain larger output:
 
 ```json
-{"jsonrpc":"2.0","id":"host-2","method":"host.exec","params":{"command":"git","args":["status","--short"]}}
+{"jsonrpc":"2.0","id":"host-2","method":"host.exec","params":{"command":"git","args":["status","--short"],"timeout_ms":30000}}
 ```
+
+`timeout_ms` is optional; zero or omission uses the plugin lifetime. A positive value cancels the process group when the deadline expires.
 
 Successful result:
 
@@ -392,13 +409,13 @@ Terminal interactions:
 {"jsonrpc":"2.0","id":"host-5","method":"host.ui.notify","params":{"message":"Done","level":"info"}}
 {"jsonrpc":"2.0","id":"host-6","method":"host.ui.editor_text","params":{}}
 {"jsonrpc":"2.0","id":"host-7","method":"host.ui.set_editor_text","params":{"text":"next prompt"}}
-{"jsonrpc":"2.0","id":"host-8","method":"host.session.append","params":{"kind":"example-state","data":{"action":"add"}}}
+{"jsonrpc":"2.0","id":"host-8","method":"host.session.append","params":{"session_id":"optional-current-session-id","kind":"example-state","data":{"action":"add"}}}
 {"jsonrpc":"2.0","id":"host-9","method":"host.session.entries","params":{"kind":"example-state"}}
 {"jsonrpc":"2.0","id":"host-10","method":"host.ui.set_status","params":{"key":"tasks","value":"tasks 1/3"}}
 {"jsonrpc":"2.0","id":"host-11","method":"host.ui.set_panel","params":{"key":"tasks","title":"Tasks","lines":["● Implement","○ Test"]}}
 ```
 
-Input, selection, editor-text, and session-entries return values; mutation and publication calls return `null`. Set-status replaces a persistent keyed footer value and an empty value clears it. Set-panel replaces bounded non-interactive content above the composer; empty title and lines clear it. In the fullscreen TUI input/select requests rendezvous with the event loop and are queued if another extension prompt is active; the line fallback uses ordinary prompts and ignores status/panel publication. See [tui.md](tui.md#extension-ui-integration). Host method failures use `-32602` for invalid parameters, `-32601` for unknown methods, and `-32000` for operation errors.
+Input, selection, editor-text, and session-entries return values; mutation and publication calls return `null`. `host.session.append` accepts an optional `session_id`; when supplied, the append fails instead of writing if the active session has changed. Set-status replaces a persistent keyed footer value and an empty value clears it. Set-panel replaces bounded non-interactive content above the composer; empty title and lines clear it. In the fullscreen TUI input/select requests rendezvous with the event loop and are queued if another extension prompt is active; the line fallback uses ordinary prompts and ignores status/panel publication. See [tui.md](tui.md#extension-ui-integration). Host method failures use `-32602` for invalid parameters, `-32601` for unknown methods, and `-32000` for operation errors.
 
 ### Minimal Python plugin
 

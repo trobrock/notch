@@ -21,6 +21,7 @@ type testHost struct {
 	statuses      [][2]string
 	editorText    string
 	entries       []json.RawMessage
+	sessionIDs    []string
 	panels        []struct {
 		key, title string
 		lines      []string
@@ -50,9 +51,10 @@ func (h *testHost) SwitchModel(context.Context, string, string) (string, int, er
 func (h *testHost) ListModels(context.Context, string, bool) ([]extension.ModelInfo, error) {
 	return nil, nil
 }
-func (h *testHost) AppendSessionEntry(_ string, data any) error {
+func (h *testHost) AppendSessionEntry(sessionID, _ string, data any) error {
 	raw, _ := json.Marshal(data)
 	h.entries = append(h.entries, raw)
+	h.sessionIDs = append(h.sessionIDs, sessionID)
 	return nil
 }
 func (h *testHost) SessionEntries(string) ([]json.RawMessage, error) {
@@ -97,6 +99,7 @@ notch.register_tool({
     notch.ui.set_status("sample", "active")
     notch.ui.set_panel("sample", "Sample", {"one", "two"})
     notch.session.append("sample", {action = "add", value = args.name})
+    notch.session.append_for("session-1", "sample-background", {action = "add", value = args.name})
     local saved = notch.session.entries("sample")
     local draft = notch.ui.editor_text()
     notch.ui.set_editor_text(draft .. args.name)
@@ -143,8 +146,8 @@ end)
 	if result.Content != "/work:Lua:hello\nb:Lua" || result.Details["input"] != "typed" {
 		t.Fatalf("tool result = %#v", result)
 	}
-	if host.editorText != "Lua" || len(host.entries) != 1 {
-		t.Fatalf("host editor = %q entries = %q", host.editorText, host.entries)
+	if host.editorText != "Lua" || len(host.entries) != 2 || !reflect.DeepEqual(host.sessionIDs, []string{"", "session-1"}) {
+		t.Fatalf("host editor = %q entries = %q session IDs = %q", host.editorText, host.entries, host.sessionIDs)
 	}
 	if !reflect.DeepEqual(updates, []string{"working"}) {
 		t.Fatalf("updates = %#v", updates)

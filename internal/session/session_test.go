@@ -41,6 +41,14 @@ func TestCustomEntriesExcludeRecordsBeforeResetAndReserveCoreTypes(t *testing.T)
 		t.Fatal(err)
 	}
 	defer s.Close()
+	empty, err := s.CustomEntries("example")
+	if err != nil || empty == nil {
+		t.Fatalf("empty entries = %#v, %v", empty, err)
+	}
+	encoded, err := json.Marshal(empty)
+	if err != nil || string(encoded) != "[]" {
+		t.Fatalf("empty entries JSON = %s, %v", encoded, err)
+	}
 	if err := s.AppendCustomEntry("example", map[string]any{"value": "old"}); err != nil {
 		t.Fatal(err)
 	}

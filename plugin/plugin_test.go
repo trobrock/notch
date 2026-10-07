@@ -87,7 +87,7 @@ func TestProtocolInitializeToolProgressAndHostCalls(t *testing.T) {
 				if err := Notify(ctx, "done", "info"); err != nil {
 					return ToolResult{}, err
 				}
-				if err := AppendSessionEntry(ctx, "notes", map[string]any{"action": "add"}); err != nil {
+				if err := AppendSessionEntryFor(ctx, "session-1", "notes", map[string]any{"action": "add"}); err != nil {
 					return ToolResult{}, err
 				}
 				entries, err := SessionEntries(ctx, "notes")
@@ -184,6 +184,12 @@ func TestProtocolInitializeToolProgressAndHostCalls(t *testing.T) {
 	sessionAppendCall := host.receive(t)
 	if sessionAppendCall.Method != "host.session.append" {
 		t.Fatalf("bad session append call: %+v", sessionAppendCall)
+	}
+	var sessionAppend struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := json.Unmarshal(sessionAppendCall.Params, &sessionAppend); err != nil || sessionAppend.SessionID != "session-1" {
+		t.Fatalf("bad session append params: %s, %v", sessionAppendCall.Params, err)
 	}
 	host.send(t, map[string]any{"jsonrpc": "2.0", "id": sessionAppendCall.ID, "result": nil})
 	sessionEntriesCall := host.receive(t)

@@ -163,12 +163,15 @@ func (t *Terminal) SwitchModel(context.Context, string, string) (string, int, er
 func (t *Terminal) ListModels(context.Context, string, bool) ([]extension.ModelInfo, error) {
 	return nil, errors.New("runtime model listing is unavailable in line mode")
 }
-func (t *Terminal) AppendSessionEntry(kind string, data any) error {
+func (t *Terminal) AppendSessionEntry(expectedSessionID, kind string, data any) error {
 	t.sessionMu.RLock()
+	defer t.sessionMu.RUnlock()
 	current := t.session
-	t.sessionMu.RUnlock()
 	if current == nil {
 		return errors.New("session persistence is unavailable")
+	}
+	if expectedSessionID != "" && current.Header.ID != expectedSessionID {
+		return errors.New("active session changed before extension entry was persisted")
 	}
 	return current.AppendCustomEntry(kind, data)
 }

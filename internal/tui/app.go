@@ -68,21 +68,22 @@ type AppConfig struct {
 type App struct {
 	cfg AppConfig
 
-	mu             sync.Mutex
-	sessionMu      sync.RWMutex
-	runner         *agent.Agent
-	registry       *extension.Registry
-	catalog        *resources.Catalog
-	commandCache   []CommandSuggestion
-	listModels     func(context.Context, string, bool) ([]modelregistry.Entry, error)
-	switchModel    func(context.Context, string, string, int) (int, error)
-	running        bool
-	runDone        chan struct{}
-	pending        []appEvent
-	sessionContext context.Context
-	sessionCancel  context.CancelFunc
-	currentSession *session.Session
-	sessionFactory func() (*session.Session, error)
+	mu              sync.Mutex
+	sessionMu       sync.RWMutex
+	sessionChangeMu sync.Mutex
+	runner          *agent.Agent
+	registry        *extension.Registry
+	catalog         *resources.Catalog
+	commandCache    []CommandSuggestion
+	listModels      func(context.Context, string, bool) ([]modelregistry.Entry, error)
+	switchModel     func(context.Context, string, string, int) (int, error)
+	running         bool
+	runDone         chan struct{}
+	pending         []appEvent
+	sessionContext  context.Context
+	sessionCancel   context.CancelFunc
+	currentSession  *session.Session
+	sessionFactory  func() (*session.Session, error)
 
 	events chan appEvent
 
@@ -2784,7 +2785,7 @@ func (a *App) ListModels(ctx context.Context, provider string, refresh bool) ([]
 	return out, nil
 }
 
-func (a *App) AppendSessionEntry(kind string, data any) error {
+func (a *App) AppendSessionEntry(expectedSessionID, kind string, data any) error {
 	kind = strings.TrimSpace(kind)
 	if kind == "" {
 		return errors.New("session entry kind is required")
@@ -2796,6 +2797,9 @@ func (a *App) AppendSessionEntry(kind string, data any) error {
 	a.mu.Unlock()
 	if current == nil {
 		return errors.New("session persistence is unavailable")
+	}
+	if expectedSessionID != "" && current.Header.ID != expectedSessionID {
+		return errors.New("active session changed before extension entry was persisted")
 	}
 	return current.AppendCustomEntry(kind, data)
 }
@@ -2843,6 +2847,13 @@ func (a *App) sessionChanged() {
 		parent := sessionContext
 		if parent == nil {
 			parent = context.Background()
+		}
+		// Session changes are delivered in order. A superseded event may be
+		// skipped, but it must never arrive after the event for the active session.
+		a.sessionChangeMu.Lock()
+		defer a.sessionChangeMu.Unlock()
+		if parent.Err() != nil {
+			return
 		}
 		ctx, cancel := context.WithTimeout(parent, 10*time.Second)
 		defer cancel()
