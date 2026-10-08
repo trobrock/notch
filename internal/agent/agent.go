@@ -126,6 +126,7 @@ type RetryConfig struct {
 }
 
 type Config struct {
+	Pricing        *pricing.Service
 	Provider       model.Provider
 	ProviderName   string
 	Registry       *extension.Registry
@@ -152,6 +153,7 @@ type providerSwitch struct {
 }
 
 type Agent struct {
+	pricing        *pricing.Service
 	provider       model.Provider
 	providerName   string
 	registry       *extension.Registry
@@ -211,6 +213,9 @@ func newCacheKey(store *session.Session) (string, error) {
 }
 
 func New(cfg Config) (*Agent, error) {
+	if cfg.Pricing == nil {
+		cfg.Pricing = pricing.NewService("", 0, true)
+	}
 	if cfg.Provider == nil {
 		return nil, errors.New("agent requires a provider")
 	}
@@ -258,6 +263,7 @@ func New(cfg Config) (*Agent, error) {
 		providerName = cfg.Session.Header.Provider
 	}
 	a := &Agent{
+		pricing:  cfg.Pricing,
 		provider: cfg.Provider, providerName: providerName, registry: cfg.Registry, session: cfg.Session,
 		model: cfg.Model, exploreModel: strings.TrimSpace(cfg.ExploreModel), system: cfg.SystemPrompt, maxTokens: cfg.MaxTokens,
 		thinkingLevel: cfg.ThinkingLevel, cacheRetention: cfg.CacheRetention, cacheKey: cacheKey,
@@ -311,9 +317,13 @@ func (a *Agent) responseUsage(response model.Response, cacheRetention, providerN
 		usage.CostUSD = &providerCost
 		usage.CostSource = "provider"
 	}
-	if estimated, ok := pricing.Estimate(providerName, modelName, cacheRetention, response); response.APIPricingEligible && ok {
+	estimator := a.pricing
+	if estimator == nil {
+		estimator = pricing.NewService("", 0, true)
+	}
+	if estimated, version, ok := estimator.Estimate(providerName, modelName, cacheRetention, response); response.APIPricingEligible && ok {
 		usage.EstimatedCostUSD = &estimated
-		usage.PricingVersion = pricing.Version
+		usage.PricingVersion = version
 		if usage.CostUSD == nil {
 			usage.CostUSD = &estimated
 			usage.CostSource = "api_list_price_estimate"
