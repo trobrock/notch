@@ -68,34 +68,35 @@ type PresetConfig struct {
 // deliberately not represented here; providers obtain credentials from their
 // environment.
 type Config struct {
-	Provider          string                  `json:"provider,omitempty"`
-	Model             string                  `json:"model,omitempty"`
-	ExploreModel      string                  `json:"explore_model,omitempty"`
-	BaseURL           string                  `json:"base_url,omitempty"`
-	MaxTokens         int                     `json:"max_tokens,omitempty"`
-	SystemPrompt      string                  `json:"system_prompt,omitempty"`
-	MCPConfig         string                  `json:"mcp_config,omitempty"`
-	ExtensionDirs     []string                `json:"extension_dirs,omitempty"`
-	SkillDirs         []string                `json:"skill_dirs,omitempty"`
-	PromptDirs        []string                `json:"prompt_dirs,omitempty"`
-	ThemeDirs         []string                `json:"theme_dirs,omitempty"`
-	AgentSkillDirs    []string                `json:"-"`
-	AgentCommandDirs  []string                `json:"-"`
-	SessionDir        string                  `json:"-"`
-	AuthFile          string                  `json:"-"`
-	MCPAuthFile       string                  `json:"-"`
-	Theme             string                  `json:"theme,omitempty"`
-	ThinkingLevel     string                  `json:"thinking_level,omitempty"`
-	CacheRetention    string                  `json:"cache_retention,omitempty"`
-	Presets           map[string]PresetConfig `json:"presets,omitempty"`
-	MouseCapture      *bool                   `json:"mouse,omitempty"`
-	ContextWindow     int                     `json:"context_window,omitempty"`
-	ModelCache        string                  `json:"-"`
-	ModelRefreshHours int                     `json:"model_refresh_hours,omitempty"`
-	AutoUpdate        *bool                   `json:"auto_update,omitempty"`
-	Compaction        *CompactionConfig       `json:"compaction,omitempty"`
-	configRoot        string
-	dataRoot          string
+	Provider              string                  `json:"provider,omitempty"`
+	Model                 string                  `json:"model,omitempty"`
+	ExploreModel          string                  `json:"explore_model,omitempty"`
+	BaseURL               string                  `json:"base_url,omitempty"`
+	MaxTokens             int                     `json:"max_tokens,omitempty"`
+	SystemPrompt          string                  `json:"system_prompt,omitempty"`
+	MCPConfig             string                  `json:"mcp_config,omitempty"`
+	ExtensionDirs         []string                `json:"extension_dirs,omitempty"`
+	SkillDirs             []string                `json:"skill_dirs,omitempty"`
+	PromptDirs            []string                `json:"prompt_dirs,omitempty"`
+	ThemeDirs             []string                `json:"theme_dirs,omitempty"`
+	AgentSkillDirs        []string                `json:"-"`
+	AgentCommandDirs      []string                `json:"-"`
+	SessionDir            string                  `json:"-"`
+	AuthFile              string                  `json:"-"`
+	MCPAuthFile           string                  `json:"-"`
+	Theme                 string                  `json:"theme,omitempty"`
+	ThinkingLevel         string                  `json:"thinking_level,omitempty"`
+	CacheRetention        string                  `json:"cache_retention,omitempty"`
+	Presets               map[string]PresetConfig `json:"presets,omitempty"`
+	MouseCapture          *bool                   `json:"mouse,omitempty"`
+	ContextWindow         int                     `json:"context_window,omitempty"`
+	DisablePricingRefresh *bool                   `json:"disable_pricing_refresh,omitempty"`
+	ModelCache            string                  `json:"-"`
+	ModelRefreshHours     int                     `json:"model_refresh_hours,omitempty"`
+	AutoUpdate            *bool                   `json:"auto_update,omitempty"`
+	Compaction            *CompactionConfig       `json:"compaction,omitempty"`
+	configRoot            string
+	dataRoot              string
 }
 
 // Defaults returns the built-in configuration. home is the user's home
@@ -382,6 +383,10 @@ func merge(dst *Config, src Config) {
 	}
 	if src.ContextWindow > 0 {
 		dst.ContextWindow = src.ContextWindow
+	}
+	if src.DisablePricingRefresh != nil {
+		value := *src.DisablePricingRefresh
+		dst.DisablePricingRefresh = &value
 	}
 	if src.ModelRefreshHours > 0 {
 		dst.ModelRefreshHours = src.ModelRefreshHours

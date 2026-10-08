@@ -43,7 +43,7 @@ See the [TUI thinking controls](tui.md#commands-and-thinking-level).
 
 `cache_retention` accepts `none`, `short`, or `long` and defaults to `short`. Notch uses explicit system/tool/conversation breakpoints for Anthropic, `prompt_cache_key` for OpenAI and Codex, and `session_id` for OpenRouter sticky routing. Anthropic models routed through OpenRouter receive compatible explicit breakpoints; upstreams with automatic caching continue to use it. Long retention requests one hour from Anthropic and 24 hours from OpenAI where supported. Compaction summaries set retention to `none` because those prompts are normally used once.
 
-Every usage record stores an effective `cost_usd` and `cost_source` when cost is known. OpenRouter's reported cost wins and is retained as `provider_cost_usd`. For known direct Anthropic and OpenAI models, Notch computes `estimated_cost_usd` from a versioned built-in API-list-price table and records `pricing_version`; the TUI labels this value as estimated. Subscription/OAuth sessions therefore show API-list-price equivalents, not an assertion about the user's actual subscription bill. Unknown models remain without a cost instead of receiving a guessed rate.
+Every usage record stores an effective `cost_usd` and `cost_source` when cost is known. OpenRouter's reported cost wins and is retained as `provider_cost_usd`. For known direct Anthropic and OpenAI models, Notch computes `estimated_cost_usd` from a versioned API-list-price catalog and records `pricing_version`; the TUI labels this value as estimated. Subscription/OAuth sessions therefore show API-list-price equivalents, not an assertion about the user's actual subscription bill. Unknown models remain without a cost instead of receiving a guessed rate.
 
 ## OAuth commands
 
@@ -146,3 +146,11 @@ With a non-empty `base_url`, it calls `<base_url>/v1/responses` and does not req
 ```
 
 The Ollama release and model must support the Responses endpoint and the tool-calling behavior required by the prompt. A Chat Completions-only local server is not sufficient for this adapter.
+
+### Pricing refresh
+
+Model refresh also checks pricing from `https://models.dev/api.json`. Normal refresh uses `model_refresh_hours` (default 24); `notch models --refresh` and `/model refresh` force both updates. `--all` downloads the pricing catalog only once. Models still come from provider APIs, not the pricing catalog.
+
+Pricing is cached at `$XDG_DATA_HOME/notch/pricing.json` (default `~/.local/share/notch/pricing.json`) and loaded before startup refresh. Failed downloads keep the last valid cache; missing or incomplete entries fall back to bundled rates when available. Otherwise the cost remains unknown, not zero. Model and pricing failures do not discard each other's usable data. Startup refresh is best-effort; explicit refresh reports failures.
+
+Set `"disable_pricing_refresh": true` in config to disable public pricing downloads and use bundled prices only. The public catalog request sends no API credentials or conversation data. Estimates record the catalog content hash in `pricing_version`; past session costs are never recalculated. These are USD API-list-price estimates, not bills. New rates are available only after the public catalog publishes them. OpenRouter's reported request costs remain authoritative.

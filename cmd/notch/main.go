@@ -31,6 +31,7 @@ import (
 	"github.com/trobrock/notch/internal/modelregistry"
 	"github.com/trobrock/notch/internal/oauth"
 	"github.com/trobrock/notch/internal/officialext"
+	"github.com/trobrock/notch/internal/pricing"
 	"github.com/trobrock/notch/internal/provider/anthropic"
 	"github.com/trobrock/notch/internal/provider/codex"
 	"github.com/trobrock/notch/internal/provider/openai"
@@ -587,18 +588,21 @@ func run(args []string) error {
 	credentialStore := credentials.New(cfg.AuthFile)
 	baseModelConfig := cfg
 	modelsRegistry := modelRegistryFor(cfg)
+	prices := pricingServiceFor(cfg)
 	provider, err := makeProvider(ctx, cfg, credentialStore)
 	if err != nil {
 		return err
 	}
-	if lister, ok := provider.(model.ModelLister); ok {
-		providerName, scope := normalizeProvider(cfg.Provider), modelregistry.Scope(normalizeProvider(cfg.Provider), cfg.BaseURL)
-		go func() {
-			refreshCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-			defer cancel()
-			_, _ = modelsRegistry.List(refreshCtx, providerName, scope, false, lister.ListModels)
-		}()
-	}
+	go func() {
+		refreshCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		_ = prices.Refresh(refreshCtx, false)
+		if lister, ok := provider.(model.ModelLister); ok {
+			providerName := normalizeProvider(cfg.Provider)
+			_, _ = modelsRegistry.List(refreshCtx, providerName, modelregistry.Scope(providerName, cfg.BaseURL), false, lister.ListModels)
+		}
+	}()
+
 	var store *session.Session
 	if !opts.noSession {
 		if opts.resumeSpecified {
@@ -655,6 +659,7 @@ func run(args []string) error {
 		contextWindow = contextWindowFor(cfg.Provider, cfg.Model)
 	}
 	runner, err := agent.New(agent.Config{
+		Pricing:  prices,
 		Provider: provider, ProviderName: normalizeProvider(cfg.Provider), Registry: registry, Session: store, Model: cfg.Model,
 		ExploreModel: cfg.ExploreModel, SystemPrompt: systemPrompt, MaxTokens: cfg.MaxTokens, ThinkingLevel: cfg.ThinkingLevel, CacheRetention: cfg.CacheRetention,
 		Compaction: agent.CompactionConfig{Enabled: compactionEnabled, ContextWindow: contextWindow, ReserveTokens: reserveTokens, KeepRecentTokens: keepRecentTokens},
@@ -712,7 +717,9 @@ func run(args []string) error {
 	if fullscreen != nil {
 		fullscreen.SetModelManager(
 			func(listCtx context.Context, providerName string, force bool) ([]modelregistry.Entry, error) {
-				return discoverModels(listCtx, modelsRegistry, baseModelConfig, credentialStore, providerName, force)
+				priceErr := prices.Refresh(listCtx, force)
+				entries, modelErr := discoverModels(listCtx, modelsRegistry, baseModelConfig, credentialStore, providerName, force)
+				return entries, errors.Join(priceErr, modelErr)
 			},
 			func(switchCtx context.Context, providerName, modelName string, discoveredWindow int) (int, error) {
 				candidate := configForProvider(baseModelConfig, providerName)
@@ -927,6 +934,11 @@ func runMode(rpcMode, fullscreen bool, opts options) string {
 	}
 }
 
+func pricingServiceFor(cfg config.Config) *pricing.Service {
+	disabled := cfg.DisablePricingRefresh != nil && *cfg.DisablePricingRefresh
+	return pricing.NewService(filepath.Join(filepath.Dir(cfg.ModelCache), "pricing.json"), time.Duration(cfg.ModelRefreshHours)*time.Hour, disabled)
+}
+
 func modelRegistryFor(cfg config.Config) *modelregistry.Registry {
 	ttl := time.Duration(cfg.ModelRefreshHours) * time.Hour
 	return modelregistry.New(cfg.ModelCache, ttl)
@@ -1119,7 +1131,7 @@ func resolveWorkspaceTrust(home, root, trustKey string, opts options, in io.Read
 func runListModels(args []string) error {
 	flags := flag.NewFlagSet("notch models", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
-	force := flags.Bool("refresh", false, "refresh the provider model cache")
+	force := flags.Bool("refresh", false, "refresh model and pricing caches")
 	jsonOutput := flags.Bool("json", false, "emit a stable JSON model catalog")
 	all := flags.Bool("all", false, "list models from every supported provider")
 	if err := flags.Parse(args); err != nil {
@@ -1145,6 +1157,9 @@ func runListModels(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	registry := modelRegistryFor(cfg)
+	if priceErr := pricingServiceFor(cfg).Refresh(ctx, *force); priceErr != nil {
+		fmt.Fprintln(os.Stderr, "notch:", priceErr, "(using cached or bundled prices)")
+	}
 	store := credentials.New(cfg.AuthFile)
 	var models []modelregistry.Entry
 	var listErrors []error
