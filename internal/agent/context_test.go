@@ -79,6 +79,48 @@ func TestCompactionConversationJSONTrimsSingleOversizedMessage(t *testing.T) {
 	}
 }
 
+func TestContextMessagesRepairsInterruptedToolCalls(t *testing.T) {
+	messages := []model.Message{
+		model.TextMessage("user", "start"),
+		{Role: "assistant", Content: []model.Block{
+			{Type: "function_call", ID: "missing", Name: "ask_user_question", Arguments: json.RawMessage(`{"question":"Choose"}`)},
+			{Type: "tool_use", ID: "done", Name: "read", Arguments: json.RawMessage(`{"path":"one"}`)},
+		}},
+		{Role: "user", Content: []model.Block{{Type: "tool_result", ToolUseID: "done", Text: "ok"}}},
+		model.TextMessage("user", "my answer"),
+	}
+
+	got := contextMessages(messages)
+	if len(got) != len(messages)+1 {
+		t.Fatalf("context messages = %d, want %d", len(got), len(messages)+1)
+	}
+	repair := got[2]
+	if repair.Role != "user" || len(repair.Content) != 1 {
+		t.Fatalf("repair message = %#v", repair)
+	}
+	block := repair.Content[0]
+	if block.Type != "tool_result" || block.ToolUseID != "missing" || !block.IsError || block.Text != interruptedToolResult {
+		t.Fatalf("repair block = %#v", block)
+	}
+	if got[3].Content[0].ToolUseID != "done" || got[4].Content[0].Text != "my answer" {
+		t.Fatalf("repair was inserted in the wrong place: %#v", got)
+	}
+	if len(messages) != 4 || messages[2].Content[0].ToolUseID != "done" {
+		t.Fatal("durable messages were mutated")
+	}
+}
+
+func TestContextMessagesDoesNotRepairCompletedToolCalls(t *testing.T) {
+	messages := []model.Message{
+		{Role: "assistant", Content: []model.Block{{Type: "tool_use", ID: "done", Name: "read"}}},
+		{Role: "user", Content: []model.Block{{Type: "function_call_output", ToolUseID: "done", Text: "ok"}}},
+	}
+	got := contextMessages(messages)
+	if len(got) != len(messages) {
+		t.Fatalf("context messages = %#v", got)
+	}
+}
+
 func TestContextMessagesTrimOlderToolResults(t *testing.T) {
 	large := strings.Repeat("x", 20000)
 	messages := []model.Message{
