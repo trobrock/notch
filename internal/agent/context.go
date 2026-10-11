@@ -187,8 +187,41 @@ func estimatedTokensForLength(length int) int {
 	return (length + 2) / 3
 }
 
+const interruptedToolResult = "Tool call was interrupted before it returned a result. Do not assume it completed or retry it unless the user asks."
+
 func contextMessages(messages []model.Message) []model.Message {
 	out := cloneMessages(messages)
+
+	// The assistant message is made durable before its tools run. If Notch is
+	// stopped in between, the session ends with calls that have no results.
+	// Providers reject that transcript, so add in-memory error results when the
+	// context is rebuilt. Keep the JSONL history append-only and never replay a
+	// tool that may already have caused a side effect.
+	resultAfter := make(map[string]int)
+	for i, message := range out {
+		for _, block := range message.Content {
+			if (block.Type == "tool_result" || block.Type == "function_call_output") && block.ToolUseID != "" {
+				resultAfter[block.ToolUseID] = i
+			}
+		}
+	}
+	for i := len(out) - 1; i >= 0; i-- {
+		var missing []model.Block
+		for _, block := range out[i].Content {
+			resultIndex, hasLaterResult := resultAfter[block.ID]
+			if (block.Type == "tool_use" || block.Type == "function_call") && block.ID != "" && (!hasLaterResult || resultIndex <= i) {
+				missing = append(missing, model.Block{
+					Type: "tool_result", ToolUseID: block.ID, Text: interruptedToolResult, IsError: true,
+				})
+			}
+		}
+		if len(missing) != 0 {
+			out = append(out, model.Message{})
+			copy(out[i+2:], out[i+1:])
+			out[i+1] = model.Message{Role: "user", Content: missing}
+		}
+	}
+
 	seen := 0
 	for i := len(out) - 1; i >= 0; i-- {
 		for j := len(out[i].Content) - 1; j >= 0; j-- {
