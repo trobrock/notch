@@ -8,6 +8,7 @@ import (
 	"github.com/trobrock/notch/internal/extension"
 	"github.com/trobrock/notch/internal/officialext/askuser"
 	"github.com/trobrock/notch/internal/officialext/explore"
+	"github.com/trobrock/notch/internal/officialext/goal"
 	"github.com/trobrock/notch/internal/officialext/modelswitch"
 	"github.com/trobrock/notch/internal/officialext/monitor"
 	"github.com/trobrock/notch/internal/officialext/plan"
@@ -31,6 +32,7 @@ func RegisterWithSettingSources(registry *extension.Registry, host extension.Hos
 	registrations := []func() error{
 		func() error { return askuser.Register(registry, host) },
 		func() error { return explore.RegisterWithSettingSources(registry, host, settingSources) },
+		func() error { return goal.Register(registry, host) },
 		func() error { return monitor.Register(registry, host) },
 		func() error { return modelswitch.Register(registry, host) },
 		func() error { return plan.Register(registry, host) },

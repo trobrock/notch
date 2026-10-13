@@ -1828,3 +1828,120 @@ func TestSkillDeduplicationUsesFilteredContext(t *testing.T) {
 		})
 	}
 }
+
+func TestHumanQueueWinsOverAutomaticHookFollowUp(t *testing.T) {
+	started, release := make(chan struct{}), make(chan struct{})
+	provider := &queueTestProvider{started: started, release: release}
+	registry := extension.NewRegistry()
+	hookCalls := 0
+	registry.On("agent_end", "test", func(context.Context, map[string]any) (map[string]any, error) {
+		hookCalls++
+		if hookCalls == 1 {
+			return map[string]any{"follow_up": "automatic continuation"}, nil
+		}
+		return nil, nil
+	})
+	a, err := New(Config{Provider: provider, Registry: registry, Model: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- a.Prompt(context.Background(), "initial", nil) }()
+	<-started
+	if _, err := a.FollowUp("human message"); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	provider.mu.Lock()
+	requests := append([]model.Request(nil), provider.requests...)
+	provider.mu.Unlock()
+	if len(requests) != 2 {
+		t.Fatalf("requests = %d, want 2", len(requests))
+	}
+	last := requests[1].Messages[len(requests[1].Messages)-1].Content[0].Text
+	if last != "human message" {
+		t.Fatalf("next message = %q, want human message", last)
+	}
+}
+
+func TestCanceledPromptRunsRunEndHook(t *testing.T) {
+	started := make(chan struct{})
+	provider := &benchmarkProvider{block: true, started: started}
+	registry := extension.NewRegistry()
+	var event map[string]any
+	registry.On("run_end", "test", func(_ context.Context, got map[string]any) (map[string]any, error) {
+		event = got
+		return nil, nil
+	})
+	a, err := New(Config{Provider: provider, Registry: registry, Model: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- a.Prompt(ctx, "go", nil) }()
+	<-started
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v", err)
+	}
+	if event == nil || event["stop_reason"] != "canceled" {
+		t.Fatalf("run_end hook event = %#v", event)
+	}
+}
+
+type stopHookProvider struct{ calls int }
+
+func (p *stopHookProvider) Stream(context.Context, model.Request, func(model.StreamEvent)) (model.Response, error) {
+	p.calls++
+	return model.Response{Content: []model.Block{{Type: "text", Text: "unexpected"}}}, nil
+}
+
+func TestBeforeAgentStartCanStopWithoutProviderCall(t *testing.T) {
+	provider := &stopHookProvider{}
+	registry := extension.NewRegistry()
+	registry.On("before_agent_start", "test", func(context.Context, map[string]any) (map[string]any, error) {
+		return map[string]any{"stop": true, "stop_reason": "bounded_work"}, nil
+	})
+	a, err := New(Config{Provider: provider, Registry: registry, Model: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var end Event
+	if err := a.Prompt(context.Background(), "work", func(event Event) {
+		if event.Type == "run_end" {
+			end = event
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if provider.calls != 0 || end.StopReason != "bounded_work" {
+		t.Fatalf("provider calls = %d, run end = %#v", provider.calls, end)
+	}
+}
+
+func TestDeniedToolEmitsObservationalHook(t *testing.T) {
+	registry := extension.NewRegistry()
+	registry.On("tool_call", "deny", func(context.Context, map[string]any) (map[string]any, error) {
+		return map[string]any{"denied": true, "reason": "permission missing"}, nil
+	})
+	var denied map[string]any
+	registry.On("tool_denied", "observe", func(_ context.Context, event map[string]any) (map[string]any, error) {
+		denied = event
+		return nil, nil
+	})
+	provider := &benchmarkProvider{}
+	a, err := New(Config{Provider: provider, Registry: registry, Model: "test", MaxTurns: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// parallelToolProvider's first response requests tools. The normal max-turn
+	// stop after that response is enough for this hook-level assertion.
+	_ = a.Prompt(context.Background(), "work", nil)
+	if denied == nil || denied["reason"] != "permission missing" {
+		t.Fatalf("tool_denied event = %#v", denied)
+	}
+}

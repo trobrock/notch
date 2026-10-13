@@ -439,24 +439,33 @@ func (a *Agent) takeQueued(mode string) (QueuedMessage, bool) {
 }
 
 func (a *Agent) settleOrTakeQueued() (QueuedMessage, bool) {
+	message, _, ok := a.settleOrTakeQueuedOr("")
+	return message, ok
+}
+
+// settleOrTakeQueuedOr atomically gives queued human input priority over an
+// automatic fallback. It keeps queueing open when the fallback is selected.
+func (a *Agent) settleOrTakeQueuedOr(fallback string) (QueuedMessage, bool, bool) {
 	a.queueMu.Lock()
 	var message QueuedMessage
-	var ok bool
+	var queued, ok bool
 	if len(a.steering) != 0 {
-		message, a.steering, ok = a.steering[0], a.steering[1:], true
+		message, a.steering, queued, ok = a.steering[0], a.steering[1:], true, true
 	} else if len(a.followUps) != 0 {
-		message, a.followUps, ok = a.followUps[0], a.followUps[1:], true
+		message, a.followUps, queued, ok = a.followUps[0], a.followUps[1:], true, true
+	} else if fallback != "" {
+		message, ok = QueuedMessage{Mode: "automatic", Text: fallback}, true
 	} else {
 		a.processing, a.queueEmit = false, nil
 	}
 	emit, queue := a.queueEmit, a.queueSnapshotLocked()
 	a.queueMu.Unlock()
-	if ok && emit != nil {
+	if queued && emit != nil {
 		copy := message
 		emit(Event{Type: "queue_delivered", Queued: &copy})
 		emit(Event{Type: "queue_update", Queue: queue})
 	}
-	return message, ok
+	return message, queued, ok
 }
 
 type idleActivityKey struct{}
@@ -559,6 +568,13 @@ func (a *Agent) promptWithStart(ctx context.Context, text string, emit func(Even
 		if !costKnown {
 			e.PricingError = "price_unknown"
 		}
+		hookCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		_, _ = a.registry.RunHooksBestEffort(hookCtx, "run_end", map[string]any{
+			"stop_reason": stop, "num_turns": turns, "wall_ms": e.WallMS,
+			"final_assistant_text": finalText, "total_cost_usd": totalCost,
+			"cost_known": known, "pricing_error": e.PricingError,
+		})
+		cancel()
 		emit(e)
 	}()
 
@@ -589,6 +605,14 @@ func (a *Agent) promptWithStart(ctx context.Context, text string, emit func(Even
 		}
 		if value, ok := before["system_prompt"].(string); ok {
 			system = value
+		}
+		if halt, _ := before["stop"].(bool); halt {
+			if reason, _ := before["stop_reason"].(string); reason != "" {
+				stop = reason
+			} else {
+				stop = "extension_stop"
+			}
+			return nil
 		}
 
 		if a.shouldAutoCompactLocked() {
@@ -713,14 +737,10 @@ func (a *Agent) promptWithStart(ctx context.Context, text string, emit func(Even
 		if hookErr != nil {
 			return hookErr
 		}
-		if followUp, ok := end["follow_up"].(string); ok && followUp != "" {
-			if err := a.appendMessage(model.TextMessage("user", followUp)); err != nil {
-				return err
-			}
-			continue
-		}
-		if queued, ok := a.settleOrTakeQueued(); ok {
-			if err := a.appendMessage(model.TextMessage("user", queued.Text)); err != nil {
+		followUp, _ := end["follow_up"].(string)
+		next, _, ok := a.settleOrTakeQueuedOr(followUp)
+		if ok {
+			if err := a.appendMessage(model.TextMessage("user", next.Text)); err != nil {
 				return err
 			}
 			continue
@@ -978,6 +998,9 @@ func (a *Agent) executeTool(ctx context.Context, call model.Block, emit func(Eve
 			reason = "tool call denied by extension"
 		}
 		result := extension.ToolResult{Content: reason, IsError: true}
+		_, _ = a.registry.RunHooksBestEffort(ctx, "tool_denied", map[string]any{
+			"name": call.Name, "id": call.ID, "reason": reason,
+		})
 		emit(Event{Type: "tool_end", ToolName: call.Name, ToolCallID: call.ID, Result: &result})
 		return result
 	}

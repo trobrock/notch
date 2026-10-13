@@ -239,3 +239,22 @@ func TestDeferredToolVisibilityPreservesAccessPolicy(t *testing.T) {
 		}
 	})
 }
+
+func TestRunHooksKeepsStopSticky(t *testing.T) {
+	r := NewRegistry()
+	r.On("before_agent_start", "first", func(context.Context, map[string]any) (map[string]any, error) {
+		return map[string]any{"stop": true, "stop_reason": "first"}, nil
+	})
+	r.On("before_agent_start", "later", func(_ context.Context, event map[string]any) (map[string]any, error) {
+		event["stop"] = false
+		event["stop_reason"] = "mutated"
+		return map[string]any{"stop": false, "stop_reason": "later", "other": "kept"}, nil
+	})
+	result, err := r.RunHooks(context.Background(), "before_agent_start", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["stop"] != true || result["stop_reason"] != "first" || result["other"] != "kept" {
+		t.Fatalf("result = %#v", result)
+	}
+}
