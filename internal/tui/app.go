@@ -112,7 +112,7 @@ type appState struct {
 	tools               map[string]int
 	queuedText          map[string]string
 	promptErrored       bool
-	pendingFollowUps    []string
+	pendingFollowUps    []queuedFollowUp
 	pendingHandoffs     []handoffEvent
 	providerUsage       *agent.Usage
 	commandHelp         bool
@@ -128,21 +128,27 @@ type appState struct {
 }
 
 type appEvent struct {
-	keys       []KeyEvent
-	agent      *agent.Event
-	promptDone *promptResult
-	command    *commandResult
-	resumeDone *resumeResult
-	modelDone  *modelSelectionResult
-	request    *hostRequest
-	cancelReq  *hostRequest
-	notice     *noticeEvent
-	status     *statusEvent
-	panel      *panelEvent
-	editor     *editorEvent
-	followUp   string
-	handoff    *handoffEvent
-	readErr    error
+	keys              []KeyEvent
+	agent             *agent.Event
+	promptDone        *promptResult
+	command           *commandResult
+	resumeDone        *resumeResult
+	modelDone         *modelSelectionResult
+	request           *hostRequest
+	cancelReq         *hostRequest
+	notice            *noticeEvent
+	status            *statusEvent
+	panel             *panelEvent
+	editor            *editorEvent
+	followUp          string
+	followUpSessionID string
+	handoff           *handoffEvent
+	readErr           error
+}
+
+type queuedFollowUp struct {
+	message   string
+	sessionID string
 }
 
 type handoffEvent struct {
@@ -823,8 +829,11 @@ func (a *App) applyEvent(runCtx context.Context, event appEvent) bool {
 		}
 	}
 	if event.followUp != "" {
-		if a.state.activeCommand && !a.state.activeModel {
-			a.state.pendingFollowUps = append(a.state.pendingFollowUps, event.followUp)
+		if event.followUpSessionID != "" && a.SessionID() != event.followUpSessionID {
+			a.addNotice("stale extension follow-up ignored after session change", "warning")
+			changed = true
+		} else if a.state.activeCommand && !a.state.activeModel {
+			a.state.pendingFollowUps = append(a.state.pendingFollowUps, queuedFollowUp{message: event.followUp, sessionID: event.followUpSessionID})
 			a.state.layout.PendingMessages = append(a.state.layout.PendingMessages, PendingMessage{Mode: "follow_up", Text: event.followUp})
 		} else if a.state.activeModel {
 			if queued, err := a.runner.FollowUp(event.followUp); err == nil {
@@ -837,7 +846,7 @@ func (a *App) applyEvent(runCtx context.Context, event appEvent) bool {
 				// The model goroutine can settle before its promptDone event reaches
 				// the UI loop. Retain the wake-up and submit it immediately after
 				// prompt completion instead of dropping the monitor notification.
-				a.state.pendingFollowUps = append(a.state.pendingFollowUps, event.followUp)
+				a.state.pendingFollowUps = append(a.state.pendingFollowUps, queuedFollowUp{message: event.followUp, sessionID: event.followUpSessionID})
 				a.state.layout.PendingMessages = append(a.state.layout.PendingMessages, PendingMessage{Mode: "follow_up", Text: event.followUp})
 			} else {
 				a.addNotice(err.Error(), "error")
@@ -881,15 +890,19 @@ func (a *App) dispatchPendingFollowUp(runCtx context.Context) bool {
 	if a.state.activeModel || a.state.activeCommand || len(a.state.pendingFollowUps) == 0 {
 		return false
 	}
-	message := a.state.pendingFollowUps[0]
+	pendingFollowUp := a.state.pendingFollowUps[0]
 	a.state.pendingFollowUps = a.state.pendingFollowUps[1:]
 	for i, pending := range a.state.layout.PendingMessages {
-		if pending.ID == "" && pending.Mode == "follow_up" && pending.Text == message {
+		if pending.ID == "" && pending.Mode == "follow_up" && pending.Text == pendingFollowUp.message {
 			a.state.layout.PendingMessages = append(a.state.layout.PendingMessages[:i], a.state.layout.PendingMessages[i+1:]...)
 			break
 		}
 	}
-	return a.submit(runCtx, message)
+	if pendingFollowUp.sessionID != "" && a.SessionID() != pendingFollowUp.sessionID {
+		a.addNotice("stale extension follow-up ignored after session change", "warning")
+		return true
+	}
+	return a.submit(runCtx, pendingFollowUp.message)
 }
 
 func (a *App) applyHandoff(runCtx context.Context, handoff handoffEvent) bool {
@@ -2720,6 +2733,24 @@ func (a *App) FollowUp(message string) error {
 		return errors.New("follow-up message is empty")
 	}
 	a.post(context.Background(), appEvent{followUp: message}, true)
+	return nil
+}
+
+// FollowUpFor queues a follow-up only for the named durable session. The event
+// loop checks again when handling the event, closing the race with /new and
+// /resume after this method returns.
+func (a *App) FollowUpFor(sessionID, message string) error {
+	sessionID, message = strings.TrimSpace(sessionID), strings.TrimSpace(message)
+	if sessionID == "" {
+		return errors.New("follow-up session ID is empty")
+	}
+	if message == "" {
+		return errors.New("follow-up message is empty")
+	}
+	if a.SessionID() != sessionID {
+		return errors.New("active session changed before extension follow-up was delivered")
+	}
+	a.post(context.Background(), appEvent{followUp: message, followUpSessionID: sessionID}, true)
 	return nil
 }
 

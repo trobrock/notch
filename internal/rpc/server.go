@@ -99,6 +99,19 @@ func (s *Server) Notify(message, level string) {
 }
 
 func (s *Server) FollowUp(message string) error {
+	return s.followUpFor("", message)
+}
+
+// FollowUpFor queues a follow-up only while the expected durable session is
+// still active.
+func (s *Server) FollowUpFor(sessionID, message string) error {
+	if strings.TrimSpace(sessionID) == "" {
+		return errors.New("follow-up session ID is empty")
+	}
+	return s.followUpFor(sessionID, message)
+}
+
+func (s *Server) followUpFor(expectedSessionID, message string) error {
 	message = strings.TrimSpace(message)
 	if message == "" {
 		return errors.New("follow-up message is empty")
@@ -108,6 +121,10 @@ func (s *Server) FollowUp(message string) error {
 	if runner == nil {
 		s.mu.Unlock()
 		return errors.New("RPC server is not configured")
+	}
+	if expectedSessionID != "" && (s.session == nil || s.session.Header.ID != expectedSessionID) {
+		s.mu.Unlock()
+		return errors.New("active session changed before extension follow-up was delivered")
 	}
 	if !active {
 		s.mu.Unlock()

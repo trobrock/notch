@@ -693,6 +693,17 @@ func (c *Client) FollowUp(ctx context.Context, message string) error {
 	}{message}, &result)
 }
 
+// FollowUpFor queues a follow-up only if sessionID is still active when the
+// frontend handles it. This prevents stale background delivery across /new or
+// /resume transitions.
+func (c *Client) FollowUpFor(ctx context.Context, sessionID, message string) error {
+	var result any
+	return c.call(ctx, "host.follow_up_for", struct {
+		SessionID string `json:"session_id"`
+		Message   string `json:"message"`
+	}{sessionID, message}, &result)
+}
+
 // SetStatus asks the host to publish or clear a keyed persistent status.
 func (c *Client) SetStatus(ctx context.Context, key, value string) error {
 	var result any
@@ -809,6 +820,15 @@ func FollowUp(ctx context.Context, message string) error {
 		return err
 	}
 	return client.FollowUp(ctx, message)
+}
+
+// FollowUpFor delivers only if sessionID is still active in the host.
+func FollowUpFor(ctx context.Context, sessionID, message string) error {
+	client, err := clientFor(ctx)
+	if err != nil {
+		return err
+	}
+	return client.FollowUpFor(ctx, sessionID, message)
 }
 
 // SetStatus publishes or clears a keyed persistent status through the host.

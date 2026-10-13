@@ -3,7 +3,7 @@ COMMIT ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
 BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.buildDate=$(BUILD_DATE)
 
-.PHONY: build test check install example-plugin clean
+.PHONY: build test check install example-plugin intercom-plugin clean
 
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags '$(LDFLAGS)' -o bin/notch ./cmd/notch
@@ -21,5 +21,8 @@ install:
 example-plugin:
 	CGO_ENABLED=0 go build -trimpath -o examples/extensions/hello-plugin/hello-plugin ./examples/extensions/hello-plugin
 
+intercom-plugin:
+	CGO_ENABLED=0 go build -trimpath -o examples/extensions/intercom/notch-intercom ./examples/extensions/intercom
+
 clean:
-	rm -rf bin examples/extensions/hello-plugin/hello-plugin
+	rm -rf bin examples/extensions/hello-plugin/hello-plugin examples/extensions/intercom/notch-intercom

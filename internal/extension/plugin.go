@@ -757,6 +757,30 @@ func (p *Plugin) dispatchHost(ctx context.Context, method string, params json.Ra
 			return hostError(err)
 		}
 		return nil, nil
+	case "host.follow_up_for":
+		var value struct {
+			SessionID string `json:"session_id"`
+			Message   string `json:"message"`
+		}
+		if err := json.Unmarshal(params, &value); err != nil {
+			return badParams(err)
+		}
+		if value.SessionID == "" {
+			return badParams(errors.New("session_id is required"))
+		}
+		if guarded, ok := p.host.(interface{ FollowUpFor(string, string) error }); ok {
+			if err := guarded.FollowUpFor(value.SessionID, value.Message); err != nil {
+				return hostError(err)
+			}
+			return nil, nil
+		}
+		if p.host.SessionID() != value.SessionID {
+			return hostError(errors.New("active session changed before extension follow-up was delivered"))
+		}
+		if err := p.host.FollowUp(value.Message); err != nil {
+			return hostError(err)
+		}
+		return nil, nil
 	case "host.ui.set_status":
 		var value struct {
 			Key   string `json:"key"`

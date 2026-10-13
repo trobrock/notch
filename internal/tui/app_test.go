@@ -1401,6 +1401,75 @@ func TestFreshHandoffWaitsForPromptDone(t *testing.T) {
 	}
 }
 
+func TestGuardedFollowUpDoesNotCrossSessionChange(t *testing.T) {
+	dir := t.TempDir()
+	first, err := session.New(dir, "/work", "test", "model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	second, err := session.New(dir, "/work", "test", "model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+
+	a := NewApp(AppConfig{})
+	a.currentSession = first
+	if err := a.FollowUpFor(first.Header.ID, "peer wake"); err != nil {
+		t.Fatal(err)
+	}
+	if len(a.pending) != 1 {
+		t.Fatalf("pending events = %d, want 1", len(a.pending))
+	}
+	event := a.pending[0]
+	a.pending = nil
+	a.currentSession = second
+	if !a.applyEvent(context.Background(), event) {
+		t.Fatal("stale guarded follow-up was not handled")
+	}
+	if a.state.activeModel || len(a.state.pendingFollowUps) != 0 {
+		t.Fatalf("stale follow-up crossed sessions: active=%v pending=%v", a.state.activeModel, a.state.pendingFollowUps)
+	}
+	for _, item := range a.state.layout.Transcript {
+		if item.Text == "peer wake" {
+			t.Fatalf("stale peer text entered new transcript: %#v", a.state.layout.Transcript)
+		}
+	}
+}
+
+func TestPendingGuardedFollowUpDoesNotCrossSessionChange(t *testing.T) {
+	dir := t.TempDir()
+	first, err := session.New(dir, "/work", "test", "model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	second, err := session.New(dir, "/work", "test", "model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+
+	a := NewApp(AppConfig{})
+	a.currentSession = first
+	a.state.activeCommand = true
+	if !a.applyEvent(context.Background(), appEvent{followUp: "peer wake", followUpSessionID: first.Header.ID}) {
+		t.Fatal("guarded follow-up was not queued")
+	}
+	if len(a.state.pendingFollowUps) != 1 {
+		t.Fatalf("pending follow-ups = %#v", a.state.pendingFollowUps)
+	}
+	a.currentSession = second
+	a.state.activeCommand = false
+	if !a.dispatchPendingFollowUp(context.Background()) {
+		t.Fatal("stale pending follow-up was not handled")
+	}
+	if a.state.activeModel || len(a.state.pendingFollowUps) != 0 {
+		t.Fatalf("stale pending follow-up crossed sessions: active=%v pending=%#v", a.state.activeModel, a.state.pendingFollowUps)
+	}
+}
+
 func TestMonitorFollowUpSurvivesSettledAgentBeforePromptDone(t *testing.T) {
 	runner := newAppTestAgent(t, nil)
 	if err := runner.Prompt(context.Background(), "initial", nil); err != nil {
@@ -1414,7 +1483,7 @@ func TestMonitorFollowUpSurvivesSettledAgentBeforePromptDone(t *testing.T) {
 	if !a.applyEvent(context.Background(), appEvent{followUp: "monitor completed"}) {
 		t.Fatal("follow-up event was not handled")
 	}
-	if len(a.state.pendingFollowUps) != 1 || a.state.pendingFollowUps[0] != "monitor completed" {
+	if len(a.state.pendingFollowUps) != 1 || a.state.pendingFollowUps[0].message != "monitor completed" {
 		t.Fatalf("pending follow-ups = %#v", a.state.pendingFollowUps)
 	}
 	if !a.applyEvent(context.Background(), appEvent{promptDone: &promptResult{}}) {
