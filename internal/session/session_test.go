@@ -806,3 +806,70 @@ func TestConcurrentMessageCompactionAndReset(t *testing.T) {
 		t.Fatalf("loaded messages = %+v, in-memory messages = %+v", loaded.Messages, want)
 	}
 }
+
+func TestLoadCleansLegacyBadToolArguments(t *testing.T) {
+	s, err := New(t.TempDir(), "/work", "test", "model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := s.Path()
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Old files could contain arguments as a JSON string whose contents are
+	// cut-off JSON. The session record itself is still valid JSON.
+	_, writeErr := file.WriteString(`{"type":"message","message":{"role":"assistant","content":[{"type":"tool_use","id":"bad","name":"write","arguments":"{\"path\":\"unfinished"}]}}` + "\n")
+	closeErr := file.Close()
+	if writeErr != nil || closeErr != nil {
+		t.Fatalf("write=%v close=%v", writeErr, closeErr)
+	}
+
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer loaded.Close()
+	block := loaded.Messages[len(loaded.Messages)-2].Content[0]
+	if string(block.Arguments) != `{}` || !block.IsError {
+		t.Fatalf("loaded bad arguments = %q, error=%v", block.Arguments, block.IsError)
+	}
+	recovery := loaded.Messages[len(loaded.Messages)-1]
+	if recovery.Role != "user" || len(recovery.Content) != 1 || !recovery.Content[0].IsError {
+		t.Fatalf("recovery message = %#v", recovery)
+	}
+	if _, err := json.Marshal(loaded.Messages); err != nil {
+		t.Fatalf("cleaned messages do not encode: %v", err)
+	}
+}
+
+func TestLoadRepairsPersistedInvalidCallWithoutResult(t *testing.T) {
+	s, err := New(t.TempDir(), "/work", "test", "model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := s.Path()
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, writeErr := file.WriteString(`{"type":"message","message":{"role":"assistant","content":[{"type":"tool_use","id":"bad","name":"write","arguments":{},"is_error":true}]}}` + "\n")
+	closeErr := file.Close()
+	if writeErr != nil || closeErr != nil {
+		t.Fatalf("write=%v close=%v", writeErr, closeErr)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer loaded.Close()
+	if len(loaded.Messages) != 2 || loaded.Messages[1].Role != "user" || len(loaded.Messages[1].Content) != 1 || loaded.Messages[1].Content[0].ToolUseID != "bad" || !loaded.Messages[1].Content[0].IsError {
+		t.Fatalf("loaded messages = %#v", loaded.Messages)
+	}
+}

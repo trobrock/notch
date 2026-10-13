@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -456,5 +457,49 @@ func TestStreamUnauthorizedWithoutAuthorizeDoesNotRetry(t *testing.T) {
 	}
 	if requests != 1 {
 		t.Fatalf("requests = %d", requests)
+	}
+}
+
+func TestStreamMarksIncompleteToolArgumentsInvalid(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, data := range []string{
+			`{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"bad","name":"write"}}`,
+			`{"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"path\":\"unfinished"}`,
+			`{"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}}`,
+		} {
+			fmt.Fprintf(w, "data: %s\n\n", data)
+		}
+	}))
+	defer server.Close()
+	response, err := New(Config{BaseURL: server.URL, HTTPClient: server.Client()}).Stream(context.Background(), model.Request{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StopReason != "max_tokens" || len(response.Content) != 1 || string(response.Content[0].Arguments) != `{}` || !response.Content[0].IsError {
+		t.Fatalf("response = %#v", response)
+	}
+}
+
+func TestStreamCleansInvalidArgumentsBeforeEncodingRequest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(body)
+		if !strings.Contains(text, `"arguments":"{}"`) || !strings.Contains(text, model.ToolCallInputErrorMessage) || strings.Contains(text, `unfinished`) {
+			t.Errorf("cleaned request = %s", text)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
+	}))
+	defer server.Close()
+
+	_, err := New(Config{BaseURL: server.URL, HTTPClient: server.Client()}).Stream(context.Background(), model.Request{Messages: []model.Message{{
+		Role: "assistant", Content: []model.Block{{Type: "tool_use", ID: "bad", Name: "write", Arguments: json.RawMessage(`{"path":"unfinished`)}},
+	}}}, nil)
+	if err != nil {
+		t.Fatal(err)
 	}
 }

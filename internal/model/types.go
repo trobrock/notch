@@ -1,6 +1,7 @@
 package model
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 )
@@ -22,8 +23,119 @@ type Message struct {
 	Content []Block `json:"content"`
 }
 
+const ToolCallInputErrorMessage = "tool call input was truncated or invalid JSON; retry with smaller input or write the content to a file first"
+
 func TextMessage(role, text string) Message {
 	return Message{Role: role, Content: []Block{{Type: "text", Text: text}}}
+}
+
+// NormalizeToolCallArguments makes tool inputs safe to store and encode.
+// Empty input means an empty object. Invalid or non-object JSON is replaced and
+// marked as an error so the agent can return a recovery result to the model.
+func NormalizeToolCallArguments(blocks []Block) int {
+	invalid := 0
+	for i := range blocks {
+		block := &blocks[i]
+		if block.Type != "tool_use" && block.Type != "function_call" {
+			continue
+		}
+		if len(block.Arguments) == 0 {
+			block.Arguments = json.RawMessage(`{}`)
+			continue
+		}
+		trimmed := bytes.TrimSpace(block.Arguments)
+		if !json.Valid(trimmed) || len(trimmed) < 2 || trimmed[0] != '{' || trimmed[len(trimmed)-1] != '}' {
+			block.Arguments = json.RawMessage(`{}`)
+			block.IsError = true
+			invalid++
+		}
+	}
+	return invalid
+}
+
+// CleanMessages returns an independent copy with safe tool-call arguments.
+func CleanMessages(messages []Message) ([]Message, int) {
+	if messages == nil {
+		return nil, 0
+	}
+	cleaned := make([]Message, len(messages))
+	invalid := 0
+	for i, message := range messages {
+		cleaned[i].Role = message.Role
+		if message.Content == nil {
+			continue
+		}
+		cleaned[i].Content = make([]Block, len(message.Content))
+		copy(cleaned[i].Content, message.Content)
+		for j := range cleaned[i].Content {
+			cleaned[i].Content[j].Arguments = append(json.RawMessage(nil), message.Content[j].Arguments...)
+		}
+		invalid += NormalizeToolCallArguments(cleaned[i].Content)
+	}
+	return cleaned, invalid
+}
+
+// CleanAndRepairMessages returns an independent copy with safe arguments and
+// error results for invalid tool-call batches.
+func CleanAndRepairMessages(messages []Message, errorText string) ([]Message, int, int) {
+	cleaned, invalid := CleanMessages(messages)
+	repaired, inserted := repairToolCallResults(cleaned, errorText)
+	return repaired, invalid, inserted
+}
+
+// RepairToolCallResults adds error results for an invalid tool call and any
+// unresolved sibling calls in the same assistant response.
+func RepairToolCallResults(messages []Message, errorText string) ([]Message, int) {
+	cleaned, _ := CleanMessages(messages)
+	return repairToolCallResults(cleaned, errorText)
+}
+
+func repairToolCallResults(repaired []Message, errorText string) ([]Message, int) {
+	inserted := 0
+	for i := 0; i < len(repaired); i++ {
+		hasInvalidCall := false
+		for _, block := range repaired[i].Content {
+			if (block.Type == "tool_use" || block.Type == "function_call") && block.IsError {
+				hasInvalidCall = true
+				break
+			}
+		}
+		if !hasInvalidCall {
+			continue
+		}
+		var missing []Block
+		for _, block := range repaired[i].Content {
+			if block.Type != "tool_use" && block.Type != "function_call" {
+				continue
+			}
+			found := false
+			if i+1 < len(repaired) && repaired[i+1].Role == "user" {
+				for _, result := range repaired[i+1].Content {
+					if (result.Type == "tool_result" || result.Type == "function_call_output") && result.ToolUseID == block.ID {
+						found = true
+						break
+					}
+				}
+			}
+			if !found {
+				missing = append(missing, Block{Type: "tool_result", ToolUseID: block.ID, Text: errorText, IsError: true})
+			}
+		}
+		if len(missing) == 0 {
+			continue
+		}
+		inserted += len(missing)
+		if i+1 < len(repaired) && repaired[i+1].Role == "user" {
+			repaired[i+1].Content = append(missing, repaired[i+1].Content...)
+			continue
+		}
+		recovery := Message{Role: "user", Content: missing}
+		repaired = append(repaired, Message{})
+		copy(repaired[i+2:], repaired[i+1:])
+		repaired[i+1] = recovery
+		i++
+	}
+	return repaired, inserted
 }
 
 type ToolDefinition struct {

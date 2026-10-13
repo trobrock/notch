@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"math/rand/v2"
 	"strings"
 	"sync"
@@ -32,6 +33,7 @@ var (
 const (
 	toolExecutionEndCleanupTimeout = 5 * time.Second
 	claudeBashPrompt               = "Do not prefix a bash command with 'cd ...;' or 'cd ... &&' when the tool is already in the right working directory. Run the command directly. When a different directory is needed, set the bash tool's 'cwd' instead."
+	invalidToolCallInputMessage    = model.ToolCallInputErrorMessage
 )
 
 func systemPromptForModel(base, providerName, modelName string) string {
@@ -295,6 +297,11 @@ func (a *Agent) QueueStatus() (processing bool, steering, followUps []QueuedMess
 }
 
 func (a *Agent) appendMessage(message model.Message) error {
+	cleaned, invalid := model.CleanMessages([]model.Message{message})
+	message = cleaned[0]
+	if invalid != 0 {
+		log.Printf("warning: cleaned %d invalid tool-call argument value before saving conversation history", invalid)
+	}
 	if a.session != nil {
 		if err := a.session.AppendMessage(message); err != nil {
 			return err
@@ -628,6 +635,11 @@ func (a *Agent) promptWithStart(ctx context.Context, text string, emit func(Even
 		if replacement, ok := decodeHookMessages(contextEvent["messages"]); ok {
 			requestMessages = replacement
 		}
+		var cleaned, repaired int
+		requestMessages, cleaned, repaired = model.CleanAndRepairMessages(requestMessages, invalidToolCallInputMessage)
+		if cleaned != 0 || repaired != 0 {
+			log.Printf("warning: cleaned %d invalid tool-call argument value and repaired %d missing result before provider request", cleaned, repaired)
+		}
 		emit(Event{Type: "turn_start"})
 		_, _ = a.registry.RunHooks(ctx, "agent_start", map[string]any{"model": a.model, "turn": turn})
 		definitions := a.registry.Definitions()
@@ -643,6 +655,28 @@ func (a *Agent) promptWithStart(ctx context.Context, text string, emit func(Even
 			return err
 		}
 		turns++
+		if response.StopReason == "max_tokens" {
+			for i := range response.Content {
+				if response.Content[i].Type == "tool_use" || response.Content[i].Type == "function_call" {
+					response.Content[i].IsError = true
+				}
+			}
+		}
+		invalidToolCalls := 0
+		for _, block := range response.Content {
+			if (block.Type == "tool_use" || block.Type == "function_call") && block.IsError {
+				invalidToolCalls++
+			}
+		}
+		invalidToolCalls += model.NormalizeToolCallArguments(response.Content)
+		if invalidToolCalls != 0 {
+			warning := invalidToolCallInputMessage
+			if response.StopReason == "max_tokens" {
+				warning = "the model reached its token limit in the middle of a tool call; " + invalidToolCallInputMessage
+			}
+			log.Printf("warning: %s", warning)
+			emit(Event{Type: "error", Text: warning})
+		}
 		if response.TotalInputTokens() > 0 {
 			a.reportedInputTokens, a.reportedEstimate = response.TotalInputTokens(), requestEstimate
 		} else {
@@ -981,6 +1015,11 @@ func (a *Agent) executeTools(ctx context.Context, calls []model.Block, emit func
 }
 
 func (a *Agent) executeTool(ctx context.Context, call model.Block, emit func(Event)) extension.ToolResult {
+	if call.IsError {
+		result := extension.ToolResult{Content: invalidToolCallInputMessage, IsError: true}
+		emit(Event{Type: "tool_end", ToolName: call.Name, ToolCallID: call.ID, Result: &result})
+		return result
+	}
 	a.applyDelegationModelDefault(&call)
 	eventArgs := any(map[string]any{})
 	if len(call.Arguments) != 0 {

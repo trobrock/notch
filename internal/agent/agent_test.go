@@ -33,6 +33,12 @@ type fakeProvider struct{ calls int }
 
 type responseProvider struct{ response model.Response }
 
+type providerFunc func(context.Context, model.Request, func(model.StreamEvent)) (model.Response, error)
+
+func (f providerFunc) Stream(ctx context.Context, req model.Request, emit func(model.StreamEvent)) (model.Response, error) {
+	return f(ctx, req, emit)
+}
+
 func TestSystemPromptForModelAddsBashGuidanceOnlyForClaude(t *testing.T) {
 	for _, tc := range []struct {
 		name, provider, model string
@@ -1943,5 +1949,92 @@ func TestDeniedToolEmitsObservationalHook(t *testing.T) {
 	_ = a.Prompt(context.Background(), "work", nil)
 	if denied == nil || denied["reason"] != "permission missing" {
 		t.Fatalf("tool_denied event = %#v", denied)
+	}
+}
+
+func TestInvalidStreamedToolCallRecoversInSameSession(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		arguments  json.RawMessage
+		stopReason string
+	}{
+		{name: "cut off", arguments: json.RawMessage(`{"value":"unfinished`)},
+		{name: "max tokens", arguments: json.RawMessage(`{"value":"unfinished`), stopReason: "max_tokens"},
+		{name: "max tokens before arguments", arguments: json.RawMessage{}, stopReason: "max_tokens"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			toolRan := false
+			provider := providerFunc(func(_ context.Context, req model.Request, _ func(model.StreamEvent)) (model.Response, error) {
+				calls++
+				switch calls {
+				case 1:
+					return model.Response{Content: []model.Block{{Type: "tool_use", ID: "broken", Name: "echo", Arguments: tc.arguments}}, StopReason: tc.stopReason}, nil
+				case 2:
+					last := req.Messages[len(req.Messages)-1]
+					if len(last.Content) != 1 || !last.Content[0].IsError || !strings.Contains(last.Content[0].Text, "truncated or invalid JSON") {
+						t.Fatalf("recovery tool result = %#v", last)
+					}
+					return model.Response{Content: []model.Block{{Type: "text", Text: "recovered"}}, StopReason: "end_turn"}, nil
+				default:
+					return model.Response{Content: []model.Block{{Type: "text", Text: "next prompt worked"}}, StopReason: "end_turn"}, nil
+				}
+			})
+			registry := extension.NewRegistry()
+			if err := registry.RegisterTool(extension.Tool{Definition: model.ToolDefinition{Name: "echo"}, Source: "test", Execute: func(context.Context, json.RawMessage, func(string)) (extension.ToolResult, error) {
+				toolRan = true
+				return extension.ToolResult{Content: "unexpected"}, nil
+			}}); err != nil {
+				t.Fatal(err)
+			}
+			a, err := New(Config{Provider: provider, Registry: registry, Model: "test"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var warning string
+			if err := a.Prompt(context.Background(), "start", func(event Event) {
+				if event.Type == "error" {
+					warning = event.Text
+				}
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if toolRan {
+				t.Fatal("invalid tool call was executed")
+			}
+			if tc.stopReason == "max_tokens" && !strings.Contains(warning, "token limit") {
+				t.Fatalf("warning = %q", warning)
+			}
+			if err := a.Prompt(context.Background(), "try again", nil); err != nil {
+				t.Fatalf("next prompt failed: %v", err)
+			}
+		})
+	}
+}
+
+func TestEmptyStreamedToolCallArgumentsUseObject(t *testing.T) {
+	calls := 0
+	provider := providerFunc(func(_ context.Context, _ model.Request, _ func(model.StreamEvent)) (model.Response, error) {
+		calls++
+		if calls == 1 {
+			return model.Response{Content: []model.Block{{Type: "tool_use", ID: "empty", Name: "empty", Arguments: json.RawMessage{}}}, StopReason: "tool_use"}, nil
+		}
+		return model.Response{Content: []model.Block{{Type: "text", Text: "done"}}, StopReason: "end_turn"}, nil
+	})
+	registry := extension.NewRegistry()
+	if err := registry.RegisterTool(extension.Tool{Definition: model.ToolDefinition{Name: "empty"}, Source: "test", Execute: func(_ context.Context, args json.RawMessage, _ func(string)) (extension.ToolResult, error) {
+		if string(args) != `{}` {
+			t.Fatalf("arguments = %q", args)
+		}
+		return extension.ToolResult{Content: "ok"}, nil
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	a, err := New(Config{Provider: provider, Registry: registry, Model: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Prompt(context.Background(), "start", nil); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"sort"
 	"strconv"
@@ -493,6 +494,11 @@ func (p *provider) Stream(ctx context.Context, req model.Request, onEvent func(m
 		req.CacheRetention = "none"
 		req.CacheKey = ""
 	}
+	var cleaned, repaired int
+	req.Messages, cleaned, repaired = model.CleanAndRepairMessages(req.Messages, model.ToolCallInputErrorMessage)
+	if cleaned != 0 || repaired != 0 {
+		log.Printf("warning: anthropic: cleaned %d invalid tool-call argument value and repaired %d missing result before encoding request", cleaned, repaired)
+	}
 	body, err := json.Marshal(makeRequestForMode(req, p.oauthMode))
 	if err != nil {
 		return model.Response{}, fmt.Errorf("anthropic: encode request: %w", err)
@@ -673,6 +679,7 @@ func (p *provider) Stream(ctx context.Context, req model.Request, onEvent func(m
 		}
 		result.Content = append(result.Content, b.block)
 	}
+	model.NormalizeToolCallArguments(result.Content)
 	result.APIPricingEligible = p.apiPricingEligible
 	return result, nil
 }
