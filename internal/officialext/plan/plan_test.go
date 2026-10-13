@@ -46,6 +46,7 @@ func (*testHost) SwitchModel(context.Context, string, string) (string, int, erro
 func (*testHost) ListModels(context.Context, string, bool) ([]extension.ModelInfo, error) {
 	return nil, nil
 }
+func (*testHost) SessionID() string                                { return "" }
 func (*testHost) AppendSessionEntry(string, string, any) error     { return nil }
 func (*testHost) SessionEntries(string) ([]json.RawMessage, error) { return nil, nil }
 func (*testHost) EditorText(context.Context) (string, error)       { return "", nil }

@@ -43,6 +43,7 @@ func (h *host) ListModels(_ context.Context, p string, r bool) ([]extension.Mode
 	h.listProvider, h.refresh = p, r
 	return h.models, h.err
 }
+func (*host) SessionID() string                                { return "" }
 func (*host) AppendSessionEntry(string, string, any) error     { return nil }
 func (*host) SessionEntries(string) ([]json.RawMessage, error) { return nil, nil }
 func (*host) EditorText(context.Context) (string, error)       { return "", nil }

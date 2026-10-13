@@ -76,8 +76,11 @@ type Command struct {
 	Name                string
 	Description         string
 	AllowWhileStreaming bool
-	Execute             CommandHandler
-	Source              string
+	// AllowWhileStreamingArgs permits only selected argument forms while a
+	// model run is active. It is consulted when AllowWhileStreaming is false.
+	AllowWhileStreamingArgs func(args string) bool
+	Execute                 CommandHandler
+	Source                  string
 }
 
 // Host contains privileged operations available to extensions. Implementations may
@@ -111,6 +114,9 @@ type Host interface {
 	SwitchModel(ctx context.Context, provider, model string) (actualProvider string, contextWindow int, err error)
 	// ListModels returns available models for one provider or all providers.
 	ListModels(ctx context.Context, provider string, refresh bool) ([]ModelInfo, error)
+	// SessionID returns the active durable session ID, or empty when session
+	// persistence is disabled.
+	SessionID() string
 	// AppendSessionEntry durably appends extension-owned JSON data to the
 	// current session. kind is scoped to the calling extension by convention.
 	// When expectedSessionID is non-empty, the append fails if the active
@@ -482,13 +488,14 @@ func (r *Registry) RunHooks(ctx context.Context, name string, event map[string]a
 		event = map[string]any{}
 	}
 	for _, hook := range hooks {
+		stopped, _ := event["stop"].(bool)
+		reason, hadReason := event["stop_reason"]
 		result, err := hook.handler(ctx, event)
+		restoreStickyStop(event, stopped, reason, hadReason)
 		if err != nil {
 			return event, fmt.Errorf("%s hook from %s: %w", name, hook.source, err)
 		}
-		for key, value := range result {
-			event[key] = value
-		}
+		mergeHookResult(event, result)
 	}
 	return event, nil
 }
@@ -505,16 +512,39 @@ func (r *Registry) RunHooksBestEffort(ctx context.Context, name string, event ma
 	}
 	var hookErrors []error
 	for _, hook := range hooks {
+		stopped, _ := event["stop"].(bool)
+		reason, hadReason := event["stop_reason"]
 		result, err := hook.handler(ctx, event)
+		restoreStickyStop(event, stopped, reason, hadReason)
 		if err != nil {
 			hookErrors = append(hookErrors, fmt.Errorf("%s hook from %s: %w", name, hook.source, err))
 			continue
 		}
-		for key, value := range result {
-			event[key] = value
-		}
+		mergeHookResult(event, result)
 	}
 	return event, errors.Join(hookErrors...)
+}
+
+func restoreStickyStop(event map[string]any, stopped bool, reason any, hadReason bool) {
+	if !stopped {
+		return
+	}
+	event["stop"] = true
+	if hadReason {
+		event["stop_reason"] = reason
+	} else {
+		delete(event, "stop_reason")
+	}
+}
+
+func mergeHookResult(event, result map[string]any) {
+	stopped, _ := event["stop"].(bool)
+	for key, value := range result {
+		if stopped && (key == "stop" || key == "stop_reason") {
+			continue
+		}
+		event[key] = value
+	}
 }
 
 // RevealTools makes schemas visible without granting access. Removed or inactive

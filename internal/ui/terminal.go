@@ -163,6 +163,14 @@ func (t *Terminal) SwitchModel(context.Context, string, string) (string, int, er
 func (t *Terminal) ListModels(context.Context, string, bool) ([]extension.ModelInfo, error) {
 	return nil, errors.New("runtime model listing is unavailable in line mode")
 }
+func (t *Terminal) SessionID() string {
+	t.sessionMu.RLock()
+	defer t.sessionMu.RUnlock()
+	if t.session == nil {
+		return ""
+	}
+	return t.session.Header.ID
+}
 func (t *Terminal) AppendSessionEntry(expectedSessionID, kind string, data any) error {
 	t.sessionMu.RLock()
 	defer t.sessionMu.RUnlock()

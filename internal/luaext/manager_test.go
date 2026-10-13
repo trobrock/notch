@@ -51,6 +51,7 @@ func (h *testHost) SwitchModel(context.Context, string, string) (string, int, er
 func (h *testHost) ListModels(context.Context, string, bool) ([]extension.ModelInfo, error) {
 	return nil, nil
 }
+func (h *testHost) SessionID() string { return "" }
 func (h *testHost) AppendSessionEntry(sessionID, _ string, data any) error {
 	raw, _ := json.Marshal(data)
 	h.entries = append(h.entries, raw)

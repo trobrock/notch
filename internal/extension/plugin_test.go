@@ -62,6 +62,7 @@ func (h *testHost) SwitchModel(context.Context, string, string) (string, int, er
 func (h *testHost) ListModels(context.Context, string, bool) ([]ModelInfo, error) {
 	return nil, nil
 }
+func (h *testHost) SessionID() string { return "" }
 func (h *testHost) AppendSessionEntry(sessionID, _ string, data any) error {
 	h.appendSessionID = sessionID
 	raw, _ := json.Marshal(data)

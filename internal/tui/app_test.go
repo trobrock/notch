@@ -1442,3 +1442,88 @@ func TestFormatProviderUsageLabelsEstimatedCost(t *testing.T) {
 		t.Fatalf("provider usage = %q", got)
 	}
 }
+
+func TestStreamingCommandArgumentPolicy(t *testing.T) {
+	a := NewApp(AppConfig{})
+	a.state.activeModel = true
+	a.mu.Lock()
+	a.running = true
+	a.runDone = make(chan struct{})
+	a.mu.Unlock()
+	defer close(a.runDone)
+
+	executed := make(chan string, 1)
+	registry := extension.NewRegistry()
+	if err := registry.RegisterCommand(extension.Command{
+		Name:                    "goal",
+		AllowWhileStreamingArgs: func(args string) bool { return args == "status" },
+		Execute: func(_ context.Context, args string) (string, error) {
+			executed <- args
+			return "", nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	a.registry = registry
+
+	a.state.editor.SetText("/goal start work")
+	if !a.queueComposerMessage(context.Background(), "steer") {
+		t.Fatal("disallowed command was not handled")
+	}
+	select {
+	case got := <-executed:
+		t.Fatalf("disallowed command executed with %q", got)
+	default:
+	}
+
+	a.state.editor.SetText("/goal status")
+	if !a.queueComposerMessage(context.Background(), "steer") {
+		t.Fatal("allowed command was not handled")
+	}
+	if got := <-executed; got != "status" {
+		t.Fatalf("command args = %q", got)
+	}
+	select {
+	case event := <-a.events:
+		a.applyEvent(context.Background(), event)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for command")
+	}
+}
+
+func TestCommandFollowUpStartsAfterCommandFinishes(t *testing.T) {
+	a := NewApp(AppConfig{})
+	a.Configure(newAppTestAgent(t, nil), extension.NewRegistry(), nil)
+	a.mu.Lock()
+	a.running = true
+	a.runDone = make(chan struct{})
+	a.mu.Unlock()
+	defer close(a.runDone)
+
+	commandCanceled := 0
+	a.state.activeCommand = true
+	a.state.cancel = func() { commandCanceled++ }
+	if !a.applyEvent(context.Background(), appEvent{followUp: "start goal work"}) {
+		t.Fatal("follow-up event made no change")
+	}
+	if a.state.activeModel || len(a.state.pendingFollowUps) != 1 {
+		t.Fatalf("follow-up started before command completion: active=%v pending=%#v", a.state.activeModel, a.state.pendingFollowUps)
+	}
+
+	a.applyEvent(context.Background(), appEvent{command: &commandResult{name: "goal", text: "started"}})
+	if commandCanceled != 1 || !a.state.activeModel || a.state.activeCommand || len(a.state.pendingFollowUps) != 0 {
+		t.Fatalf("completion state: canceled=%d activeModel=%v activeCommand=%v pending=%#v", commandCanceled, a.state.activeModel, a.state.activeCommand, a.state.pendingFollowUps)
+	}
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case event := <-a.events:
+			a.applyEvent(context.Background(), event)
+			if event.promptDone != nil {
+				return
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for prompt completion")
+		}
+	}
+}

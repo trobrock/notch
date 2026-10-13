@@ -181,7 +181,11 @@ Runs before every model turn.
 {"system_prompt":"...","model":"model-id","turn":0}
 ```
 
-Returning `system_prompt` as a string replaces the prompt for that turn.
+Returning `system_prompt` as a string replaces the prompt for that turn. Returning `stop: true` ends the run before another provider request; optional `stop_reason` is reported by `run_end` and frontends. Once one hook returns `stop: true`, later hooks cannot clear it or replace its reason. This is intended for bounded extension workflows, not ordinary answer filtering.
+
+### `tool_denied`
+
+Runs best-effort when a `tool_call` hook denies a model tool. It receives `name`, `id`, and `reason`. Return fields are ignored, and hook errors do not replace the denied tool result.
 
 ### `tool_call`
 
@@ -259,7 +263,11 @@ Runs when a model response has no tool calls:
 {"stop_reason":"end_turn","turn":0}
 ```
 
-Return a non-empty string field `follow_up` to append it as a synthetic user message and continue the loop.
+Return a non-empty string field `follow_up` to append it as a synthetic user message and continue the loop. If a human steering or follow-up message is already queued, that message is appended first and the synthetic value is discarded; a stateful hook may offer it again after the human turn.
+
+### `run_end`
+
+Runs once when a prompt settles, errors, is canceled, or reaches a run limit. It receives `stop_reason`, `num_turns`, `wall_ms`, `final_assistant_text`, `total_cost_usd`, `cost_known`, and `pricing_error`. Stop reasons include `end_turn`, `canceled`, `max_turns`, `max_cost`, and `error`. The hook gets a fresh context with a ten-second deadline even after cancellation. It is best-effort: return fields and hook errors do not change the completed run.
 
 Other hook names may be registered, but they do nothing unless core code or another registry caller emits them. Lifecycle hooks describe the Notch process's initial session; fullscreen `/new` changes the conversation session without restarting the process lifecycle.
 

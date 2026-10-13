@@ -79,6 +79,7 @@ The fullscreen built-ins are:
 - `/thinking` reports the current level; `/thinking LEVEL` changes it;
 - `/theme` lists built-in and custom themes; `/theme NAME` changes the current process only;
 - `/compact [instructions]` summarizes older context while retaining recent complete turns;
+- `/goal [start|status|pause|resume|clear]` runs an opt-in bounded single-agent goal; see [goal mode](goals.md);
 - `/new` starts a clean conversation and clears the transcript and submitted-input history;
 - `/resume` opens a saved-session selector showing modification time, original directory, model, preview, and ID suffix;
 - `/clear` clears only the displayed transcript;

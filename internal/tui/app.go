@@ -766,26 +766,19 @@ func (a *App) applyEvent(runCtx context.Context, event appEvent) bool {
 			a.state.pendingHandoffs = a.state.pendingHandoffs[1:]
 			changed = a.applyHandoff(runCtx, handoff) || changed
 		}
-		if !a.state.activeModel && len(a.state.pendingFollowUps) != 0 {
-			message := a.state.pendingFollowUps[0]
-			a.state.pendingFollowUps = a.state.pendingFollowUps[1:]
-			for i, pending := range a.state.layout.PendingMessages {
-				if pending.ID == "" && pending.Mode == "follow_up" && pending.Text == message {
-					a.state.layout.PendingMessages = append(a.state.layout.PendingMessages[:i], a.state.layout.PendingMessages[i+1:]...)
-					break
-				}
-			}
-			changed = a.submit(runCtx, message) || changed
-		}
+		changed = a.dispatchPendingFollowUp(runCtx) || changed
 	}
 	if event.command != nil {
 		changed = a.finishCommand(*event.command) || changed
+		changed = a.dispatchPendingFollowUp(runCtx) || changed
 	}
 	if event.resumeDone != nil {
 		changed = a.finishResume(*event.resumeDone) || changed
+		changed = a.dispatchPendingFollowUp(runCtx) || changed
 	}
 	if event.modelDone != nil {
 		changed = a.finishModelSelection(*event.modelDone) || changed
+		changed = a.dispatchPendingFollowUp(runCtx) || changed
 	}
 	if event.notice != nil {
 		a.addNotice(event.notice.message, event.notice.level)
@@ -830,7 +823,10 @@ func (a *App) applyEvent(runCtx context.Context, event appEvent) bool {
 		}
 	}
 	if event.followUp != "" {
-		if a.state.activeModel {
+		if a.state.activeCommand && !a.state.activeModel {
+			a.state.pendingFollowUps = append(a.state.pendingFollowUps, event.followUp)
+			a.state.layout.PendingMessages = append(a.state.layout.PendingMessages, PendingMessage{Mode: "follow_up", Text: event.followUp})
+		} else if a.state.activeModel {
 			if queued, err := a.runner.FollowUp(event.followUp); err == nil {
 				if a.state.queuedText == nil {
 					a.state.queuedText = make(map[string]string)
@@ -879,6 +875,21 @@ func (a *App) applyEvent(runCtx context.Context, event appEvent) bool {
 		a.preserveTranscriptAnchor(oldLines, oldViewport)
 	}
 	return changed
+}
+
+func (a *App) dispatchPendingFollowUp(runCtx context.Context) bool {
+	if a.state.activeModel || a.state.activeCommand || len(a.state.pendingFollowUps) == 0 {
+		return false
+	}
+	message := a.state.pendingFollowUps[0]
+	a.state.pendingFollowUps = a.state.pendingFollowUps[1:]
+	for i, pending := range a.state.layout.PendingMessages {
+		if pending.ID == "" && pending.Mode == "follow_up" && pending.Text == message {
+			a.state.layout.PendingMessages = append(a.state.layout.PendingMessages[:i], a.state.layout.PendingMessages[i+1:]...)
+			break
+		}
+	}
+	return a.submit(runCtx, message)
 }
 
 func (a *App) applyHandoff(runCtx context.Context, handoff handoffEvent) bool {
@@ -1200,7 +1211,8 @@ func (a *App) queueComposerMessage(runCtx context.Context, mode string) bool {
 			return true
 		}
 		if command, ok := a.extensionCommand(name); ok {
-			if !command.AllowWhileStreaming {
+			allowed := command.AllowWhileStreaming || (command.AllowWhileStreamingArgs != nil && command.AllowWhileStreamingArgs(args))
+			if !allowed {
 				a.addNotice("cannot queue extension command while streaming: /"+name, "error")
 				return true
 			}
@@ -2783,6 +2795,15 @@ func (a *App) ListModels(ctx context.Context, provider string, refresh bool) ([]
 		}
 	}
 	return out, nil
+}
+
+func (a *App) SessionID() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.currentSession == nil {
+		return ""
+	}
+	return a.currentSession.Header.ID
 }
 
 func (a *App) AppendSessionEntry(expectedSessionID, kind string, data any) error {
