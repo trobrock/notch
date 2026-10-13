@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
@@ -378,6 +379,11 @@ func (p *provider) Stream(ctx context.Context, req model.Request, onEvent func(m
 	if !validReasoningLevel(req.ReasoningLevel) {
 		return model.Response{}, fmt.Errorf("openrouter: invalid reasoning level %q", req.ReasoningLevel)
 	}
+	var cleaned, repaired int
+	req.Messages, cleaned, repaired = model.CleanAndRepairMessages(req.Messages, model.ToolCallInputErrorMessage)
+	if cleaned != 0 || repaired != 0 {
+		log.Printf("warning: openrouter: cleaned %d invalid tool-call argument value and repaired %d missing result before encoding request", cleaned, repaired)
+	}
 	body, err := json.Marshal(makeRequest(req))
 	if err != nil {
 		return model.Response{}, fmt.Errorf("openrouter: encode request: %w", err)
@@ -530,6 +536,7 @@ func (p *provider) Stream(ctx context.Context, req model.Request, onEvent func(m
 	if result.StopReason == "" && len(calls) != 0 {
 		result.StopReason = "tool_use"
 	}
+	model.NormalizeToolCallArguments(result.Content)
 	return result, nil
 }
 

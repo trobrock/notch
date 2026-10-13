@@ -331,3 +331,18 @@ func TestMakeRequestConfiguresSessionAndExplicitCaching(t *testing.T) {
 		t.Fatalf("unsupported retention = %q", unsupported.PromptCacheRetention)
 	}
 }
+
+func TestStreamMarksCutOffToolArgumentsInvalid(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"bad\",\"function\":{\"name\":\"write\",\"arguments\":\"{\\\\\\\"path\\\\\\\":\\\\\\\"unfinished\"}}]},\"finish_reason\":\"length\"}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer server.Close()
+	response, err := New(Config{BaseURL: server.URL, HTTPClient: server.Client()}).Stream(context.Background(), model.Request{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StopReason != "max_tokens" || len(response.Content) != 1 || string(response.Content[0].Arguments) != `{}` || !response.Content[0].IsError {
+		t.Fatalf("response = %#v", response)
+	}
+}

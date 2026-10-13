@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"os"
 	"path/filepath"
@@ -465,6 +466,11 @@ func latest(dir, cwd string) (*Session, error) {
 
 // AppendMessage appends a model message and makes it durable.
 func (s *Session) AppendMessage(message model.Message) error {
+	cleaned, invalid := model.CleanMessages([]model.Message{message})
+	message = cleaned[0]
+	if invalid != 0 {
+		log.Printf("warning: session: cleaned %d invalid tool-call argument value before saving message", invalid)
+	}
 	now := time.Now().UTC()
 	entry := Entry{Type: "message", Timestamp: now, Message: &message}
 	line, err := marshalLine(entry)
@@ -479,7 +485,10 @@ func (s *Session) AppendMessage(message model.Message) error {
 // AppendCompaction durably appends a compaction record, then replaces the
 // in-memory conversation context with an independent copy of messages.
 func (s *Session) AppendCompaction(summary string, messages []model.Message, auto bool) error {
-	snapshot := cloneMessages(messages)
+	snapshot, invalid := model.CleanMessages(messages)
+	if invalid != 0 {
+		log.Printf("warning: session: cleaned %d invalid tool-call argument value before saving compaction", invalid)
+	}
 	entry := CompactionEntry{
 		Type: "compaction", Timestamp: time.Now().UTC(), Summary: summary,
 		Messages: snapshot, Auto: auto,
@@ -779,7 +788,11 @@ func (s *Session) decode(r io.Reader) error {
 							}
 						}
 					} else {
-						s.Messages = append(s.Messages, *entry.Message)
+						cleaned, invalid := model.CleanMessages([]model.Message{*entry.Message})
+						if invalid != 0 {
+							log.Printf("warning: session: cleaned %d invalid tool-call argument value while loading line %d", invalid, lineNumber)
+						}
+						s.Messages = append(s.Messages, cleaned[0])
 					}
 				case "compaction":
 					var entry CompactionEntry
@@ -793,7 +806,11 @@ func (s *Session) decode(r io.Reader) error {
 							s.preview = ""
 						}
 					} else {
-						s.Messages = cloneMessages(entry.Messages)
+						cleaned, invalid := model.CleanMessages(entry.Messages)
+						if invalid != 0 {
+							log.Printf("warning: session: cleaned %d invalid tool-call argument value while loading compaction on line %d", invalid, lineNumber)
+						}
+						s.Messages = cleaned
 					}
 				case "reset":
 					var entry ResetEntry
@@ -845,6 +862,13 @@ func (s *Session) decode(r io.Reader) error {
 	}
 	if lineNumber == 0 {
 		return errors.New("missing metadata header: file is empty")
+	}
+	if !s.lightweight {
+		var repaired int
+		s.Messages, repaired = model.RepairToolCallResults(s.Messages, model.ToolCallInputErrorMessage)
+		if repaired != 0 {
+			log.Printf("warning: session: repaired %d missing result for invalid tool calls while loading", repaired)
+		}
 	}
 	return nil
 }

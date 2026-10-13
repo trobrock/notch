@@ -458,3 +458,25 @@ func TestStreamRefreshesExpiredOAuthTokenAndRetriesOnce(t *testing.T) {
 		t.Fatalf("authorization headers = %#v", authorizations)
 	}
 }
+
+func TestStreamMarksCutOffToolArgumentsInvalid(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, data := range []string{
+			`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"bad","name":"write","input":{}}}`,
+			`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"unfinished"}}`,
+			`{"type":"message_delta","delta":{"stop_reason":"max_tokens"}}`,
+			`{"type":"message_stop"}`,
+		} {
+			fmt.Fprintf(w, "data: %s\n\n", data)
+		}
+	}))
+	defer server.Close()
+	response, err := New(Config{BaseURL: server.URL, HTTPClient: server.Client()}).Stream(context.Background(), model.Request{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StopReason != "max_tokens" || len(response.Content) != 1 || string(response.Content[0].Arguments) != `{}` || !response.Content[0].IsError {
+		t.Fatalf("response = %#v", response)
+	}
+}
