@@ -364,9 +364,7 @@ func (r *processRunner) Run(ctx context.Context, input Input, update func(string
 	}
 	wallMS := time.Since(start).Milliseconds()
 	timedOut := errors.Is(runCtx.Err(), context.DeadlineExceeded)
-	if errors.Is(runCtx.Err(), context.Canceled) && errors.Is(ctx.Err(), context.Canceled) {
-		return Result{}, ctx.Err()
-	}
+	canceled := errors.Is(runCtx.Err(), context.Canceled) && errors.Is(ctx.Err(), context.Canceled)
 	output := parsed.output
 	stderrText := trimOutput(stderr.String(), input.MaxOutputChars)
 	if output == "" {
@@ -397,12 +395,16 @@ func (r *processRunner) Run(ctx context.Context, input Input, update func(string
 		exitCode = 124
 		output = fmt.Sprintf("Subagent timed out after %d seconds (%s).\n\n%s", input.TimeoutSeconds, formatChildActivity(parsed.progress()), output)
 	}
-	return Result{Output: output, Stderr: stderrText, ExitCode: exitCode, TimedOut: timedOut,
+	result := Result{Output: output, Stderr: stderrText, ExitCode: exitCode, TimedOut: timedOut,
 		Usage: Usage{
 			Turns: parsed.turns, ToolCalls: parsed.toolCalls, Input: parsed.input, Output: parsed.outputTokens,
 			CacheRead: parsed.cacheRead, CacheWrite: parsed.cacheWrite, Reasoning: parsed.reasoning,
 			CostUSD: parsed.costUSD(), WallMS: wallMS, Model: input.Model,
-		}}, nil
+		}}
+	if canceled {
+		return result, ctx.Err()
+	}
+	return result, nil
 }
 
 func delegatedUsage(usage Usage) delegation.Usage {

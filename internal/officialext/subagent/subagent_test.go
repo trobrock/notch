@@ -3,6 +3,7 @@ package subagent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"reflect"
 	"runtime"
@@ -217,6 +218,34 @@ printf '{"type":"turn_end","usage":{"input_tokens":1,"output_tokens":2},"message
 	}
 	if len(updates) == 0 || !strings.Contains(updates[len(updates)-1], "elapsed") {
 		t.Fatalf("heartbeat updates = %#v", updates)
+	}
+}
+
+func TestProcessRunnerCancellationReturnsParsedUsage(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script test")
+	}
+	path := t.TempDir() + "/cancel-subagent.sh"
+	script := `#!/bin/sh
+printf '{"type":"turn_end","usage":{"input_tokens":7,"output_tokens":3},"message":{"role":"assistant","content":[{"type":"text","text":"partial"}]}}\n'
+sleep 10
+`
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runner := &processRunner{executable: path, defaultCWD: t.TempDir()}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result, err := runner.Run(ctx, Input{Prompt: "go", Tools: defaultTools, Thinking: DefaultThinking, TimeoutSeconds: 10, MaxOutputChars: 2000}, func(update string) {
+		if strings.Contains(update, "1 turn") {
+			cancel()
+		}
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v", err)
+	}
+	if result.Usage.Turns != 1 || result.Usage.Input != 7 || result.Usage.Output != 3 || result.Output != "partial" {
+		t.Fatalf("result = %#v", result)
 	}
 }
 
