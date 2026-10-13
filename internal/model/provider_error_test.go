@@ -20,6 +20,7 @@ func TestProviderErrorRetryClassification(t *testing.T) {
 	}{
 		{&ProviderError{StatusCode: 429}, true},
 		{&ProviderError{StatusCode: 503}, true},
+		{&ProviderError{StatusCode: 507}, true},
 		{&ProviderError{StatusCode: 520}, true},
 		{&ProviderError{StatusCode: 400}, false},
 		{&ProviderError{Code: "overloaded_error"}, true},

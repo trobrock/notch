@@ -30,6 +30,7 @@ func (e *ProviderError) Retryable() bool {
 	case http.StatusRequestTimeout, http.StatusConflict, http.StatusTooEarly,
 		http.StatusTooManyRequests, http.StatusInternalServerError,
 		http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout,
+		http.StatusInsufficientStorage,
 		520: // Cloudflare: web server returned an unknown error.
 		return true
 	}
