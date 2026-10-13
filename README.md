@@ -23,7 +23,7 @@ Notch is an MVP, not a drop-in reimplementation of [Pi](https://github.com/badlo
 - Decentralized extension packages installable and upgradeable from GitHub, Git, or local directories
 - Native MCP client support over stdio and Streamable HTTP
 
-See the [fullscreen TUI guide](docs/tui.md), [RPC mode](docs/rpc.md), [themes](docs/themes.md), [compaction](docs/compaction.md), [providers and authentication](docs/providers.md), [releases and upgrades](docs/releases.md), [architecture](docs/architecture.md), [extension API](docs/extensions.md), [extension packages](docs/extension-packages.md), [migration from Pi](docs/migration-from-pi.md), and the [migration plan for the reviewed Pi extensions](docs/current-pi-extension-plan.md).
+See the [fullscreen TUI guide](docs/tui.md), [RPC mode](docs/rpc.md), [themes](docs/themes.md), [compaction](docs/compaction.md), [providers and authentication](docs/providers.md), [releases and upgrades](docs/releases.md), [architecture](docs/architecture.md), [extension API](docs/extensions.md), [local intercom plugin](docs/intercom.md), [extension packages](docs/extension-packages.md), [migration from Pi](docs/migration-from-pi.md), and the [migration plan for the reviewed Pi extensions](docs/current-pi-extension-plan.md).
 
 ## Status and deliberate gaps
 

@@ -675,7 +675,7 @@ func run(args []string) error {
 		executable = "notch"
 	}
 	lifecycleEvent := map[string]any{
-		"cwd": cwd, "provider": normalizeProvider(cfg.Provider), "model": cfg.Model,
+		"cwd": cwd, "workspace_root": workspaceRoot, "provider": normalizeProvider(cfg.Provider), "model": cfg.Model,
 		"explore_model": cfg.ExploreModel, "executable": executable,
 		"thinking_level": cfg.ThinkingLevel, "mode": runMode(rpcMode, useFullscreen, opts),
 		"resumed": opts.continueSession || opts.resumeSpecified,
