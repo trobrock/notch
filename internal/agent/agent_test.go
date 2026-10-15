@@ -730,7 +730,11 @@ func (p *queueTestProvider) Stream(ctx context.Context, request model.Request, _
 func TestThinkingLevelForwardedAndSetDoesNotWaitForPrompt(t *testing.T) {
 	blocked := make(chan struct{})
 	provider := &recordingProvider{block: blocked}
-	a, err := New(Config{Provider: provider, Registry: extension.NewRegistry(), Model: "fake", ThinkingLevel: "low"})
+	thinkingChanged := make(chan string, 1)
+	a, err := New(Config{
+		Provider: provider, Registry: extension.NewRegistry(), Model: "fake", ThinkingLevel: "low",
+		OnThinkingChange: func(level string) { thinkingChanged <- level },
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -757,6 +761,14 @@ func TestThinkingLevelForwardedAndSetDoesNotWaitForPrompt(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("SetThinkingLevel waited for active Prompt")
+	}
+	select {
+	case level := <-thinkingChanged:
+		if level != "xhigh" {
+			t.Fatalf("thinking change = %q", level)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("thinking change callback was not called")
 	}
 	close(blocked)
 	if err := <-done; err != nil {

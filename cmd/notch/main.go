@@ -24,6 +24,7 @@ import (
 	"github.com/trobrock/notch/internal/credentials"
 	"github.com/trobrock/notch/internal/extension"
 	"github.com/trobrock/notch/internal/extpkg"
+	"github.com/trobrock/notch/internal/herdr"
 	"github.com/trobrock/notch/internal/luaext"
 	"github.com/trobrock/notch/internal/mcp"
 	"github.com/trobrock/notch/internal/mcpoauth"
@@ -443,6 +444,8 @@ func run(args []string) error {
 		}
 	}
 	useFullscreen, _ := selectRunMode(opts, interactiveTerminal)
+	herdrReporter := herdr.NewFromEnvironment()
+	defer herdrReporter.Close()
 	sessionDir := cfg.SessionDir
 	if opts.noSession {
 		sessionDir = ""
@@ -470,10 +473,12 @@ func run(args []string) error {
 			terminal.Notify(warning.Error(), "warning")
 		}
 	}
+	extensionHost = herdr.WrapHost(extensionHost, herdrReporter)
 	for _, notice := range startupNotices {
 		extensionHost.Notify(notice.message, notice.level)
 	}
 	registry := extension.NewRegistry()
+	herdrReporter.Register(registry)
 	if !opts.noTools {
 		if !opts.noBuiltinTools {
 			if err := tools.RegisterBuiltins(registry, cwd); err != nil {
@@ -658,6 +663,10 @@ func run(args []string) error {
 	if contextWindow <= 0 {
 		contextWindow = contextWindowFor(cfg.Provider, cfg.Model)
 	}
+	var onThinkingChange func(string)
+	if herdrReporter != nil {
+		onThinkingChange = herdrReporter.SetThinking
+	}
 	runner, err := agent.New(agent.Config{
 		Pricing:  prices,
 		Provider: provider, ProviderName: normalizeProvider(cfg.Provider), Registry: registry, Session: store, Model: cfg.Model,
@@ -665,7 +674,7 @@ func run(args []string) error {
 		Compaction: agent.CompactionConfig{Enabled: compactionEnabled, ContextWindow: contextWindow, ReserveTokens: reserveTokens, KeepRecentTokens: keepRecentTokens},
 		MaxTurns:   opts.maxTurns, MaxCostUSD: opts.maxCostUSD,
 		SessionInfo: benchmarkSessionInfo(cfg, cwd, workspaceRoot, workspaceTrusted && includeProject, registry, catalog),
-		IdleTimeout: opts.idleTimeout,
+		IdleTimeout: opts.idleTimeout, OnThinkingChange: onThinkingChange,
 	})
 	if err != nil {
 		return err
@@ -684,6 +693,11 @@ func run(args []string) error {
 		lifecycleEvent["session_id"] = store.Header.ID
 		lifecycleEvent["session_file"] = store.Path()
 	}
+	sessionID, _ := lifecycleEvent["session_id"].(string)
+	herdrReporter.Start(herdr.Session{
+		ID: sessionID, Provider: normalizeProvider(cfg.Provider), Model: cfg.Model,
+		Thinking: cfg.ThinkingLevel, Mode: runMode(rpcMode, useFullscreen, opts),
+	})
 	shutdownLifecycle, err := beginSessionLifecycle(ctx, registry, lifecycleEvent)
 	if err != nil {
 		return err
@@ -739,6 +753,7 @@ func run(args []string) error {
 					return 0, switchErr
 				}
 				cfg.Provider, cfg.Model = normalizeProvider(providerName), modelName
+				herdrReporter.SetModel(cfg.Provider, cfg.Model)
 				return window, nil
 			},
 		)
@@ -927,7 +942,7 @@ func runMode(rpcMode, fullscreen bool, opts options) string {
 		return "tui"
 	case opts.jsonOutput:
 		return "json"
-	case opts.prompt != "":
+	case opts.printMode:
 		return "print"
 	default:
 		return "line"

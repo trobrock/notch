@@ -383,6 +383,12 @@ Unless `--no-session` is used, every new invocation creates a mode-0600 JSONL fi
 
 `--json` emits one JSON object per line. Current event types include `turn_start`, `text_delta`, `thinking_delta`, `turn_end` (with provider token usage), `provider_retry` (attempt, maximum attempts, delay, and the transient error), `tool_start`, `tool_update`, `tool_end`, `delegation_usage` (separate child input/output tokens, calls, turns, and elapsed `wall_ms`), `queue_update`, `queue_delivered`, compaction events, and `error`. For parallel `explore_codebase` calls, delegated token counts are summed while `wall_ms` is batch elapsed time rather than the sum of child durations. This lets evaluations compare direct and delegated runs without mixing provider and subagent tokens. The `--json` stream is a one-way event interface, not the on-disk session format. Use `--mode rpc` for bidirectional state, prompt, queue, and abort commands.
 
+## Herdr
+
+Notch automatically becomes a first-class [Herdr](https://herdr.dev/docs/) agent when it runs in a Herdr pane. It reports idle, working, and blocked states without delaying agent work, publishes a `notch --resume` command for durable sessions, updates that command after session changes, and releases the pane on exit. No Notch plugin or Herdr integration install is required. Runs outside Herdr are unchanged.
+
+To let Notch create panes or coordinate other agents, install [Herdr's agent skill](https://herdr.dev/docs/agent-skill/). Notch discovers shared skills under `~/.agents/skills`.
+
 ## Extensions
 
 Place `.lua` files or executable-plugin directories below either:

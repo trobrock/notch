@@ -128,23 +128,24 @@ type RetryConfig struct {
 }
 
 type Config struct {
-	Pricing        *pricing.Service
-	Provider       model.Provider
-	ProviderName   string
-	Registry       *extension.Registry
-	Session        *session.Session
-	Model          string
-	ExploreModel   string
-	SystemPrompt   string
-	MaxTokens      int
-	ThinkingLevel  string
-	CacheRetention string
-	Compaction     CompactionConfig
-	Retry          RetryConfig
-	MaxTurns       int
-	MaxCostUSD     float64
-	SessionInfo    SessionInfo
-	IdleTimeout    time.Duration
+	Pricing          *pricing.Service
+	Provider         model.Provider
+	ProviderName     string
+	Registry         *extension.Registry
+	Session          *session.Session
+	Model            string
+	ExploreModel     string
+	SystemPrompt     string
+	MaxTokens        int
+	ThinkingLevel    string
+	CacheRetention   string
+	Compaction       CompactionConfig
+	Retry            RetryConfig
+	MaxTurns         int
+	MaxCostUSD       float64
+	SessionInfo      SessionInfo
+	IdleTimeout      time.Duration
+	OnThinkingChange func(string)
 }
 
 type providerSwitch struct {
@@ -155,23 +156,24 @@ type providerSwitch struct {
 }
 
 type Agent struct {
-	pricing        *pricing.Service
-	provider       model.Provider
-	providerName   string
-	registry       *extension.Registry
-	session        *session.Session
-	model          string
-	exploreModel   string
-	system         string
-	maxTokens      int
-	cacheRetention string
-	cacheKey       string
-	compaction     CompactionConfig
-	retry          RetryConfig
-	maxTurns       int
-	maxCostUSD     float64
-	sessionInfo    SessionInfo
-	idleTimeout    time.Duration
+	pricing          *pricing.Service
+	provider         model.Provider
+	providerName     string
+	registry         *extension.Registry
+	session          *session.Session
+	model            string
+	exploreModel     string
+	system           string
+	maxTokens        int
+	cacheRetention   string
+	cacheKey         string
+	compaction       CompactionConfig
+	retry            RetryConfig
+	maxTurns         int
+	maxCostUSD       float64
+	sessionInfo      SessionInfo
+	idleTimeout      time.Duration
+	onThinkingChange func(string)
 
 	// mu serializes operations which mutate conversation or session state.
 	mu                  sync.Mutex
@@ -270,7 +272,7 @@ func New(cfg Config) (*Agent, error) {
 		model: cfg.Model, exploreModel: strings.TrimSpace(cfg.ExploreModel), system: cfg.SystemPrompt, maxTokens: cfg.MaxTokens,
 		thinkingLevel: cfg.ThinkingLevel, cacheRetention: cfg.CacheRetention, cacheKey: cacheKey,
 		compaction: cfg.Compaction, retry: cfg.Retry, maxTurns: cfg.MaxTurns, maxCostUSD: cfg.MaxCostUSD,
-		sessionInfo: cfg.SessionInfo, idleTimeout: cfg.IdleTimeout,
+		sessionInfo: cfg.SessionInfo, idleTimeout: cfg.IdleTimeout, onThinkingChange: cfg.OnThinkingChange,
 	}
 	if cfg.Session != nil {
 		a.messages = cloneMessages(cfg.Session.Messages)
@@ -605,7 +607,8 @@ func (a *Agent) promptWithStart(ctx context.Context, text string, emit func(Even
 		}
 		system := systemPromptForModel(a.system, a.providerName, a.model)
 		before, err := a.registry.RunHooks(ctx, "before_agent_start", map[string]any{
-			"system_prompt": system, "model": a.model, "turn": turn,
+			"system_prompt": system, "provider": a.providerName, "model": a.model,
+			"thinking_level": a.ThinkingLevel(), "turn": turn,
 		})
 		if err != nil {
 			return err

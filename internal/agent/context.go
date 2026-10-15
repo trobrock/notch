@@ -72,6 +72,9 @@ func (a *Agent) SetThinkingLevel(level string) error {
 	a.settingsMu.Lock()
 	a.thinkingLevel = level
 	a.settingsMu.Unlock()
+	if a.onThinkingChange != nil {
+		a.onThinkingChange(level)
+	}
 	return nil
 }
 
