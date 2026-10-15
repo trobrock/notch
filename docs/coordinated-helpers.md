@@ -20,6 +20,14 @@ Do not use a team for a small lookup, tightly coupled edits, a task that needs f
 
 The lead should compare approaches with similar total limits. Four helpers do not each get the full one-agent budget for free.
 
+## Specialist roles and model routing
+
+A task may set `role` to `designer`, `implementer`, `qa`, or `reviewer`. The role adds a focused contract to the helper prompt; it does not grant tools or authority. An implementer must be a `change` helper, and a reviewer must be a read-only `review` helper.
+
+Each task can override `model`, `thinking`, `timeout_seconds`, `max_output_chars`, `max_turns`, and `max_cost_usd`. Top-level values remain batch defaults. This lets the lead keep a strong parent model for coordination and use lower-cost models for bounded implementation or QA. An omitted model inherits the parent provider and current runtime model; an unqualified ID keeps the parent provider. Provider-qualified IDs use `provider/model`, including `openrouter/organization/model` for OpenRouter model IDs that contain a slash. Use only models available on the current provider unless the user explicitly requested another provider. Escalate a helper only when its evidence shows the cheaper attempt is blocked or unreliable.
+
+For user-facing work, use a strong designer before implementation and again against the integrated UI. Use a separate reviewer after integration. The built-in `software-team` skill contains the full recommended sequence and completion contract.
+
 ## Safety model
 
 `coordinate_helpers` accepts one to four scoped tasks. Initial helpers run in parallel and do not see each other's results. The lead receives concise summaries, acceptance-check evidence, artifact references, and separate delegated usage. The lead must inspect important claims before synthesis.
@@ -44,7 +52,7 @@ The prompt is handled by the normal event-driven input path. There is no polling
 
 ## Budgets and cost
 
-Each helper has a timeout, output limit, and one-question limit. At most four initial helpers run. A clarification continuation counts as another delegated call.
+Each helper has a per-call timeout and output limit, a cumulative optional model-turn and estimated-cost limit across its initial call and one clarification continuation, and a one-question limit. At most four initial helpers run. A clarification continuation counts as another delegated call and receives only the remaining turn/cost budget. Per-task limits override batch defaults and are passed to the isolated child process as `--max-turns` and `--max-cost-usd`.
 
 Child turns, tokens, calls, elapsed time, and known cost are returned in `delegated_usage`. The normal agent loop adds these values once to the run total and stores them separately in the append-only session usage record. This means `/goal`, `--max-cost-usd`, the JSON event stream, and the footer see helper use without mixing it into provider tokens or counting it twice. Parallel elapsed time remains wall-clock batch time at the tool level; token and cost totals are summed. If any child cost is unknown, aggregate cost stays unknown. A cost-limited run then stops instead of treating unknown cost as zero.
 

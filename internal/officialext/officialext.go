@@ -27,6 +27,12 @@ func Register(registry *extension.Registry, host extension.Host) error {
 // RegisterWithSettingSources registers official extensions while propagating
 // configuration isolation to child Notch processes.
 func RegisterWithSettingSources(registry *extension.Registry, host extension.Host, settingSources string) error {
+	return RegisterWithRuntime(registry, host, settingSources, "", "")
+}
+
+// RegisterWithRuntime also supplies the active parent model used by delegated
+// helpers when they do not request an explicit model.
+func RegisterWithRuntime(registry *extension.Registry, host extension.Host, settingSources, provider, modelName string) error {
 	if registry == nil || host == nil {
 		return errors.New("register official extensions: registry and host are required")
 	}
@@ -38,8 +44,8 @@ func RegisterWithSettingSources(registry *extension.Registry, host extension.Hos
 		func() error { return modelswitch.Register(registry, host) },
 		func() error { return plan.Register(registry, host) },
 		func() error { return rtk.Register(registry, host) },
-		func() error { return subagent.RegisterWithSettingSources(registry, host, settingSources) },
-		func() error { return team.RegisterWithSettingSources(registry, host, settingSources) },
+		func() error { return subagent.RegisterWithRuntime(registry, host, settingSources, provider, modelName) },
+		func() error { return team.RegisterWithRuntime(registry, host, settingSources, provider, modelName) },
 		func() error { return tasklist.Register(registry, host) },
 	}
 	for _, register := range registrations {

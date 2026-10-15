@@ -359,6 +359,13 @@ type reportingHost struct {
 	reporter *Reporter
 }
 
+func (h *reportingHost) CurrentModel() (string, string) {
+	if current, ok := h.Host.(interface{ CurrentModel() (string, string) }); ok {
+		return current.CurrentModel()
+	}
+	return "", ""
+}
+
 func (h *reportingHost) Input(ctx context.Context, prompt, placeholder string) (string, error) {
 	h.reporter.beginBlock(prompt)
 	defer h.reporter.endBlock()

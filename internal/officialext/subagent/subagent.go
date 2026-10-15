@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -39,15 +40,17 @@ const (
 var readOnlyTools = map[string]bool{"read": true, "grep": true, "find": true, "ls": true}
 
 type Input struct {
-	Prompt          string `json:"prompt"`
-	Model           string `json:"model,omitempty"`
-	CWD             string `json:"cwd,omitempty"`
-	Tools           string `json:"tools,omitempty"`
-	AllowWriteTools bool   `json:"allowWriteTools,omitempty"`
-	TimeoutSeconds  int    `json:"timeoutSeconds,omitempty"`
-	MaxOutputChars  int    `json:"maxOutputChars,omitempty"`
-	SystemPrompt    string `json:"systemPrompt,omitempty"`
-	Thinking        string `json:"thinking,omitempty"`
+	Prompt          string  `json:"prompt"`
+	Model           string  `json:"model,omitempty"`
+	CWD             string  `json:"cwd,omitempty"`
+	Tools           string  `json:"tools,omitempty"`
+	AllowWriteTools bool    `json:"allowWriteTools,omitempty"`
+	TimeoutSeconds  int     `json:"timeoutSeconds,omitempty"`
+	MaxOutputChars  int     `json:"maxOutputChars,omitempty"`
+	MaxTurns        int     `json:"maxTurns,omitempty"`
+	MaxCostUSD      float64 `json:"maxCostUSD,omitempty"`
+	SystemPrompt    string  `json:"systemPrompt,omitempty"`
+	Thinking        string  `json:"thinking,omitempty"`
 }
 
 type Usage struct {
@@ -80,6 +83,9 @@ type processRunner struct {
 	defaultCWD      string
 	heartbeatPeriod time.Duration
 	settingSources  string
+	defaultProvider string
+	defaultModel    string
+	currentModel    func() (string, string)
 }
 
 // NewRunner creates a subprocess runner using the current Notch executable.
@@ -88,6 +94,12 @@ func NewRunner(host extension.Host) (Runner, error) {
 }
 
 func NewRunnerWithSettingSources(host extension.Host, settingSources string) (Runner, error) {
+	return NewRunnerWithRuntime(host, settingSources, "", "")
+}
+
+// NewRunnerWithRuntime also supplies the parent provider/model used when a
+// helper omits a model or gives an unqualified model ID.
+func NewRunnerWithRuntime(host extension.Host, settingSources, provider, modelName string) (Runner, error) {
 	if host == nil {
 		return nil, errors.New("create subagent runner: host is required")
 	}
@@ -95,7 +107,11 @@ func NewRunnerWithSettingSources(host extension.Host, settingSources string) (Ru
 	if err != nil {
 		return nil, fmt.Errorf("resolve Notch executable: %w", err)
 	}
-	return &processRunner{executable: executable, defaultCWD: host.CWD(), settingSources: settingSources}, nil
+	runner := &processRunner{executable: executable, defaultCWD: host.CWD(), settingSources: settingSources, defaultProvider: provider, defaultModel: modelName}
+	if current, ok := host.(interface{ CurrentModel() (string, string) }); ok {
+		runner.currentModel = current.CurrentModel
+	}
+	return runner, nil
 }
 
 // Register registers run_subagent using the current Notch executable.
@@ -104,10 +120,14 @@ func Register(registry *extension.Registry, host extension.Host) error {
 }
 
 func RegisterWithSettingSources(registry *extension.Registry, host extension.Host, settingSources string) error {
+	return RegisterWithRuntime(registry, host, settingSources, "", "")
+}
+
+func RegisterWithRuntime(registry *extension.Registry, host extension.Host, settingSources, provider, modelName string) error {
 	if registry == nil || host == nil {
 		return errors.New("register subagent: registry and host are required")
 	}
-	runner, err := NewRunnerWithSettingSources(host, settingSources)
+	runner, err := NewRunnerWithRuntime(host, settingSources, provider, modelName)
 	if err != nil {
 		return err
 	}
@@ -167,6 +187,8 @@ func schema() map[string]any {
 			"allowWriteTools": map[string]any{"type": "boolean", "description": "Permit tools outside read,grep,find,ls (including bash). Enable only when the user explicitly authorizes delegated write access; never enable just to run read-only shell commands."},
 			"timeoutSeconds":  map[string]any{"type": "integer", "minimum": 1, "maximum": maxTimeoutSeconds},
 			"maxOutputChars":  map[string]any{"type": "integer", "minimum": 1000, "maximum": maxOutputChars},
+			"maxTurns":        map[string]any{"type": "integer", "minimum": 1, "description": "Maximum model turns for this subagent."},
+			"maxCostUSD":      map[string]any{"type": "number", "exclusiveMinimum": 0, "description": "Maximum cumulative estimated cost in USD for this subagent."},
 			"systemPrompt":    map[string]any{"type": "string", "description": "Additional system instructions for the subagent."},
 			"thinking":        map[string]any{"type": "string", "enum": []string{"off", "minimal", "low", "medium", "high", "xhigh"}},
 		},
@@ -199,6 +221,12 @@ func decodeInput(raw json.RawMessage) (Input, error) {
 	}
 	if input.MaxOutputChars < 1000 || input.MaxOutputChars > maxOutputChars {
 		return input, fmt.Errorf("maxOutputChars must be between 1000 and %d", maxOutputChars)
+	}
+	if input.MaxTurns < 0 {
+		return input, errors.New("maxTurns must be non-negative")
+	}
+	if input.MaxCostUSD < 0 || math.IsNaN(input.MaxCostUSD) || math.IsInf(input.MaxCostUSD, 0) {
+		return input, errors.New("maxCostUSD must be a finite non-negative number")
 	}
 	if input.Tools == "" {
 		input.Tools = defaultTools
@@ -274,7 +302,19 @@ func (r *processRunner) Run(ctx context.Context, input Input, update func(string
 	}
 	args := []string{"--json", "--setting-sources", settingSources, "--no-session", "--no-tui", "--no-extensions", "--no-resources", "--tools", input.Tools,
 		"--thinking", input.Thinking, "--system-prompt-file", systemPath}
-	args = append(args, modelArgs(input.Model)...)
+	if input.MaxTurns > 0 {
+		args = append(args, "--max-turns", strconv.Itoa(input.MaxTurns))
+	}
+	if input.MaxCostUSD > 0 {
+		args = append(args, "--max-cost-usd", strconv.FormatFloat(input.MaxCostUSD, 'f', -1, 64))
+	}
+	provider, parentModel := r.defaultProvider, r.defaultModel
+	if r.currentModel != nil {
+		if currentProvider, currentName := r.currentModel(); currentProvider != "" || currentName != "" {
+			provider, parentModel = currentProvider, currentName
+		}
+	}
+	args = append(args, modelArgs(input.Model, provider, parentModel)...)
 	args = append(args, "--print")
 	if update != nil {
 		modelName := input.Model
@@ -289,6 +329,7 @@ func (r *processRunner) Run(ctx context.Context, input Input, update func(string
 	defer cancel()
 	cmd := exec.Command(r.executable, args...)
 	cmd.Dir = cwd
+	cmd.Env = childEnvironment(os.Environ())
 	cmd.Stdin = strings.NewReader(input.Prompt)
 	configureProcessGroup(cmd)
 	stdout, err := cmd.StdoutPipe()
@@ -429,14 +470,36 @@ func baseSystemPrompt(extra string) string {
 	return strings.Join(parts, "\n")
 }
 
-func modelArgs(value string) []string {
+func childEnvironment(values []string) []string {
+	filtered := make([]string, 0, len(values))
+	for _, value := range values {
+		name, _, _ := strings.Cut(value, "=")
+		if strings.HasPrefix(name, "HERDR_") {
+			continue
+		}
+		filtered = append(filtered, value)
+	}
+	return filtered
+}
+
+func modelArgs(value, parentProvider, parentModel string) []string {
 	value = strings.TrimSpace(value)
 	if value == "" {
-		return nil
+		value = strings.TrimSpace(parentModel)
+		if value == "" {
+			return nil
+		}
+		if parentProvider = strings.TrimSpace(parentProvider); parentProvider != "" {
+			return []string{"--provider", parentProvider, "--model", value}
+		}
+		return []string{"--model", value}
 	}
 	provider, name, found := strings.Cut(value, "/")
 	if found && provider != "" && name != "" && !strings.Contains(provider, "/") {
 		return []string{"--provider", provider, "--model", name}
+	}
+	if parentProvider = strings.TrimSpace(parentProvider); parentProvider != "" {
+		return []string{"--provider", parentProvider, "--model", value}
 	}
 	return []string{"--model", value}
 }

@@ -486,7 +486,7 @@ func run(args []string) error {
 			}
 		}
 		if !opts.noExtensions {
-			if err := officialext.RegisterWithSettingSources(registry, extensionHost, opts.settingSources); err != nil {
+			if err := officialext.RegisterWithRuntime(registry, extensionHost, opts.settingSources, cfg.Provider, cfg.Model); err != nil {
 				return err
 			}
 		}

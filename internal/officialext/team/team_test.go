@@ -167,6 +167,84 @@ func TestIndependentHelpersAggregateUsageOnce(t *testing.T) {
 	}
 }
 
+func TestRoleSpecificModelAndBudgetsOverrideDefaults(t *testing.T) {
+	runner := &scriptedRunner{outputs: map[string][]subagent.Result{"review app": {{Output: complete("reviewed")}}}}
+	host := &fakeHost{cwd: "/lead"}
+	git := &fakeGit{states: map[string][]gitSnapshot{"/lead": {{root: "/lead", branch: "main", head: "base"}}}}
+	registry := extension.NewRegistry()
+	if err := register(registry, host, runner, git); err != nil {
+		t.Fatal(err)
+	}
+	tool, _ := registry.Tool(ToolName)
+	raw := json.RawMessage(`{"tasks":[{"id":"review","kind":"review","role":"reviewer","prompt":"review app","acceptance_checks":["prioritize findings"],"model":"cheap-reviewer","thinking":"medium","timeout_seconds":45,"max_output_chars":4000,"max_turns":5,"max_cost_usd":0.3}],"model":"default-model","thinking":"low","timeout_seconds":60,"clarify_wait_seconds":10,"max_output_chars":5000,"max_turns":8,"max_cost_usd":0.5}`)
+	result, err := tool.Execute(context.Background(), raw, nil)
+	if err != nil || result.IsError || len(runner.inputs) != 1 {
+		t.Fatalf("execute = %#v, %v; inputs=%#v", result, err, runner.inputs)
+	}
+	got := runner.inputs[0]
+	if got.Model != "cheap-reviewer" || got.Thinking != "medium" || got.TimeoutSeconds != 45 || got.MaxOutputChars != 4000 || got.MaxTurns != 5 || got.MaxCostUSD != 0.3 {
+		t.Fatalf("role input = %#v", got)
+	}
+	if !strings.Contains(got.Prompt, "Role: reviewer") {
+		t.Fatalf("role prompt = %q", got.Prompt)
+	}
+}
+
+func TestExecuteRejectsUnknownFields(t *testing.T) {
+	host := &fakeHost{cwd: "/lead"}
+	git := &fakeGit{states: map[string][]gitSnapshot{"/lead": {{root: "/lead", branch: "main", head: "base"}}}}
+	registry := extension.NewRegistry()
+	_ = register(registry, host, &scriptedRunner{}, git)
+	tool, _ := registry.Tool(ToolName)
+	for _, raw := range []string{
+		`{"tasks":[],"unknown":true}`,
+		`{"tasks":[{"id":"x","kind":"research","prompt":"x","acceptance_checks":["x"],"unknown":true}]}`,
+	} {
+		if _, err := tool.Execute(context.Background(), json.RawMessage(raw), nil); err == nil {
+			t.Fatalf("unknown field accepted: %s", raw)
+		}
+	}
+}
+
+func TestRoleValidationRejectsUnsafeCombinations(t *testing.T) {
+	for _, raw := range []string{
+		`{"tasks":[{"id":"x","kind":"research","role":"implementer","prompt":"x","acceptance_checks":["x"]}]}`,
+		`{"tasks":[{"id":"x","kind":"research","role":"unknown","prompt":"x","acceptance_checks":["x"]}]}`,
+		`{"tasks":[{"id":"x","kind":"research","prompt":"x","acceptance_checks":["x"],"max_cost_usd":-1}]}`,
+	} {
+		input := Input{}
+		if err := json.Unmarshal([]byte(raw), &input); err != nil {
+			t.Fatal(err)
+		}
+		git := &fakeGit{states: map[string][]gitSnapshot{"/lead": {{root: "/lead", branch: "main", head: "base"}}}}
+		_, err := normalizeAndValidate(&input, "/lead", "/repo/.git", "main", "base", nil, git, context.Background())
+		if err == nil {
+			t.Fatalf("input accepted: %s", raw)
+		}
+	}
+}
+
+func TestClarificationContinuationUsesRemainingBudget(t *testing.T) {
+	firstCost, secondCost := 0.2, 0.1
+	runner := &scriptedRunner{outputs: map[string][]subagent.Result{"budget task": {
+		{Output: `{"status":"clarification","question":"Which format?"}`, Usage: subagent.Usage{Turns: 2, CostUSD: &firstCost}},
+		{Output: complete("done"), Usage: subagent.Usage{Turns: 1, CostUSD: &secondCost}},
+	}}}
+	host := &fakeHost{cwd: "/lead", answer: "JSON", asked: make(chan string, 1)}
+	git := &fakeGit{states: map[string][]gitSnapshot{"/lead": {{root: "/lead", branch: "main", head: "base"}}}}
+	registry := extension.NewRegistry()
+	_ = register(registry, host, runner, git)
+	tool, _ := registry.Tool(ToolName)
+	raw := json.RawMessage(`{"tasks":[{"id":"budget","kind":"research","prompt":"budget task","acceptance_checks":["done"]}],"max_turns":5,"max_cost_usd":0.5,"clarify_wait_seconds":2}`)
+	result, err := tool.Execute(context.Background(), raw, nil)
+	if err != nil || result.IsError || len(runner.inputs) != 2 {
+		t.Fatalf("execute = %#v, %v; inputs=%#v", result, err, runner.inputs)
+	}
+	if runner.inputs[1].MaxTurns != 3 || runner.inputs[1].MaxCostUSD < 0.299999 || runner.inputs[1].MaxCostUSD > 0.300001 {
+		t.Fatalf("remaining budget = turns %d cost %f", runner.inputs[1].MaxTurns, runner.inputs[1].MaxCostUSD)
+	}
+}
+
 func TestClarificationIsCorrelatedBoundedAndUsageIncluded(t *testing.T) {
 	cost := 0.1
 	runner := &scriptedRunner{outputs: map[string][]subagent.Result{"blocked task": {

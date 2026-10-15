@@ -28,7 +28,7 @@ func TestLoadBundledSkillsAndDiskOverride(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"notch-config", "notch-extension"} {
+	for _, name := range []string{"notch-config", "notch-extension", "software-team"} {
 		skill, ok := catalog.Skills[name]
 		if !ok || skill.Description == "" || !strings.HasPrefix(skill.Path, "builtin:") || len(skill.Content) < 500 {
 			t.Fatalf("bundled skill %q = %#v", name, skill)

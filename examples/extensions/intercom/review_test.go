@@ -46,14 +46,14 @@ func TestSendRetriesSameRequestIDAfterLostAcknowledgement(t *testing.T) {
 }
 
 func TestDurableDedupeReloadAndCollisionChecks(t *testing.T) {
-	entry := inboundEntry{ID: "same", FromSession: "sender-a", Body: "original"}
+	entry := inboundEntry{ID: "same", FromSession: "sender-a", Wake: true, AutomatedWake: true, Body: "original"}
 	raw, _ := json.Marshal(entry)
 	seen, inbox := loadInbox([]json.RawMessage{raw})
 	s := newService()
 	s.project, s.sessionID, s.host = "project", "receiver-session", &fakeHost{}
 	s.seen, s.inbox = seen, inbox
 
-	duplicate := message{Version: protocolVersion, Type: "deliver", ID: "same", Project: "project", ToSession: "receiver-session", FromSession: "sender-a", Body: "original"}
+	duplicate := message{Version: protocolVersion, Type: "deliver", ID: "same", Project: "project", ToSession: "receiver-session", FromSession: "sender-a", Wake: true, AutomatedWake: true, Body: "original"}
 	if result := s.receive(context.Background(), duplicate); !result.Delivered || !result.Duplicate {
 		t.Fatalf("reloaded duplicate = %#v", result)
 	}

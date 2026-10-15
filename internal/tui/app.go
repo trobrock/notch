@@ -70,6 +70,7 @@ type App struct {
 	cfg AppConfig
 
 	mu              sync.Mutex
+	modelMu         sync.RWMutex
 	sessionMu       sync.RWMutex
 	sessionChangeMu sync.Mutex
 	runner          *agent.Agent
@@ -1854,14 +1855,15 @@ func (a *App) applyPreset(runCtx context.Context, key string) bool {
 		a.addNotice("cannot apply preset while work is running", "error")
 		return true
 	}
+	currentProvider, currentModel := a.CurrentModel()
 	provider := strings.TrimSpace(preset.Provider)
 	modelName := strings.TrimSpace(preset.Model)
 	thinking := strings.ToLower(strings.TrimSpace(preset.ThinkingLevel))
 	if provider == "" {
-		provider = a.state.layout.Provider
+		provider = currentProvider
 	}
 	if modelName == "" {
-		modelName = a.state.layout.Model
+		modelName = currentModel
 	}
 	if provider == "" || modelName == "" {
 		a.addNotice("preset "+strings.ToUpper(key)+" requires a provider and model", "error")
@@ -1871,7 +1873,7 @@ func (a *App) applyPreset(runCtx context.Context, key string) bool {
 		a.addNotice(fmt.Sprintf("preset %s has invalid thinking level %q", strings.ToUpper(key), thinking), "error")
 		return true
 	}
-	if provider == a.state.layout.Provider && modelName == a.state.layout.Model {
+	if provider == currentProvider && modelName == currentModel {
 		if thinking != "" {
 			a.applyThinkingLevel(thinking, false)
 		}
@@ -1915,7 +1917,7 @@ func (a *App) startModelSelection(runCtx context.Context, force bool) {
 	a.state.activeCommand = true
 	a.state.cancel = cancel
 	a.state.layout.Status = "models"
-	currentProvider, currentModel := a.state.layout.Provider, a.state.layout.Model
+	currentProvider, currentModel := a.CurrentModel()
 	go func() {
 		providers := modelregistry.Providers()
 		for i, provider := range providers {
@@ -2012,8 +2014,10 @@ func (a *App) finishModelSelection(result modelSelectionResult) bool {
 		}
 		return true
 	}
+	a.modelMu.Lock()
 	a.state.layout.Provider, a.state.layout.Model = result.provider, result.model
 	a.cfg.Provider, a.cfg.Model = result.provider, result.model
+	a.modelMu.Unlock()
 	if result.contextWindow > 0 {
 		a.state.layout.ContextWindow = result.contextWindow
 	}
@@ -2791,6 +2795,12 @@ func (a *App) SetActiveTools(names []string) error {
 	return nil
 }
 
+func (a *App) CurrentModel() (string, string) {
+	a.modelMu.RLock()
+	defer a.modelMu.RUnlock()
+	return a.state.layout.Provider, a.state.layout.Model
+}
+
 func (a *App) SwitchModel(ctx context.Context, provider, modelName string) (string, int, error) {
 	provider, modelName = strings.TrimSpace(provider), strings.TrimSpace(modelName)
 	if modelName == "" {
@@ -2798,8 +2808,8 @@ func (a *App) SwitchModel(ctx context.Context, provider, modelName string) (stri
 	}
 	a.mu.Lock()
 	switcher := a.switchModel
-	currentProvider := a.state.layout.Provider
 	a.mu.Unlock()
+	currentProvider, _ := a.CurrentModel()
 	if switcher == nil {
 		return "", 0, errors.New("model switching is unavailable")
 	}
@@ -2810,8 +2820,10 @@ func (a *App) SwitchModel(ctx context.Context, provider, modelName string) (stri
 	if err != nil {
 		return "", 0, err
 	}
+	a.modelMu.Lock()
 	a.state.layout.Provider, a.state.layout.Model = provider, modelName
 	a.cfg.Provider, a.cfg.Model = provider, modelName
+	a.modelMu.Unlock()
 	if window > 0 {
 		a.state.layout.ContextWindow = window
 	}
@@ -2821,8 +2833,8 @@ func (a *App) SwitchModel(ctx context.Context, provider, modelName string) (stri
 func (a *App) ListModels(ctx context.Context, provider string, refresh bool) ([]extension.ModelInfo, error) {
 	a.mu.Lock()
 	list := a.listModels
-	currentProvider := a.state.layout.Provider
 	a.mu.Unlock()
+	currentProvider, _ := a.CurrentModel()
 	if list == nil {
 		return nil, errors.New("model listing is unavailable")
 	}

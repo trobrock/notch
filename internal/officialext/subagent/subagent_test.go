@@ -91,6 +91,7 @@ func TestRunSubagentToolSafetyAndValidation(t *testing.T) {
 		`{}`, `{"prompt":" "}`, `{"prompt":"x","tools":"read,bash"}`,
 		`{"prompt":"x","tools":"read,,grep"}`, `{"prompt":"x","timeoutSeconds":3601}`,
 		`{"prompt":"x","maxOutputChars":999}`, `{"prompt":"x","thinking":"extreme"}`,
+		`{"prompt":"x","maxTurns":-1}`, `{"prompt":"x","maxCostUSD":-1}`,
 		`{"prompt":"x","unknown":true}`,
 	} {
 		if _, err := decodeInput(json.RawMessage(raw)); err == nil {
@@ -125,11 +126,17 @@ func TestParseEventsUsesLastAssistantTurnAndTrimsOutput(t *testing.T) {
 }
 
 func TestModelArgsAndSystemPrompt(t *testing.T) {
-	if got := modelArgs("anthropic/claude-test"); !reflect.DeepEqual(got, []string{"--provider", "anthropic", "--model", "claude-test"}) {
-		t.Fatalf("model args = %#v", got)
+	if got := modelArgs("anthropic/claude-test", "openai-codex", "parent"); !reflect.DeepEqual(got, []string{"--provider", "anthropic", "--model", "claude-test"}) {
+		t.Fatalf("qualified model args = %#v", got)
 	}
-	if got := modelArgs("model-only"); !reflect.DeepEqual(got, []string{"--model", "model-only"}) {
-		t.Fatalf("model args = %#v", got)
+	if got := modelArgs("model-only", "openai-codex", "parent"); !reflect.DeepEqual(got, []string{"--provider", "openai-codex", "--model", "model-only"}) {
+		t.Fatalf("same-provider model args = %#v", got)
+	}
+	if got := modelArgs("", "openrouter", "anthropic/claude-test"); !reflect.DeepEqual(got, []string{"--provider", "openrouter", "--model", "anthropic/claude-test"}) {
+		t.Fatalf("inherited slash model args = %#v", got)
+	}
+	if got := modelArgs("", "openai-codex", "parent"); !reflect.DeepEqual(got, []string{"--provider", "openai-codex", "--model", "parent"}) {
+		t.Fatalf("inherited model args = %#v", got)
 	}
 	if prompt := baseSystemPrompt("Be exact."); !strings.Contains(prompt, "focused Notch subagent") || !strings.HasSuffix(prompt, "Be exact.") {
 		t.Fatalf("prompt = %q", prompt)
@@ -287,6 +294,53 @@ printf '{"type":"turn_end","message":{"role":"assistant","content":[{"type":"tex
 	result, err := runner.Run(context.Background(), Input{Prompt: "go", Tools: defaultTools, Thinking: DefaultThinking, TimeoutSeconds: 1, MaxOutputChars: 2000}, nil)
 	if err != nil || result.ExitCode != 0 {
 		t.Fatalf("Run() = %#v, %v", result, err)
+	}
+}
+
+func TestProcessRunnerPassesBudgetsAndStripsHerdrEnvironment(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script test")
+	}
+	t.Setenv("HERDR_ENV", "1")
+	t.Setenv("HERDR_PANE_ID", "pane-1")
+	t.Setenv("HERDR_SOCKET_PATH", "/tmp/herdr.sock")
+	path := t.TempDir() + "/budget-subagent.sh"
+	script := `#!/bin/sh
+[ -z "${HERDR_ENV:-}" ] || exit 8
+[ -z "${HERDR_PANE_ID:-}" ] || exit 9
+previous=""
+turns=""
+cost=""
+provider=""
+model=""
+for arg in "$@"; do
+  if [ "$previous" = "--max-turns" ]; then turns="$arg"; fi
+  if [ "$previous" = "--max-cost-usd" ]; then cost="$arg"; fi
+  if [ "$previous" = "--provider" ]; then provider="$arg"; fi
+  if [ "$previous" = "--model" ]; then model="$arg"; fi
+  previous="$arg"
+done
+[ "$turns" = "4" ] || exit 10
+[ "$cost" = "0.25" ] || exit 11
+[ "$provider" = "openai-codex" ] || exit 12
+[ "$model" = "parent-model" ] || exit 13
+printf '{"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}\n'
+`
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runner := &processRunner{executable: path, defaultCWD: t.TempDir(), currentModel: func() (string, string) { return "openai-codex", "parent-model" }}
+	result, err := runner.Run(context.Background(), Input{Prompt: "go", Tools: defaultTools, Thinking: DefaultThinking, TimeoutSeconds: 1, MaxOutputChars: 2000, MaxTurns: 4, MaxCostUSD: 0.25}, nil)
+	if err != nil || result.ExitCode != 0 {
+		t.Fatalf("Run() = %#v, %v", result, err)
+	}
+}
+
+func TestChildEnvironmentRemovesOnlyHerdrValues(t *testing.T) {
+	got := childEnvironment([]string{"PATH=/bin", "HERDR_ENV=1", "HERDR_PANE_ID=pane", "HOME=/tmp"})
+	want := []string{"PATH=/bin", "HOME=/tmp"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("childEnvironment() = %#v, want %#v", got, want)
 	}
 }
 

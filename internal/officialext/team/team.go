@@ -3,12 +3,15 @@
 package team
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"math"
 	"os/exec"
 	"path/filepath"
 	"sort"
@@ -37,22 +40,31 @@ var readOnlyTools = map[string]bool{"read": true, "grep": true, "find": true, "l
 type Task struct {
 	ID               string   `json:"id"`
 	Kind             string   `json:"kind"`
+	Role             string   `json:"role,omitempty"`
 	Prompt           string   `json:"prompt"`
 	CWD              string   `json:"cwd,omitempty"`
 	Tools            string   `json:"tools,omitempty"`
 	AcceptanceChecks []string `json:"acceptance_checks"`
 	ExpectedBase     string   `json:"expected_base,omitempty"`
+	Model            string   `json:"model,omitempty"`
+	Thinking         string   `json:"thinking,omitempty"`
+	TimeoutSeconds   int      `json:"timeout_seconds,omitempty"`
+	MaxOutputChars   int      `json:"max_output_chars,omitempty"`
+	MaxTurns         int      `json:"max_turns,omitempty"`
+	MaxCostUSD       float64  `json:"max_cost_usd,omitempty"`
 }
 
 type Input struct {
-	Tasks              []Task `json:"tasks"`
-	Model              string `json:"model,omitempty"`
-	Thinking           string `json:"thinking,omitempty"`
-	TimeoutSeconds     int    `json:"timeout_seconds,omitempty"`
-	ClarifyWaitSeconds int    `json:"clarify_wait_seconds,omitempty"`
-	MaxOutputChars     int    `json:"max_output_chars,omitempty"`
-	AllowWriteTools    bool   `json:"allow_write_tools,omitempty"`
-	IntegrationOwner   string `json:"integration_owner,omitempty"`
+	Tasks              []Task  `json:"tasks"`
+	Model              string  `json:"model,omitempty"`
+	Thinking           string  `json:"thinking,omitempty"`
+	TimeoutSeconds     int     `json:"timeout_seconds,omitempty"`
+	ClarifyWaitSeconds int     `json:"clarify_wait_seconds,omitempty"`
+	MaxOutputChars     int     `json:"max_output_chars,omitempty"`
+	MaxTurns           int     `json:"max_turns,omitempty"`
+	MaxCostUSD         float64 `json:"max_cost_usd,omitempty"`
+	AllowWriteTools    bool    `json:"allow_write_tools,omitempty"`
+	IntegrationOwner   string  `json:"integration_owner,omitempty"`
 }
 
 type envelope struct {
@@ -66,6 +78,7 @@ type envelope struct {
 type taskResult struct {
 	ID         string         `json:"id"`
 	Kind       string         `json:"kind"`
+	Role       string         `json:"role,omitempty"`
 	Status     string         `json:"status"`
 	Summary    string         `json:"summary,omitempty"`
 	QuestionID string         `json:"question_id,omitempty"`
@@ -173,7 +186,11 @@ func Register(registry *extension.Registry, host extension.Host) error {
 }
 
 func RegisterWithSettingSources(registry *extension.Registry, host extension.Host, settingSources string) error {
-	runner, err := subagent.NewRunnerWithSettingSources(host, settingSources)
+	return RegisterWithRuntime(registry, host, settingSources, "", "")
+}
+
+func RegisterWithRuntime(registry *extension.Registry, host extension.Host, settingSources, provider, modelName string) error {
+	runner, err := subagent.NewRunnerWithRuntime(host, settingSources, provider, modelName)
 	if err != nil {
 		return err
 	}
@@ -187,7 +204,7 @@ func register(registry *extension.Registry, host extension.Host, runner subagent
 	c := &coordinator{host: host, runner: runner, git: git}
 	tool := extension.Tool{Source: Source, UpdateMode: "replace", Definition: model.ToolDefinition{
 		Name:        ToolName,
-		Description: "Run a small, opt-in lead-and-helper workflow using existing isolated Notch subagents. Use only when the user asks for coordinated helpers. The lead owns scope, decisions, synthesis, and integration. Initial helpers run independently and return concise JSON results with scoped checks and artifact references. Research and review are read-only by default. A change helper requires explicit user authorization, allow_write_tools=true, a separate existing Git worktree/branch, its expected base commit, and integration_owner=lead. This tool never creates, resets, merges, deletes, or cleans a worktree. Delegated usage is returned separately so parent and /goal budgets count it once; unknown child cost stays unknown.",
+		Description: "Run a small, opt-in lead-and-helper workflow using existing isolated Notch subagents. Use only when the user asks for coordinated helpers. The lead owns scope, decisions, synthesis, and integration. Assign optional designer, implementer, QA, and reviewer roles, and set per-helper model, thinking, turn, cost, timeout, and output limits so bounded routine work can use cheaper models while judgment stays with the lead. Initial helpers run independently and return concise JSON results with scoped checks and artifact references. Research and review are read-only by default. A change helper requires explicit user authorization, allow_write_tools=true, a separate existing Git worktree/branch, its expected base commit, and integration_owner=lead. This tool never creates, resets, merges, deletes, or cleans a worktree. Delegated usage is returned separately so parent and /goal budgets count it once; unknown child cost stays unknown.",
 		InputSchema: teamSchema(),
 	}, Execute: c.execute}
 	_, err := registry.RegisterBatch(extension.Batch{
@@ -215,9 +232,16 @@ func teamSchema() map[string]any {
 	}
 	task := map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
 		"id": str("Short unique helper ID"), "kind": map[string]any{"type": "string", "enum": []string{"research", "review", "change"}},
+		"role":   map[string]any{"type": "string", "enum": []string{"designer", "implementer", "qa", "reviewer"}, "description": "Optional specialist role used to focus the helper contract"},
 		"prompt": str("One narrow task; do not include another helper's result"), "cwd": str("Working directory; required for a change helper"),
 		"tools": str("Comma-separated tools; defaults to read,grep,find,ls"), "acceptance_checks": map[string]any{"type": "array", "items": str("One check this helper owns"), "minItems": 1},
-		"expected_base": str("Exact lead commit used to create this writer worktree; required for change"),
+		"expected_base":    str("Exact lead commit used to create this writer worktree; required for change"),
+		"model":            str("Per-helper model override; use a cheaper model for bounded routine work and reserve stronger models for judgment-heavy roles"),
+		"thinking":         map[string]any{"type": "string", "enum": []string{"off", "minimal", "low", "medium", "high", "xhigh"}},
+		"timeout_seconds":  map[string]any{"type": "integer", "minimum": 1, "maximum": maxTimeout},
+		"max_output_chars": map[string]any{"type": "integer", "minimum": 1000, "maximum": 50000},
+		"max_turns":        map[string]any{"type": "integer", "minimum": 1},
+		"max_cost_usd":     map[string]any{"type": "number", "exclusiveMinimum": 0},
 	}, "required": []string{"id", "kind", "prompt", "acceptance_checks"}}
 	return map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
 		"tasks": map[string]any{"type": "array", "items": task, "minItems": 1, "maxItems": maxTasks},
@@ -225,6 +249,8 @@ func teamSchema() map[string]any {
 		"timeout_seconds":      map[string]any{"type": "integer", "minimum": 1, "maximum": maxTimeout},
 		"clarify_wait_seconds": map[string]any{"type": "integer", "minimum": 1, "maximum": maxClarifyWait},
 		"max_output_chars":     map[string]any{"type": "integer", "minimum": 1000, "maximum": 50000},
+		"max_turns":            map[string]any{"type": "integer", "minimum": 1, "description": "Default maximum model turns per helper"},
+		"max_cost_usd":         map[string]any{"type": "number", "exclusiveMinimum": 0, "description": "Default maximum estimated cost in USD per helper"},
 		"allow_write_tools":    map[string]any{"type": "boolean", "description": "True only after explicit user authorization for delegated writes"},
 		"integration_owner":    str("Must be lead when any change helper is used"),
 	}, "required": []string{"tasks"}}
@@ -232,8 +258,16 @@ func teamSchema() map[string]any {
 
 func (c *coordinator) execute(ctx context.Context, raw json.RawMessage, update func(string)) (extension.ToolResult, error) {
 	var input Input
-	if err := json.Unmarshal(raw, &input); err != nil {
-		return extension.ToolResult{}, err
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		return extension.ToolResult{}, fmt.Errorf("decode coordinated helpers: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		if err == nil {
+			err = errors.New("unexpected trailing JSON")
+		}
+		return extension.ToolResult{}, fmt.Errorf("decode coordinated helpers: %w", err)
 	}
 	leadRoot, leadCommon, leadBranch, leadHead, _, leadErr := c.git.Inspect(ctx, c.host.CWD())
 	writers, err := normalizeAndValidate(&input, leadRoot, leadCommon, leadBranch, leadHead, leadErr, c.git, ctx)
@@ -297,6 +331,12 @@ func normalizeAndValidate(input *Input, leadRoot, leadCommon, leadBranch, leadHe
 	if input.MaxOutputChars < 1000 || input.MaxOutputChars > 50000 {
 		return nil, errors.New("max_output_chars must be between 1000 and 50000")
 	}
+	if input.MaxTurns < 0 {
+		return nil, errors.New("max_turns must be non-negative")
+	}
+	if input.MaxCostUSD < 0 || math.IsNaN(input.MaxCostUSD) || math.IsInf(input.MaxCostUSD, 0) {
+		return nil, errors.New("max_cost_usd must be a finite non-negative number")
+	}
 	if input.TimeoutSeconds < 1 || input.TimeoutSeconds > maxTimeout || input.ClarifyWaitSeconds < 1 || input.ClarifyWaitSeconds > maxClarifyWait {
 		return nil, errors.New("helper timeout is outside the allowed range")
 	}
@@ -305,12 +345,37 @@ func normalizeAndValidate(input *Input, leadRoot, leadCommon, leadBranch, leadHe
 	for i := range input.Tasks {
 		t := &input.Tasks[i]
 		t.ID, t.Prompt = strings.TrimSpace(t.ID), strings.TrimSpace(t.Prompt)
+		t.Role, t.Model, t.Thinking = strings.TrimSpace(t.Role), strings.TrimSpace(t.Model), strings.TrimSpace(t.Thinking)
 		if t.ID == "" || t.Prompt == "" || seen[t.ID] {
 			return nil, fmt.Errorf("task IDs must be unique and task prompts must not be empty")
 		}
 		seen[t.ID] = true
 		if t.Kind != "research" && t.Kind != "review" && t.Kind != "change" {
 			return nil, fmt.Errorf("task %s has invalid kind %q", t.ID, t.Kind)
+		}
+		if t.Role != "" && t.Role != "designer" && t.Role != "implementer" && t.Role != "qa" && t.Role != "reviewer" {
+			return nil, fmt.Errorf("task %s has invalid role %q", t.ID, t.Role)
+		}
+		if t.Role == "implementer" && t.Kind != "change" {
+			return nil, fmt.Errorf("implementer task %s must have kind change", t.ID)
+		}
+		if t.Role == "reviewer" && t.Kind != "review" {
+			return nil, fmt.Errorf("reviewer task %s must have kind review", t.ID)
+		}
+		if t.TimeoutSeconds < 0 || t.TimeoutSeconds > maxTimeout {
+			return nil, fmt.Errorf("task %s timeout_seconds must be between 1 and %d when set", t.ID, maxTimeout)
+		}
+		if t.MaxOutputChars < 0 || (t.MaxOutputChars > 0 && t.MaxOutputChars < 1000) || t.MaxOutputChars > 50000 {
+			return nil, fmt.Errorf("task %s max_output_chars must be between 1000 and 50000 when set", t.ID)
+		}
+		if t.MaxTurns < 0 {
+			return nil, fmt.Errorf("task %s max_turns must be non-negative", t.ID)
+		}
+		if t.MaxCostUSD < 0 || math.IsNaN(t.MaxCostUSD) || math.IsInf(t.MaxCostUSD, 0) {
+			return nil, fmt.Errorf("task %s max_cost_usd must be a finite non-negative number", t.ID)
+		}
+		if t.Thinking != "" && t.Thinking != "off" && t.Thinking != "minimal" && t.Thinking != "low" && t.Thinking != "medium" && t.Thinking != "high" && t.Thinking != "xhigh" {
+			return nil, fmt.Errorf("task %s has invalid thinking level %q", t.ID, t.Thinking)
 		}
 		if len(t.AcceptanceChecks) == 0 {
 			return nil, fmt.Errorf("task %s needs at least one acceptance check", t.ID)
@@ -378,7 +443,7 @@ func unsafeTools(value string) []string {
 }
 
 func (c *coordinator) runTask(ctx context.Context, input Input, task Task, isolation *writerState, leadHead string, update func(string)) (result taskResult) {
-	result = taskResult{ID: task.ID, Kind: task.Kind, Status: "failed", Isolation: isolation}
+	result = taskResult{ID: task.ID, Kind: task.Kind, Role: task.Role, Status: "failed", Isolation: isolation}
 	if isolation != nil {
 		defer func() {
 			auditCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
@@ -386,7 +451,31 @@ func (c *coordinator) runTask(ctx context.Context, input Input, task Task, isola
 			c.auditWriter(auditCtx, task, isolation, leadHead, &result)
 		}()
 	}
-	child := subagent.Input{Prompt: helperPrompt(task, "", ""), Model: input.Model, CWD: task.CWD, Tools: task.Tools, AllowWriteTools: task.Kind == "change" && input.AllowWriteTools, TimeoutSeconds: input.TimeoutSeconds, MaxOutputChars: input.MaxOutputChars, Thinking: input.Thinking}
+	modelName := input.Model
+	if task.Model != "" {
+		modelName = task.Model
+	}
+	thinking := input.Thinking
+	if task.Thinking != "" {
+		thinking = task.Thinking
+	}
+	timeoutSeconds := input.TimeoutSeconds
+	if task.TimeoutSeconds > 0 {
+		timeoutSeconds = task.TimeoutSeconds
+	}
+	maxOutputChars := input.MaxOutputChars
+	if task.MaxOutputChars > 0 {
+		maxOutputChars = task.MaxOutputChars
+	}
+	maxTurns := input.MaxTurns
+	if task.MaxTurns > 0 {
+		maxTurns = task.MaxTurns
+	}
+	maxCostUSD := input.MaxCostUSD
+	if task.MaxCostUSD > 0 {
+		maxCostUSD = task.MaxCostUSD
+	}
+	child := subagent.Input{Prompt: helperPrompt(task, "", ""), Model: modelName, CWD: task.CWD, Tools: task.Tools, AllowWriteTools: task.Kind == "change" && input.AllowWriteTools, TimeoutSeconds: timeoutSeconds, MaxOutputChars: maxOutputChars, MaxTurns: maxTurns, MaxCostUSD: maxCostUSD, Thinking: thinking}
 	run, err := c.runner.Run(ctx, child, prefixedUpdate(update, task.ID))
 	result.Calls = 1
 	result.Usage = run.Usage
@@ -405,6 +494,10 @@ func (c *coordinator) runTask(ctx context.Context, input Input, task Task, isola
 		return result
 	}
 	if env.Status == "clarification" {
+		if budgetErr := applyRemainingBudget(&child, run.Usage); budgetErr != nil {
+			result.Error = "clarification continuation denied: " + budgetErr.Error()
+			return result
+		}
 		qid, idErr := requestID()
 		if idErr != nil {
 			result.Error = idErr.Error()
@@ -532,10 +625,45 @@ func writerAuditError(result *taskResult, message, status string) {
 	}
 }
 
+func applyRemainingBudget(child *subagent.Input, used subagent.Usage) error {
+	if child.MaxTurns > 0 {
+		child.MaxTurns -= used.Turns
+		if child.MaxTurns <= 0 {
+			return errors.New("helper exhausted its model-turn budget before clarification")
+		}
+	}
+	if child.MaxCostUSD > 0 {
+		if used.CostUSD == nil {
+			return errors.New("helper cost is unknown, so the cost-capped clarification cannot continue safely")
+		}
+		child.MaxCostUSD -= *used.CostUSD
+		if child.MaxCostUSD <= 0 {
+			return errors.New("helper exhausted its cost budget before clarification")
+		}
+	}
+	return nil
+}
+
+func roleInstruction(role string) string {
+	switch role {
+	case "designer":
+		return "Role: designer. Own user flows, information hierarchy, interaction states, responsive behavior, visual direction, and accessibility evidence. Prefer a concrete design brief or browser findings; do not write application code unless the task is explicitly an authorized change task."
+	case "implementer":
+		return "Role: implementer. Execute the approved narrow specification exactly, add focused tests, and avoid product or architecture expansion."
+	case "qa":
+		return "Role: QA. Verify behavior from the user's point of view, cover failure and boundary cases, and return reproducible evidence. Do not fix defects in a read-only task."
+	case "reviewer":
+		return "Role: reviewer. Independently inspect the integrated result for correctness, security, maintainability, accessibility, and missing tests. Prioritize findings and cite exact evidence."
+	default:
+		return ""
+	}
+}
+
 func helperPrompt(task Task, questionID, answer string) string {
 	checks, _ := json.Marshal(task.AcceptanceChecks)
 	parts := []string{
 		"You are one bounded helper. Work only on this narrow assignment. Do not coordinate with or assume results from other helpers.",
+		roleInstruction(task.Role),
 		"Task: " + task.Prompt,
 		"Acceptance checks: " + string(checks),
 		"Return only one JSON object. For success: {\"status\":\"complete\",\"summary\":\"concise result\",\"artifacts\":[\"path:line, command output, or commit\"],\"checks\":[\"check: pass/fail plus evidence\"]}.",

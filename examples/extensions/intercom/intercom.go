@@ -22,12 +22,15 @@ import (
 )
 
 const (
-	protocolVersion   = 1
-	maxBodyBytes      = 16 * 1024
-	maxWireBytes      = 24 * 1024
-	maxInboundEntries = 1000
-	entryKind         = "intercom_inbound"
-	configKind        = "intercom_config"
+	protocolVersion    = 1
+	maxBodyBytes       = 16 * 1024
+	maxWireBytes       = 24 * 1024
+	maxInboundEntries  = 1000
+	maxOutboundEntries = 1000
+	entryKind          = "intercom_inbound"
+	outboundKind       = "intercom_outbound"
+	configKind         = "intercom_config"
+	maxAutomatedWakes  = 8
 )
 
 type peerRecord struct {
@@ -43,17 +46,18 @@ type peerRecord struct {
 }
 
 type message struct {
-	Version     int       `json:"version"`
-	Type        string    `json:"type"`
-	ID          string    `json:"id,omitempty"`
-	Project     string    `json:"project,omitempty"`
-	ToSession   string    `json:"to_session,omitempty"`
-	FromSession string    `json:"from_session,omitempty"`
-	FromName    string    `json:"from_name,omitempty"`
-	ReplyTo     string    `json:"reply_to,omitempty"`
-	Wake        bool      `json:"wake,omitempty"`
-	Body        string    `json:"body,omitempty"`
-	SentAt      time.Time `json:"sent_at,omitempty"`
+	Version       int       `json:"version"`
+	Type          string    `json:"type"`
+	ID            string    `json:"id,omitempty"`
+	Project       string    `json:"project,omitempty"`
+	ToSession     string    `json:"to_session,omitempty"`
+	FromSession   string    `json:"from_session,omitempty"`
+	FromName      string    `json:"from_name,omitempty"`
+	ReplyTo       string    `json:"reply_to,omitempty"`
+	Wake          bool      `json:"wake,omitempty"`
+	AutomatedWake bool      `json:"automated_wake,omitempty"`
+	Body          string    `json:"body,omitempty"`
+	SentAt        time.Time `json:"sent_at,omitempty"`
 }
 
 type response struct {
@@ -66,13 +70,27 @@ type response struct {
 }
 
 type inboundEntry struct {
+	ID            string    `json:"id"`
+	FromSession   string    `json:"from_session"`
+	FromName      string    `json:"from_name,omitempty"`
+	ReplyTo       string    `json:"reply_to,omitempty"`
+	Wake          bool      `json:"wake,omitempty"`
+	AutomatedWake bool      `json:"automated_wake,omitempty"`
+	WakeAccepted  bool      `json:"wake_accepted,omitempty"`
+	Body          string    `json:"body"`
+	SentAt        time.Time `json:"sent_at,omitempty"`
+	ReceivedAt    time.Time `json:"received_at"`
+}
+
+type outboundEntry struct {
 	ID          string    `json:"id"`
-	FromSession string    `json:"from_session"`
-	FromName    string    `json:"from_name,omitempty"`
+	ToSession   string    `json:"to_session"`
+	ToName      string    `json:"to_name,omitempty"`
 	ReplyTo     string    `json:"reply_to,omitempty"`
 	Body        string    `json:"body"`
-	SentAt      time.Time `json:"sent_at,omitempty"`
-	ReceivedAt  time.Time `json:"received_at"`
+	Wake        bool      `json:"wake,omitempty"`
+	SentAt      time.Time `json:"sent_at"`
+	DeliveredAt time.Time `json:"delivered_at"`
 }
 
 type savedConfig struct {
@@ -98,28 +116,32 @@ type service struct {
 	mu         sync.Mutex
 	settingsMu sync.Mutex
 
-	host       hostAPI
-	root       string
-	project    string
-	sessionID  string
-	name       string
-	mode       string
-	wake       bool
-	listener   net.Listener
-	endpoint   string
-	record     string
-	token      string
-	ownerLock  *os.File
-	cancel     context.CancelFunc
-	generation uint64
-	seen       map[string]cachedDelivery
-	inflight   map[string]chan struct{}
-	inbox      []inboundEntry
-	exchange   func(context.Context, string, message) (response, error)
+	host                 hostAPI
+	root                 string
+	project              string
+	sessionID            string
+	name                 string
+	mode                 string
+	wake                 bool
+	listener             net.Listener
+	endpoint             string
+	record               string
+	token                string
+	ownerLock            *os.File
+	cancel               context.CancelFunc
+	generation           uint64
+	seen                 map[string]cachedDelivery
+	inflight             map[string]chan struct{}
+	inbox                []inboundEntry
+	outbox               []outboundEntry
+	autoWakes            int
+	autoWakeReservations int
+	pendingReplies       map[string]bool
+	exchange             func(context.Context, string, message) (response, error)
 }
 
 func newService() *service {
-	return &service{seen: make(map[string]cachedDelivery), inflight: make(map[string]chan struct{}), exchange: exchange}
+	return &service{seen: make(map[string]cachedDelivery), inflight: make(map[string]chan struct{}), pendingReplies: make(map[string]bool), exchange: exchange}
 }
 
 func (s *service) extension() plugin.Extension {
@@ -135,9 +157,10 @@ func (s *service) extension() plugin.Extension {
 		}},
 		Tools: []plugin.Tool{
 			{Name: "intercom_list", Description: "List other opted-in Notch sessions in this project", InputSchema: objectSchema(nil, nil), Execute: s.listTool},
-			{Name: "intercom_send", Description: "Send bounded untrusted text to one selected Notch session; this does not grant it authority or permissions", InputSchema: objectSchema(map[string]any{"target": stringSchema("Session name or session ID"), "message": stringSchema("Message, at most 16 KiB")}, []string{"target", "message"}), Execute: s.sendTool},
+			{Name: "intercom_send", Description: "Send bounded untrusted text to one selected Notch session. Set wake=true only for a request that needs timely work; the recipient must opt in and automated wakes are capped per session. This does not grant authority or permissions", InputSchema: objectSchema(map[string]any{"target": stringSchema("Session name or session ID"), "message": stringSchema("Message, at most 16 KiB"), "wake": map[string]any{"type": "boolean", "description": "Request one bounded opt-in wake; replies never wake"}}, []string{"target", "message"}), Execute: s.sendTool},
 			{Name: "intercom_reply", Description: "Reply once to an intercom request ID. Replies never wake the recipient, which prevents automatic reply loops", InputSchema: objectSchema(map[string]any{"request_id": stringSchema("Inbound request ID"), "message": stringSchema("Reply, at most 16 KiB")}, []string{"request_id", "message"}), Execute: s.replyTool},
 			{Name: "intercom_inbox", Description: "Read recent intercom messages durably stored in this session", InputSchema: objectSchema(nil, nil), Execute: s.inboxTool},
+			{Name: "intercom_request_status", Description: "Verify that one durably recorded outbound Intercom request was delivered and whether matching replies were received", InputSchema: objectSchema(map[string]any{"request_id": stringSchema("Outbound request ID")}, []string{"request_id"}), Execute: s.requestStatusTool},
 		},
 	}
 }
@@ -203,7 +226,12 @@ func (s *service) startSession(ctx context.Context, client hostAPI, event map[st
 	if err != nil {
 		return nil, fmt.Errorf("load intercom settings: %w", err)
 	}
+	outbound, err := client.SessionEntries(ctx, outboundKind)
+	if err != nil {
+		return nil, fmt.Errorf("load intercom outbox: %w", err)
+	}
 	seen, inbox := loadInbox(entries)
+	outbox := loadOutbox(outbound)
 	cfg := loadConfig(configs)
 	name := cfg.Name
 	if name == "" {
@@ -214,7 +242,9 @@ func (s *service) startSession(ctx context.Context, client hostAPI, event map[st
 	s.mu.Lock()
 	s.host, s.root, s.project = client, root, project
 	s.sessionID, s.name, s.mode, s.wake = sessionID, name, mode, cfg.Wake
-	s.seen, s.inbox = seen, inbox
+	s.seen, s.inbox, s.outbox, s.autoWakes = seen, inbox, outbox, countAutomatedWakeRequests(inbox)
+	s.autoWakeReservations = 0
+	s.pendingReplies = make(map[string]bool)
 	s.inflight = make(map[string]chan struct{})
 	s.generation++
 	s.mu.Unlock()
@@ -244,12 +274,43 @@ func loadInbox(raw []json.RawMessage) (map[string]cachedDelivery, []inboundEntry
 			key := deliveryKey(entry.FromSession, entry.ID)
 			seen[key] = cachedDelivery{
 				result:      response{Version: protocolVersion, ID: entry.ID, Delivered: true, Duplicate: true},
-				fingerprint: messageFingerprint(message{FromSession: entry.FromSession, ReplyTo: entry.ReplyTo, Body: entry.Body}),
+				fingerprint: messageFingerprint(message{FromSession: entry.FromSession, ReplyTo: entry.ReplyTo, Wake: entry.Wake, AutomatedWake: entry.AutomatedWake, Body: entry.Body}),
 			}
 			inbox = append(inbox, entry)
 		}
 	}
 	return seen, inbox
+}
+
+func countAutomatedWakeRequests(inbox []inboundEntry) int {
+	count := 0
+	for _, entry := range inbox {
+		if entry.WakeAccepted {
+			count++
+		}
+	}
+	if count > maxAutomatedWakes {
+		return maxAutomatedWakes
+	}
+	return count
+}
+
+func loadOutbox(raw []json.RawMessage) []outboundEntry {
+	out := make([]outboundEntry, 0, len(raw))
+	positions := make(map[string]int)
+	for _, item := range raw {
+		var entry outboundEntry
+		if json.Unmarshal(item, &entry) != nil || entry.ID == "" {
+			continue
+		}
+		if index, ok := positions[entry.ID]; ok {
+			out[index] = entry
+			continue
+		}
+		positions[entry.ID] = len(out)
+		out = append(out, entry)
+	}
+	return out
 }
 
 func loadConfig(raw []json.RawMessage) savedConfig {
@@ -492,27 +553,54 @@ func (s *service) receive(ctx context.Context, request message) response {
 		wait := make(chan struct{})
 		s.inflight[key] = wait
 		host, sessionID, wake, generation := s.host, s.sessionID, s.wake, s.generation
+		shouldWake := wake && request.Wake && request.ReplyTo == ""
+		wakeLimitReached, wakeReserved := false, false
+		if shouldWake && request.AutomatedWake {
+			if s.autoWakes+s.autoWakeReservations >= maxAutomatedWakes {
+				shouldWake, wakeLimitReached = false, true
+			} else {
+				s.autoWakeReservations++
+				wakeReserved = true
+			}
+		}
 		s.mu.Unlock()
 
-		entry := inboundEntry{ID: request.ID, FromSession: request.FromSession, FromName: request.FromName, ReplyTo: request.ReplyTo, Body: request.Body, SentAt: request.SentAt, ReceivedAt: time.Now().UTC()}
+		entry := inboundEntry{ID: request.ID, FromSession: request.FromSession, FromName: request.FromName, ReplyTo: request.ReplyTo, Wake: request.Wake, AutomatedWake: request.AutomatedWake, WakeAccepted: wakeReserved, Body: request.Body, SentAt: request.SentAt, ReceivedAt: time.Now().UTC()}
 		result := response{Version: protocolVersion, ID: request.ID}
+		persisted := false
 		if host == nil {
 			result.Error = "intercom session is not ready"
 		} else if err := host.AppendSessionEntryFor(ctx, sessionID, entryKind, entry); err != nil {
 			result.Error = "persist inbound message: " + err.Error()
 		} else {
-			result.Delivered = true
+			persisted, result.Delivered = true, true
+		}
+		if wakeReserved {
+			s.mu.Lock()
+			if s.generation == generation && s.sessionID == sessionID {
+				if s.autoWakeReservations > 0 {
+					s.autoWakeReservations--
+				}
+				if persisted {
+					s.autoWakes++
+				}
+			}
+			s.mu.Unlock()
+		}
+		if persisted {
 			label := request.FromName
 			if label == "" {
 				label = shortID(request.FromSession)
 			}
 			_ = host.Notify(ctx, fmt.Sprintf("Intercom from %s (%s)", label, request.ID), "info")
-			// Only a manual command may set Wake. Tool-originated messages and all
-			// replies are passive, so two agents cannot automatically wake a loop.
-			if wake && request.Wake && request.ReplyTo == "" {
+			// Replies never wake. Automated requests can wake only opted-in peers
+			// and are capped per session so two agents cannot create an unbounded loop.
+			if shouldWake {
 				if err := host.FollowUpFor(ctx, sessionID, wakeMessage(entry)); err != nil {
 					result.Warning = "message stored, but wakeup was not delivered: " + err.Error()
 				}
+			} else if wakeLimitReached {
+				result.Warning = fmt.Sprintf("message stored, but the automated wake limit of %d was reached", maxAutomatedWakes)
 			}
 		}
 
@@ -531,7 +619,8 @@ func (s *service) receive(ctx context.Context, request message) response {
 func deliveryKey(sender, id string) string { return sender + "\x00" + id }
 
 func messageFingerprint(request message) [32]byte {
-	return sha256.Sum256([]byte(request.FromSession + "\x00" + request.ReplyTo + "\x00" + request.Body))
+	flags := fmt.Sprintf("%t\x00%t", request.Wake, request.AutomatedWake)
+	return sha256.Sum256([]byte(request.FromSession + "\x00" + request.ReplyTo + "\x00" + flags + "\x00" + request.Body))
 }
 
 func validateMessage(request message) error {
@@ -622,12 +711,28 @@ func (s *service) peers(ctx context.Context) ([]peerRecord, error) {
 }
 
 func (s *service) send(ctx context.Context, target, body, replyTo string, wake bool) (response, error) {
+	return s.sendMessage(ctx, target, body, replyTo, wake, false)
+}
+
+func (s *service) sendAutomated(ctx context.Context, target, body string, wake bool) (response, error) {
+	return s.sendMessage(ctx, target, body, "", wake, wake)
+}
+
+func (s *service) sendMessage(ctx context.Context, target, body, replyTo string, wake, automatedWake bool) (response, error) {
+	s.settingsMu.Lock()
+	defer s.settingsMu.Unlock()
 	body = strings.TrimSpace(body)
 	if body == "" {
 		return response{}, errors.New("message is empty")
 	}
 	if len(body) > maxBodyBytes {
 		return response{}, fmt.Errorf("message exceeds %d-byte limit", maxBodyBytes)
+	}
+	s.mu.Lock()
+	outboundCount := len(s.outbox)
+	s.mu.Unlock()
+	if outboundCount >= maxOutboundEntries {
+		return response{}, fmt.Errorf("intercom outbox limit of %d messages is reached; start a new session", maxOutboundEntries)
 	}
 	peers, err := s.peers(ctx)
 	if err != nil {
@@ -646,7 +751,7 @@ func (s *service) send(ctx context.Context, target, body, replyTo string, wake b
 		return response{}, fmt.Errorf("intercom name %q is ambiguous; use a session ID", target)
 	}
 	s.mu.Lock()
-	fromSession, fromName, project, callExchange := s.sessionID, s.name, s.project, s.exchange
+	fromSession, fromName, project, host, generation, callExchange := s.sessionID, s.name, s.project, s.host, s.generation, s.exchange
 	s.mu.Unlock()
 	if callExchange == nil {
 		callExchange = exchange
@@ -655,7 +760,22 @@ func (s *service) send(ctx context.Context, target, body, replyTo string, wake b
 	if err != nil {
 		return response{}, err
 	}
-	request := message{Version: protocolVersion, Type: "deliver", ID: id, Project: project, ToSession: matches[0].SessionID, FromSession: fromSession, FromName: fromName, ReplyTo: replyTo, Wake: wake, Body: body, SentAt: time.Now().UTC()}
+	request := message{Version: protocolVersion, Type: "deliver", ID: id, Project: project, ToSession: matches[0].SessionID, FromSession: fromSession, FromName: fromName, ReplyTo: replyTo, Wake: wake, AutomatedWake: automatedWake, Body: body, SentAt: time.Now().UTC()}
+	entry := outboundEntry{ID: id, ToSession: matches[0].SessionID, ToName: matches[0].Name, ReplyTo: replyTo, Body: body, Wake: wake, SentAt: request.SentAt}
+	if host == nil {
+		return response{}, errors.New("intercom session is not ready")
+	}
+	if err := host.AppendSessionEntryFor(ctx, fromSession, outboundKind, entry); err != nil {
+		return response{}, fmt.Errorf("record outbound request %s before delivery: %w", id, err)
+	}
+	s.mu.Lock()
+	if s.generation != generation || s.sessionID != fromSession {
+		s.mu.Unlock()
+		return response{}, fmt.Errorf("outbound request %s was recorded, but the active session changed before delivery", id)
+	}
+	s.outbox = append(s.outbox, entry)
+	s.mu.Unlock()
+
 	var result response
 	for attempt := 0; attempt < 2; attempt++ {
 		result, err = callExchange(ctx, matches[0].Endpoint, request)
@@ -664,14 +784,28 @@ func (s *service) send(ctx context.Context, target, body, replyTo string, wake b
 		}
 	}
 	if err != nil {
-		return response{}, fmt.Errorf("deliver request %s to %s: %w", id, target, err)
+		return response{}, fmt.Errorf("deliver recorded request %s to %s: %w", id, target, err)
 	}
 	if result.Error != "" {
-		return result, fmt.Errorf("deliver request %s to %s: %s", id, target, result.Error)
+		return result, fmt.Errorf("deliver recorded request %s to %s: %s", id, target, result.Error)
 	}
 	if !result.Delivered {
-		return result, fmt.Errorf("peer did not confirm delivery for request %s", id)
+		return result, fmt.Errorf("peer did not confirm delivery for recorded request %s", id)
 	}
+	entry.DeliveredAt = time.Now().UTC()
+	if appendErr := host.AppendSessionEntryFor(ctx, fromSession, outboundKind, entry); appendErr != nil {
+		result.Warning = joinWarning(result.Warning, "delivery confirmed, but durable delivery status remains pending: "+appendErr.Error())
+	}
+	s.mu.Lock()
+	if s.generation == generation && s.sessionID == fromSession {
+		for i := len(s.outbox) - 1; i >= 0; i-- {
+			if s.outbox[i].ID == id {
+				s.outbox[i] = entry
+				break
+			}
+		}
+	}
+	s.mu.Unlock()
 	return result, nil
 }
 
@@ -719,6 +853,20 @@ func randomID() (string, error) {
 
 func (s *service) resolveReply(ctx context.Context, requestID, body string) (response, error) {
 	s.mu.Lock()
+	if s.pendingReplies == nil {
+		s.pendingReplies = make(map[string]bool)
+	}
+	if s.pendingReplies[requestID] {
+		s.mu.Unlock()
+		return response{}, fmt.Errorf("request %q already has a reply in progress", requestID)
+	}
+	for _, entry := range s.outbox {
+		if entry.ReplyTo == requestID {
+			s.mu.Unlock()
+			return response{}, fmt.Errorf("request %q already has outbound reply %s", requestID, entry.ID)
+		}
+	}
+	s.pendingReplies[requestID] = true
 	targets := make(map[string]struct{})
 	for i := len(s.inbox) - 1; i >= 0; i-- {
 		if s.inbox[i].ID == requestID {
@@ -726,6 +874,11 @@ func (s *service) resolveReply(ctx context.Context, requestID, body string) (res
 		}
 	}
 	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.pendingReplies, requestID)
+		s.mu.Unlock()
+	}()
 	if len(targets) == 0 {
 		return response{}, fmt.Errorf("request ID %q is not in this session inbox", requestID)
 	}
@@ -754,6 +907,11 @@ func (s *service) command(ctx context.Context, args string) (string, error) {
 		return formatPeers(peers), nil
 	case "inbox":
 		return s.formatInbox(), nil
+	case "request":
+		if len(fields) != 2 {
+			return "", errors.New("usage: /intercom request REQUEST_ID")
+		}
+		return s.requestStatus(fields[1])
 	case "wake":
 		if len(fields) != 2 || (fields[1] != "on" && fields[1] != "off") {
 			return "", errors.New("usage: /intercom wake on|off")
@@ -779,7 +937,7 @@ func (s *service) command(ctx context.Context, args string) (string, error) {
 		result, err := s.resolveReply(ctx, parts[0], parts[1])
 		return formatDelivery(result), err
 	default:
-		return "", errors.New("usage: /intercom status|list|inbox|wake on|off|name NAME|send TARGET MESSAGE|reply REQUEST_ID MESSAGE")
+		return "", errors.New("usage: /intercom status|list|inbox|request REQUEST_ID|wake on|off|name NAME|send TARGET MESSAGE|reply REQUEST_ID MESSAGE")
 	}
 }
 
@@ -887,6 +1045,13 @@ func formatPeers(peers []peerRecord) string {
 	return strings.Join(lines, "\n")
 }
 
+func joinWarning(current, next string) string {
+	if current == "" {
+		return next
+	}
+	return current + "; " + next
+}
+
 func formatDelivery(result response) string {
 	if !result.Delivered {
 		return ""
@@ -907,11 +1072,15 @@ func (s *service) listTool(ctx context.Context, _ json.RawMessage, _ plugin.Prog
 }
 
 func (s *service) sendTool(ctx context.Context, raw json.RawMessage, _ plugin.Progress) (plugin.ToolResult, error) {
-	var args struct{ Target, Message string }
+	var args struct {
+		Target  string `json:"target"`
+		Message string `json:"message"`
+		Wake    bool   `json:"wake"`
+	}
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return plugin.ToolResult{}, err
 	}
-	result, err := s.send(ctx, args.Target, args.Message, "", false)
+	result, err := s.sendAutomated(ctx, args.Target, args.Message, args.Wake)
 	return plugin.ToolResult{Content: formatDelivery(result), IsError: err != nil}, err
 }
 
@@ -929,6 +1098,61 @@ func (s *service) replyTool(ctx context.Context, raw json.RawMessage, _ plugin.P
 
 func (s *service) inboxTool(context.Context, json.RawMessage, plugin.Progress) (plugin.ToolResult, error) {
 	return plugin.ToolResult{Content: s.formatInbox()}, nil
+}
+
+func (s *service) requestStatus(requestID string) (string, error) {
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return "", errors.New("request_id is required")
+	}
+	s.mu.Lock()
+	var request *outboundEntry
+	for i := len(s.outbox) - 1; i >= 0; i-- {
+		if s.outbox[i].ID == requestID {
+			copy := s.outbox[i]
+			request = &copy
+			break
+		}
+	}
+	if request == nil {
+		s.mu.Unlock()
+		return "", fmt.Errorf("outbound request %q is not recorded in this session", requestID)
+	}
+	var replies []inboundEntry
+	for _, entry := range s.inbox {
+		if entry.ReplyTo == requestID && entry.FromSession == request.ToSession {
+			replies = append(replies, entry)
+		}
+	}
+	s.mu.Unlock()
+	status := "delivered_pending_reply"
+	if request.DeliveredAt.IsZero() {
+		status = "pending_delivery"
+	}
+	if request.ReplyTo != "" {
+		status = "reply_delivered"
+		if request.DeliveredAt.IsZero() {
+			status = "reply_pending_delivery"
+		}
+	} else if len(replies) > 0 {
+		status = "replied"
+	}
+	body, err := json.MarshalIndent(map[string]any{"status": status, "request": request, "replies": replies}, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(body), nil
+}
+
+func (s *service) requestStatusTool(_ context.Context, raw json.RawMessage, _ plugin.Progress) (plugin.ToolResult, error) {
+	var args struct {
+		RequestID string `json:"request_id"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return plugin.ToolResult{}, err
+	}
+	content, err := s.requestStatus(args.RequestID)
+	return plugin.ToolResult{Content: content, IsError: err != nil}, err
 }
 
 func shortID(value string) string {
