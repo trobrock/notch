@@ -598,3 +598,12 @@ func TestRootResumeFlagAllowsPickerOrExplicitSession(t *testing.T) {
 		}
 	}
 }
+
+func TestRunModeClassifiesPrintFromArgumentOrStdin(t *testing.T) {
+	if got := runMode(false, false, options{printMode: true}); got != "print" {
+		t.Fatalf("stdin print mode = %q", got)
+	}
+	if got := runMode(false, false, options{printMode: true, prompt: "hello"}); got != "print" {
+		t.Fatalf("argument print mode = %q", got)
+	}
+}

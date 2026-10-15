@@ -96,7 +96,16 @@ When an agent run is active, `prompt` requires a Pi-compatible `streamingBehavio
 {"type":"prompt","message":"Then summarize the changes","streamingBehavior":"followUp"}
 ```
 
-`steer` is delivered at the next safe turn boundary after current tool results. `followUp` waits until the run would otherwise settle. Skill and command-template input is expanded before submission. Images and interactive extension UI requests are not supported in the initial RPC surface.
+`steer` is delivered at the next safe turn boundary after current tool results. `followUp` waits until the run would otherwise settle. Skill and command-template input is expanded before submission. Images are not supported in the initial RPC surface.
+
+Interactive extension input is exposed as an event instead of terminal UI. A client answers the exact pending request by ID:
+
+```json
+{"type":"input_request","requestId":"input-1","kind":"select","prompt":"Ship now?","options":["Yes","No"],"sessionId":"session-id"}
+{"id":"answer-1","type":"input_response","requestId":"input-1","value":"No"}
+```
+
+For free-form input, `kind` is `input` and the event may include `placeholder`. A `select` response value must exactly match one of the emitted options. To cancel either kind, send `"cancelled":true`. A run ending before an answer makes that request stale. Request IDs belong to the running RPC process; reconnecting clients should use the durable session ID to decide whether an older displayed question is stale.
 
 Dedicated queue commands are also accepted:
 
@@ -122,6 +131,7 @@ Notch emits the Pi event names needed by streaming clients:
 - `message_start`, `message_update`, and `message_end`
 - `tool_execution_start`, `tool_execution_update`, and `tool_execution_end`
 - `queue_update`
+- `input_request` for extension questions
 - `compaction_start` and `compaction_end` (`compaction_end` always terminates a started compaction and includes `aborted`, `canceled`, `willRetry`, and an `error` string on failure)
 - `error`
 

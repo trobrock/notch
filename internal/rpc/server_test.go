@@ -233,6 +233,190 @@ func TestServerSessionEntriesUseConfiguredSession(t *testing.T) {
 	}
 }
 
+func TestServerInteractiveInputBeforeConfigureFails(t *testing.T) {
+	server := New(strings.NewReader(""), io.Discard, "/work")
+	if _, err := server.Input(context.Background(), "Question", ""); err == nil || !strings.Contains(err.Error(), "before the RPC server is configured") {
+		t.Fatalf("Input error = %v", err)
+	}
+}
+
+func TestServerInteractiveSelectRoundTrip(t *testing.T) {
+	reader, writer := io.Pipe()
+	buffered := bufio.NewReader(reader)
+	server := New(strings.NewReader(""), writer, "/work")
+	server.runner = &agent.Agent{}
+	server.registry = extension.NewRegistry()
+	server.state.SessionID = "session-1"
+
+	result := make(chan inputResponse, 1)
+	go func() {
+		value, err := server.Select(context.Background(), "Ship now?", []string{"Yes", "No"})
+		result <- inputResponse{value: value, err: err}
+	}()
+
+	line, err := buffered.ReadBytes('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	var event struct {
+		Type      string   `json:"type"`
+		RequestID string   `json:"requestId"`
+		Kind      string   `json:"kind"`
+		Options   []string `json:"options"`
+		SessionID string   `json:"sessionId"`
+	}
+	if err := json.Unmarshal(line, &event); err != nil {
+		t.Fatal(err)
+	}
+	if event.Type != "input_request" || event.RequestID == "" || event.Kind != "select" || event.SessionID != "session-1" || len(event.Options) != 2 {
+		t.Fatalf("event = %#v", event)
+	}
+	invalid := make(chan error, 1)
+	go func() {
+		invalid <- server.handleInputResponse(command{Type: "input_response", RequestID: event.RequestID, Value: "Maybe"})
+	}()
+	line, err = buffered.ReadBytes('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	var invalidResponse response
+	if err := json.Unmarshal(line, &invalidResponse); err != nil {
+		t.Fatal(err)
+	}
+	if invalidResponse.Success || !strings.Contains(invalidResponse.Error, "pending options") {
+		t.Fatalf("invalid response = %#v", invalidResponse)
+	}
+	if err := <-invalid; err != nil {
+		t.Fatal(err)
+	}
+
+	handled := make(chan error, 1)
+	go func() {
+		handled <- server.handleInputResponse(command{Type: "input_response", RequestID: event.RequestID, Value: "No"})
+	}()
+	if _, err := buffered.ReadBytes('\n'); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-handled; err != nil {
+		t.Fatal(err)
+	}
+	got := <-result
+	if got.err != nil || got.value != "No" {
+		t.Fatalf("result = %#v", got)
+	}
+	_ = writer.Close()
+	_ = reader.Close()
+}
+
+func TestServerInputRequestNamespacesDifferAcrossProcesses(t *testing.T) {
+	first := New(strings.NewReader(""), io.Discard, "/work")
+	second := New(strings.NewReader(""), io.Discard, "/work")
+	if first.inputNamespace == "" || first.inputNamespace == second.inputNamespace {
+		t.Fatalf("input namespaces = %q and %q", first.inputNamespace, second.inputNamespace)
+	}
+}
+
+func TestServerAbortInvalidatesPendingInput(t *testing.T) {
+	reader, writer := io.Pipe()
+	buffered := bufio.NewReader(reader)
+	server := New(strings.NewReader(""), writer, "/work")
+	server.runner = &agent.Agent{}
+	server.registry = extension.NewRegistry()
+
+	result := make(chan inputResponse, 1)
+	go func() {
+		value, err := server.Input(context.Background(), "Question", "")
+		result <- inputResponse{value: value, err: err}
+	}()
+	line, err := buffered.ReadBytes('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	var event struct {
+		RequestID string `json:"requestId"`
+	}
+	if err := json.Unmarshal(line, &event); err != nil || event.RequestID == "" {
+		t.Fatalf("input event = %s, %v", line, err)
+	}
+
+	aborted := make(chan error, 1)
+	go func() { aborted <- server.handle(context.Background(), command{Type: "abort"}) }()
+	if _, err := buffered.ReadBytes('\n'); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-aborted; err != nil {
+		t.Fatal(err)
+	}
+
+	answered := make(chan error, 1)
+	go func() {
+		answered <- server.handleInputResponse(command{Type: "input_response", RequestID: event.RequestID, Value: "late"})
+	}()
+	line, err = buffered.ReadBytes('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response response
+	if err := json.Unmarshal(line, &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Success || !strings.Contains(response.Error, "not pending") {
+		t.Fatalf("late response = %#v", response)
+	}
+	if err := <-answered; err != nil {
+		t.Fatal(err)
+	}
+	if got := <-result; !errors.Is(got.err, context.Canceled) {
+		t.Fatalf("input result = %#v", got)
+	}
+	_ = writer.Close()
+	_ = reader.Close()
+}
+
+func TestServerEOFCancelsAndClosesInteractiveInput(t *testing.T) {
+	reader, writer := io.Pipe()
+	buffered := bufio.NewReader(reader)
+	server := New(strings.NewReader(""), writer, "/work")
+	server.runner = &agent.Agent{}
+	server.registry = extension.NewRegistry()
+
+	result := make(chan inputResponse, 1)
+	go func() {
+		value, err := server.Input(context.Background(), "Question", "")
+		result <- inputResponse{value: value, err: err}
+	}()
+	if _, err := buffered.ReadBytes('\n'); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-result; !errors.Is(got.err, context.Canceled) {
+		t.Fatalf("input result = %#v", got)
+	}
+	if _, err := server.Input(context.Background(), "Later", ""); err == nil || !strings.Contains(err.Error(), "server closed") {
+		t.Fatalf("post-EOF input error = %v", err)
+	}
+	_ = writer.Close()
+	_ = reader.Close()
+}
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("write failed") }
+
+func TestServerHandlerErrorClosesInteractiveInput(t *testing.T) {
+	server := New(strings.NewReader("{\"type\":\"get_state\"}\n"), failingWriter{}, "/work")
+	server.runner = &agent.Agent{}
+	server.registry = extension.NewRegistry()
+	if err := server.Run(context.Background()); err == nil || !strings.Contains(err.Error(), "write failed") {
+		t.Fatalf("Run error = %v", err)
+	}
+	if _, err := server.Input(context.Background(), "Later", ""); err == nil || !strings.Contains(err.Error(), "server closed") {
+		t.Fatalf("post-error input = %v", err)
+	}
+}
+
 func TestReadRecordStrictJSONL(t *testing.T) {
 	reader := bufio.NewReader(strings.NewReader("one\r\ntwo\npartial"))
 	first, err := readRecord(reader)

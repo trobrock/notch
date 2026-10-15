@@ -4,6 +4,8 @@ package rpc
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +13,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/trobrock/notch/internal/agent"
 	"github.com/trobrock/notch/internal/extension"
@@ -24,6 +28,7 @@ const maxCommandSize = 16 << 20
 var (
 	errCommandTooLarge  = errors.New("RPC command exceeds 16 MiB")
 	errUnterminatedLine = errors.New("RPC command is not terminated by LF")
+	inputNamespaceSeq   atomic.Uint64
 )
 
 // StateConfig describes static process/session state returned by get_state.
@@ -46,22 +51,46 @@ type Server struct {
 	in  io.Reader
 	out io.Writer
 
-	writeMu    sync.Mutex
-	mu         sync.Mutex
-	runner     *agent.Agent
-	registry   *extension.Registry
-	catalog    *resources.Catalog
-	session    *session.Session
-	state      StateConfig
-	active     bool
-	pending    []string
-	compacting bool
-	cancel     context.CancelFunc
-	wg         sync.WaitGroup
+	writeMu        sync.Mutex
+	mu             sync.Mutex
+	runner         *agent.Agent
+	registry       *extension.Registry
+	catalog        *resources.Catalog
+	session        *session.Session
+	state          StateConfig
+	active         bool
+	pending        []string
+	compacting     bool
+	cancel         context.CancelFunc
+	closed         bool
+	inputNamespace string
+	nextInputID    uint64
+	inputs         map[string]*pendingInput
+	wg             sync.WaitGroup
+}
+
+type pendingInput struct {
+	ctx     context.Context
+	kind    string
+	options []string
+	reply   chan inputResponse
+}
+
+type inputResponse struct {
+	value string
+	err   error
 }
 
 func New(in io.Reader, out io.Writer, cwd string) *Server {
-	return &Server{in: in, out: out, cwd: cwd}
+	return &Server{in: in, out: out, cwd: cwd, inputNamespace: newInputNamespace()}
+}
+
+func newInputNamespace() string {
+	var value [8]byte
+	if _, err := rand.Read(value[:]); err == nil {
+		return hex.EncodeToString(value[:])
+	}
+	return fmt.Sprintf("%x-%x", time.Now().UnixNano(), inputNamespaceSeq.Add(1))
 }
 
 func (s *Server) Configure(runner *agent.Agent, registry *extension.Registry, catalog *resources.Catalog, state StateConfig) {
@@ -83,12 +112,84 @@ func (s *Server) Exec(ctx context.Context, command string, args []string) (strin
 	return sharedprocess.Run(ctx, s.cwd, command, args)
 }
 
-func (s *Server) Input(context.Context, string, string) (string, error) {
-	return "", errors.New("interactive extension input is not supported in Notch RPC mode")
+func (s *Server) Input(ctx context.Context, prompt, placeholder string) (string, error) {
+	return s.requestInput(ctx, "input", prompt, placeholder, nil)
 }
 
-func (s *Server) Select(context.Context, string, []string) (string, error) {
-	return "", errors.New("interactive extension selection is not supported in Notch RPC mode")
+func (s *Server) Select(ctx context.Context, prompt string, options []string) (string, error) {
+	if len(options) == 0 {
+		return "", errors.New("select requires options")
+	}
+	return s.requestInput(ctx, "select", prompt, "", append([]string(nil), options...))
+}
+
+func (s *Server) requestInput(ctx context.Context, kind, prompt, placeholder string, options []string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.mu.Lock()
+	if s.runner == nil || s.registry == nil {
+		s.mu.Unlock()
+		return "", errors.New("interactive extension input is unavailable before the RPC server is configured")
+	}
+	if s.closed {
+		s.mu.Unlock()
+		return "", errors.New("interactive extension input is unavailable after the RPC server closed")
+	}
+	if err := ctx.Err(); err != nil {
+		s.mu.Unlock()
+		return "", err
+	}
+
+	s.nextInputID++
+	requestID := fmt.Sprintf("input-%s-%d", s.inputNamespace, s.nextInputID)
+	if s.inputs == nil {
+		s.inputs = make(map[string]*pendingInput)
+	}
+	pending := &pendingInput{
+		ctx: ctx, kind: kind, options: append([]string(nil), options...),
+		reply: make(chan inputResponse, 1),
+	}
+	s.inputs[requestID] = pending
+	sessionID := s.state.SessionID
+	s.mu.Unlock()
+	stopCancellation := context.AfterFunc(ctx, func() {
+		if s.removeInput(requestID, pending) {
+			pending.reply <- inputResponse{err: ctx.Err()}
+		}
+	})
+	defer stopCancellation()
+
+	event := map[string]any{
+		"type": "input_request", "requestId": requestID, "kind": kind,
+		"prompt": prompt,
+	}
+	if placeholder != "" {
+		event["placeholder"] = placeholder
+	}
+	if len(options) != 0 {
+		event["options"] = options
+	}
+	if sessionID != "" {
+		event["sessionId"] = sessionID
+	}
+	if err := s.write(event); err != nil {
+		s.removeInput(requestID, pending)
+		return "", err
+	}
+
+	response := <-pending.reply
+	return response.value, response.err
+}
+
+func (s *Server) removeInput(requestID string, pending *pendingInput) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.inputs[requestID] != pending {
+		return false
+	}
+	delete(s.inputs, requestID)
+	return true
 }
 
 func (s *Server) Notify(message, level string) {
@@ -219,6 +320,9 @@ type command struct {
 	Message           string            `json:"message,omitempty"`
 	StreamingBehavior string            `json:"streamingBehavior,omitempty"`
 	Images            []json.RawMessage `json:"images,omitempty"`
+	RequestID         string            `json:"requestId,omitempty"`
+	Value             string            `json:"value,omitempty"`
+	Cancelled         bool              `json:"cancelled,omitempty"`
 }
 
 type response struct {
@@ -240,19 +344,19 @@ func (s *Server) Run(ctx context.Context) error {
 	if !configured {
 		return errors.New("RPC server is not configured")
 	}
+	defer func() {
+		s.shutdown()
+		s.wg.Wait()
+	}()
 	reader := bufio.NewReaderSize(s.in, 64*1024)
 	for {
 		line, err := readRecord(reader)
 		if errors.Is(err, io.EOF) {
-			s.stopActive()
-			s.wg.Wait()
 			return nil
 		}
 		if err != nil {
 			_ = s.failure(nil, "parse", err)
 			if errors.Is(err, errUnterminatedLine) {
-				s.stopActive()
-				s.wg.Wait()
 				return nil
 			}
 			continue
@@ -281,6 +385,8 @@ func (s *Server) handle(ctx context.Context, request command) error {
 		return s.queue(request, "steer")
 	case "follow_up":
 		return s.queue(request, "followUp")
+	case "input_response":
+		return s.handleInputResponse(request)
 	case "abort":
 		s.mu.Lock()
 		cancel := s.cancel
@@ -288,12 +394,53 @@ func (s *Server) handle(ctx context.Context, request command) error {
 		if cancel != nil {
 			cancel()
 		}
+		s.cancelInputs(context.Canceled)
 		return s.success(request, nil)
 	case "":
 		return s.failure(request.ID, "parse", errors.New("command type is required"))
 	default:
 		return s.failure(request.ID, request.Type, fmt.Errorf("unknown command %q", request.Type))
 	}
+}
+
+func (s *Server) handleInputResponse(request command) error {
+	request.RequestID = strings.TrimSpace(request.RequestID)
+	if request.RequestID == "" {
+		return s.failure(request.ID, request.Type, errors.New("requestId is required"))
+	}
+	s.mu.Lock()
+	pending := s.inputs[request.RequestID]
+	if pending == nil {
+		s.mu.Unlock()
+		return s.failure(request.ID, request.Type, fmt.Errorf("input request %q is not pending", request.RequestID))
+	}
+	if err := pending.ctx.Err(); err != nil {
+		delete(s.inputs, request.RequestID)
+		s.mu.Unlock()
+		pending.reply <- inputResponse{err: err}
+		return s.failure(request.ID, request.Type, fmt.Errorf("input request %q is not pending", request.RequestID))
+	}
+	if pending.kind == "select" && !request.Cancelled && !containsString(pending.options, request.Value) {
+		s.mu.Unlock()
+		return s.failure(request.ID, request.Type, fmt.Errorf("input response value is not one of the pending options"))
+	}
+	delete(s.inputs, request.RequestID)
+	s.mu.Unlock()
+	response := inputResponse{value: request.Value}
+	if request.Cancelled {
+		response.err = context.Canceled
+	}
+	pending.reply <- response
+	return s.success(request, nil)
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) handlePrompt(ctx context.Context, request command) error {
@@ -483,13 +630,28 @@ func (s *Server) setCompacting(value bool) {
 	s.mu.Unlock()
 }
 
-func (s *Server) stopActive() {
+func (s *Server) cancelInputs(err error) {
 	s.mu.Lock()
+	pending := make([]*pendingInput, 0, len(s.inputs))
+	for requestID, input := range s.inputs {
+		pending = append(pending, input)
+		delete(s.inputs, requestID)
+	}
+	s.mu.Unlock()
+	for _, input := range pending {
+		input.reply <- inputResponse{err: err}
+	}
+}
+
+func (s *Server) shutdown() {
+	s.mu.Lock()
+	s.closed = true
 	cancel := s.cancel
 	s.mu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
+	s.cancelInputs(context.Canceled)
 }
 
 func readRecord(reader *bufio.Reader) ([]byte, error) {
