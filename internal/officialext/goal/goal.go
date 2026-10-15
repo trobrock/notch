@@ -71,7 +71,7 @@ func Register(registry *extension.Registry, host extension.Host) error {
 			Name: "goal", Description: "Run a bounded, durable single-agent goal", Source: Source,
 			AllowWhileStreamingArgs: allowWhileStreaming, Execute: s.command,
 		}},
-		Tools: []extension.Tool{s.progressTool(), s.completeTool(), s.pauseTool()},
+		Tools: []extension.Tool{s.startTool(), s.progressTool(), s.completeTool(), s.pauseTool()},
 		Hooks: []extension.HookRegistration{
 			{Event: "session_start", Source: Source, Handler: s.sessionChange},
 			{Event: "session_change", Source: Source, Handler: s.sessionChange},
@@ -147,6 +147,25 @@ func (s *state) start(ctx context.Context, args string) (string, error) {
 		return "", errors.New("goal requires an objective and at least one completion check")
 	}
 
+	return s.startGoal(objective, checks, maxSteps, true)
+}
+
+func (s *state) startGoal(objective string, checks []string, maxSteps int, followUp bool) (string, error) {
+	objective = strings.TrimSpace(objective)
+	checks = append([]string(nil), checks...)
+	for index := range checks {
+		checks[index] = strings.TrimSpace(checks[index])
+		if checks[index] == "" {
+			return "", errors.New("goal completion checks cannot be empty")
+		}
+	}
+	if objective == "" || len(checks) == 0 {
+		return "", errors.New("goal requires an objective and at least one completion check")
+	}
+	if maxSteps < 1 || maxSteps > maxMaxSteps {
+		return "", fmt.Errorf("max steps must be between 1 and %d", maxMaxSteps)
+	}
+
 	s.mu.Lock()
 	if s.goal.Status == "active" {
 		s.mu.Unlock()
@@ -154,15 +173,17 @@ func (s *state) start(ctx context.Context, args string) (string, error) {
 	}
 	s.goal = snapshot{Version: 1, ID: strconv.FormatInt(time.Now().UnixNano(), 36), Objective: objective,
 		Checks: checks, Status: "active", MaxSteps: maxSteps}
-	err = s.persistLocked()
+	err := s.persistLocked()
 	s.updateStatusLocked()
 	s.mu.Unlock()
 	if err != nil {
 		return "", err
 	}
-	if err := s.host.FollowUp(startMessage(objective, checks)); err != nil {
-		_, _ = s.pause("could not start: " + err.Error())
-		return "", err
+	if followUp {
+		if err := s.host.FollowUp(startMessage(objective, checks)); err != nil {
+			_, _ = s.pause("could not start: " + err.Error())
+			return "", err
+		}
 	}
 	return fmt.Sprintf("Goal started with %d completion check(s) and a %d-step limit.", len(checks), maxSteps), nil
 }
@@ -487,6 +508,33 @@ func (s *state) sessionChange(_ context.Context, event map[string]any) (map[stri
 	s.updateStatusLocked()
 	s.mu.Unlock()
 	return nil, err
+}
+
+func (s *state) startTool() extension.Tool {
+	return extension.Tool{Source: Source, Definition: model.ToolDefinition{Name: "start_goal",
+		Description: "Start a bounded /goal only when the user explicitly asks for goal mode. Use completion checks that match the user's requested outcome.",
+		InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+			"objective": map[string]any{"type": "string"},
+			"checks":    map[string]any{"type": "array", "minItems": 1, "items": map[string]any{"type": "string"}},
+			"max_steps": map[string]any{"type": "integer", "minimum": 1, "maximum": maxMaxSteps, "description": "Work-step limit. Defaults to 8."},
+		}, "required": []any{"objective", "checks"}}}, Execute: func(_ context.Context, raw json.RawMessage, _ func(string)) (extension.ToolResult, error) {
+		var input struct {
+			Objective string   `json:"objective"`
+			Checks    []string `json:"checks"`
+			MaxSteps  int      `json:"max_steps"`
+		}
+		if err := json.Unmarshal(raw, &input); err != nil {
+			return extension.ToolResult{}, err
+		}
+		if input.MaxSteps == 0 {
+			input.MaxSteps = defaultMaxSteps
+		}
+		content, err := s.startGoal(input.Objective, input.Checks, input.MaxSteps, false)
+		if err != nil {
+			return extension.ToolResult{Content: err.Error(), IsError: true}, nil
+		}
+		return extension.ToolResult{Content: content + " Begin work now and use the goal progress, completion, or pause tools as needed."}, nil
+	}}
 }
 
 func (s *state) progressTool() extension.Tool {

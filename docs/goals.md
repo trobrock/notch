@@ -10,7 +10,9 @@ The easiest form asks for the missing fields in the composer:
 /goal start
 ```
 
-You can also provide everything on one line:
+You can also ask the agent in normal language, such as “start a goal to fix the config parser.” The agent may call `start_goal` only when you explicitly ask for goal mode. It creates completion checks from your requested outcome and uses the normal eight-step default unless you choose another limit.
+
+You can provide everything to the slash command on one line:
 
 ```text
 /goal start Fix the config parser --check focused parser tests pass --check the user docs explain the syntax --max-steps 8
@@ -30,7 +32,9 @@ Human messages always win over an automatic goal continuation at a turn boundary
 
 ## Completion and stopping
 
-Goal mode adds three model tools:
+Goal mode adds four model tools:
+
+- `start_goal` starts goal mode from a normal-language request. It is only for explicit user requests, needs an objective and completion checks, and defaults to eight work steps.
 
 - `report_goal_progress` records concrete new progress. Repeating the same summary does not count.
 - `complete_goal` first requires recorded progress, then requires non-empty evidence for every exact completion check. Saying “done” in normal assistant text cannot complete a goal. Evidence is model-reported, not an independent verifier, so inspect it with `/goal status`.

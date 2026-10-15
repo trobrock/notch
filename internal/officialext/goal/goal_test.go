@@ -161,6 +161,67 @@ func latest(t *testing.T, host *testHost) snapshot {
 	return got
 }
 
+func TestStartGoalTool(t *testing.T) {
+	host := newTestHost("tool-start")
+	r := setup(t, host)
+	tool, ok := r.Tool("start_goal")
+	if !ok || !strings.Contains(tool.Definition.Description, "explicitly asks") {
+		t.Fatalf("start_goal tool = %#v, registered = %v", tool.Definition, ok)
+	}
+
+	result, err := tool.Execute(context.Background(), json.RawMessage(`{
+		"objective":"fix the parser",
+		"checks":["focused test passes","docs explain it"],
+		"max_steps":4
+	}`), nil)
+	if err != nil || result.IsError {
+		t.Fatalf("start_goal = %#v, %v", result, err)
+	}
+	got := latest(t, host)
+	if got.Status != "active" || got.Objective != "fix the parser" || got.MaxSteps != 4 || len(got.Checks) != 2 {
+		t.Fatalf("started goal = %#v", got)
+	}
+	if len(host.followUps) != 0 {
+		t.Fatalf("tool start queued duplicate follow-up = %#v", host.followUps)
+	}
+
+	result, err = tool.Execute(context.Background(), json.RawMessage(`{"objective":"other","checks":["done"],"max_steps":8}`), nil)
+	if err != nil || !result.IsError || !strings.Contains(result.Content, "already active") {
+		t.Fatalf("second start_goal = %#v, %v", result, err)
+	}
+
+	defaultHost := newTestHost("tool-default")
+	defaultRegistry := setup(t, defaultHost)
+	defaultTool, _ := defaultRegistry.Tool("start_goal")
+	result, err = defaultTool.Execute(context.Background(), json.RawMessage(`{"objective":"work","checks":["done"]}`), nil)
+	if err != nil || result.IsError || latest(t, defaultHost).MaxSteps != defaultMaxSteps {
+		t.Fatalf("default start_goal = %#v, state = %#v, error = %v", result, latest(t, defaultHost), err)
+	}
+}
+
+func TestStartGoalToolValidatesInput(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "missing objective", raw: `{"checks":["done"],"max_steps":8}`, want: "objective"},
+		{name: "empty check", raw: `{"objective":"work","checks":[""],"max_steps":8}`, want: "cannot be empty"},
+		{name: "too many steps", raw: `{"objective":"work","checks":["done"],"max_steps":51}`, want: "max steps"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			host := newTestHost("invalid")
+			r := setup(t, host)
+			tool, _ := r.Tool("start_goal")
+			result, err := tool.Execute(context.Background(), json.RawMessage(test.raw), nil)
+			if err != nil || !result.IsError || !strings.Contains(result.Content, test.want) {
+				t.Fatalf("start_goal = %#v, %v", result, err)
+			}
+		})
+	}
+}
+
 func TestGoalPersistenceRestoreAndSessionIsolation(t *testing.T) {
 	host := newTestHost("one")
 	r := setup(t, host)
