@@ -35,6 +35,7 @@ func TestParserKeys(t *testing.T) {
 		{"alt-xterm", "\x1b[1;3D\x1b[1;3C", []KeyEvent{{Key: KeyAltLeft}, {Key: KeyAltRight}}},
 		{"alt-rxvt", "\x1b[3D\x1b[3C", []KeyEvent{{Key: KeyAltLeft}, {Key: KeyAltRight}}},
 		{"shift-enter", "\x1b[13;2u\x1b[27;2;13~", []KeyEvent{{Key: KeyShiftEnter}, {Key: KeyShiftEnter}}},
+		{"kitty-printable", "\x1b[120;1u\x1b[106:74;2u\x1b[97;2u\x1b[47:63;2;63u\x1b[106:74;2:3u", []KeyEvent{{Text: "x"}, {Text: "J"}, {Text: "A"}, {Text: "?"}}},
 		{"shift-tab", "\x1b[Z\x1b[9;2u\x1b[27;2;9~", []KeyEvent{{Key: KeyShiftTab}, {Key: KeyShiftTab}, {Key: KeyShiftTab}}},
 		{"kitty-controls", "\x1b[100;5u\x1b[99;5u\x1b[106;5u\x1b[121;5u\x1b[97;5:3u", []KeyEvent{{Key: KeyCtrlD}, {Key: KeyCtrlC}, {Key: KeyNewline}, {Key: KeyCtrlY}}},
 		{"modify-other-controls", "\x1b[27;5;100~\x1b[27;5;99~", []KeyEvent{{Key: KeyCtrlD}, {Key: KeyCtrlC}}},
@@ -102,6 +103,26 @@ func TestParserPasteWaitsForTerminator(t *testing.T) {
 	want := []KeyEvent{{Text: "hello\nworld", Paste: true}, {Text: "!"}}
 	if got := p.Feed([]byte("1~!")); !reflect.DeepEqual(got, want) {
 		t.Fatalf("completed paste = %#v, want %#v", got, want)
+	}
+}
+
+func TestParserFlushPaste(t *testing.T) {
+	var p Parser
+	if got := p.Feed([]byte("\x1b[200~stuck")); len(got) != 0 {
+		t.Fatalf("unterminated paste emitted %#v", got)
+	}
+	if !p.HasPendingPaste() {
+		t.Fatal("parser did not report pending paste")
+	}
+	want := []KeyEvent{{Text: "stuck", Paste: true}}
+	if got := p.FlushPaste(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("FlushPaste = %#v, want %#v", got, want)
+	}
+	if p.HasPendingPaste() {
+		t.Fatal("flushed paste remains pending")
+	}
+	if got := p.Feed([]byte("J")); !reflect.DeepEqual(got, []KeyEvent{{Text: "J"}}) {
+		t.Fatalf("input after recovered paste = %#v", got)
 	}
 }
 

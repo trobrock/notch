@@ -30,6 +30,7 @@ const (
 	appEventBuffer     = 128
 	deltaDelay         = 33 * time.Millisecond
 	escapeDelay        = 50 * time.Millisecond
+	pasteDelay         = time.Second
 	thinkingFrameDelay = 120 * time.Millisecond
 	maxPanelLines      = 100
 	maxPanelLineBytes  = 4096
@@ -681,25 +682,39 @@ func (a *App) readInput(ctx context.Context, output chan<- []KeyEvent, readError
 	}()
 
 	parser := NewParser()
-	var escapeTimer *time.Timer
-	var escapeC <-chan time.Time
-	stopEscapeTimer := func() {
-		if escapeTimer != nil && !escapeTimer.Stop() {
+	var pendingTimer *time.Timer
+	var pendingC <-chan time.Time
+	stopPendingTimer := func() {
+		if pendingTimer != nil && !pendingTimer.Stop() {
 			select {
-			case <-escapeTimer.C:
+			case <-pendingTimer.C:
 			default:
 			}
 		}
-		escapeTimer, escapeC = nil, nil
+		pendingTimer, pendingC = nil, nil
 	}
-	defer stopEscapeTimer()
+	resetPendingTimer := func(delay time.Duration) {
+		stopPendingTimer()
+		pendingTimer = time.NewTimer(delay)
+		pendingC = pendingTimer.C
+	}
+	flushPending := func() bool {
+		var keys []KeyEvent
+		if parser.HasPendingPaste() {
+			keys = parser.FlushPaste()
+		} else {
+			keys = parser.FlushEscape()
+		}
+		return len(keys) == 0 || sendInput(ctx, output, keys)
+	}
+	defer stopPendingTimer()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-escapeC:
-			escapeTimer, escapeC = nil, nil
-			if keys := parser.FlushEscape(); len(keys) != 0 && !sendInput(ctx, output, keys) {
+		case <-pendingC:
+			pendingTimer, pendingC = nil, nil
+			if !flushPending() {
 				return
 			}
 		case result := <-reads:
@@ -708,17 +723,17 @@ func (a *App) readInput(ctx context.Context, output chan<- []KeyEvent, readError
 					return
 				}
 			}
-			if parser.HasPendingEscape() {
-				stopEscapeTimer()
-				escapeTimer = time.NewTimer(escapeDelay)
-				escapeC = escapeTimer.C
+			if parser.HasPendingPaste() {
+				resetPendingTimer(pasteDelay)
+			} else if parser.HasPendingEscape() {
+				resetPendingTimer(escapeDelay)
 			} else {
-				stopEscapeTimer()
+				stopPendingTimer()
 			}
 			if result.err != nil {
-				if parser.HasPendingEscape() {
-					stopEscapeTimer()
-					if keys := parser.FlushEscape(); len(keys) != 0 && !sendInput(ctx, output, keys) {
+				if parser.HasPendingEscape() || parser.HasPendingPaste() {
+					stopPendingTimer()
+					if !flushPending() {
 						return
 					}
 				}

@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -147,9 +148,25 @@ func (p *Parser) HasPendingEscape() bool {
 	return !p.inPaste && len(p.buf) > 0 && p.buf[0] == 0x1b
 }
 
-// FlushEscape resolves a pending escape prefix as a literal Escape key. It is
-// normally called only after a terminal read deadline. Any bytes following the
-// escape are fed back through the parser as ordinary input.
+func (p *Parser) HasPendingPaste() bool { return p.inPaste }
+
+// FlushPaste recovers from an incomplete bracketed paste. Without this, a
+// missing end marker causes every later key to remain buffered forever.
+func (p *Parser) FlushPaste() []KeyEvent {
+	if !p.inPaste {
+		return nil
+	}
+	text := string(p.buf)
+	p.buf = nil
+	p.inPaste = false
+	if text == "" {
+		return nil
+	}
+	return []KeyEvent{{Text: text, Paste: true}}
+}
+
+// FlushEscape resolves a pending escape prefix as a literal Escape key. Any
+// bytes following the escape are fed back through the parser as ordinary input.
 func (p *Parser) FlushEscape() []KeyEvent {
 	if p.inPaste || len(p.buf) == 0 || p.buf[0] != 0x1b {
 		return nil
@@ -397,7 +414,7 @@ func mouseWheelEvent(button int, pressed bool, consumed int) (KeyEvent, int, boo
 }
 
 func parseEnhancedKey(seq string) (KeyEvent, bool) {
-	// Kitty keyboard protocol: CSI codepoint ; modifiers[:event] u.
+	// Kitty keyboard protocol: CSI key[:shifted] ; modifiers[:event] ; text u.
 	// Event 3 is key release and must be consumed without triggering an action.
 	if strings.HasSuffix(seq, "u") {
 		params := strings.TrimSuffix(seq, "u")
@@ -405,7 +422,8 @@ func parseEnhancedKey(seq string) (KeyEvent, bool) {
 			return KeyEvent{}, true
 		} // protocol response
 		parts := strings.Split(params, ";")
-		code, err := strconv.Atoi(strings.Split(parts[0], ":")[0])
+		keyParts := strings.Split(parts[0], ":")
+		code, err := strconv.Atoi(keyParts[0])
 		if err != nil {
 			return KeyEvent{}, false
 		}
@@ -424,7 +442,14 @@ func parseEnhancedKey(seq string) (KeyEvent, bool) {
 		if eventType == 3 {
 			return KeyEvent{}, true
 		}
-		return enhancedCodeEvent(code, modifier), true
+
+		text := ""
+		if len(parts) > 2 {
+			text = kittyText(parts[2])
+		} else if modifier&1 == 0 && len(keyParts) > 1 {
+			text = kittyText(keyParts[1])
+		}
+		return enhancedCodeEvent(code, modifier, text), true
 	}
 
 	// xterm modifyOtherKeys: CSI 27 ; modifiers ; codepoint ~.
@@ -434,14 +459,26 @@ func parseEnhancedKey(seq string) (KeyEvent, bool) {
 			modifier, modErr := strconv.Atoi(parts[1])
 			code, codeErr := strconv.Atoi(parts[2])
 			if modErr == nil && codeErr == nil {
-				return enhancedCodeEvent(code, modifier), true
+				return enhancedCodeEvent(code, modifier, ""), true
 			}
 		}
 	}
 	return KeyEvent{}, false
 }
 
-func enhancedCodeEvent(code, modifier int) KeyEvent {
+func kittyText(field string) string {
+	var text strings.Builder
+	for _, value := range strings.Split(field, ":") {
+		codepoint, err := strconv.Atoi(value)
+		if err != nil || !utf8.ValidRune(rune(codepoint)) {
+			return ""
+		}
+		text.WriteRune(rune(codepoint))
+	}
+	return text.String()
+}
+
+func enhancedCodeEvent(code, modifier int, text string) KeyEvent {
 	bits := max(0, modifier-1)
 	shift, alt, ctrl := bits&1 != 0, bits&2 != 0, bits&4 != 0
 	if alt && (code == 13 || code == 10) {
@@ -454,6 +491,19 @@ func enhancedCodeEvent(code, modifier int) KeyEvent {
 		return KeyEvent{Key: KeyShiftTab}
 	}
 	if !ctrl {
+		if alt {
+			return KeyEvent{}
+		}
+		if text != "" {
+			return KeyEvent{Text: text}
+		}
+		r := rune(code)
+		if shift {
+			r = unicode.ToUpper(r)
+		}
+		if utf8.ValidRune(r) && !unicode.IsControl(r) {
+			return KeyEvent{Text: string(r)}
+		}
 		return KeyEvent{}
 	}
 	switch code {
