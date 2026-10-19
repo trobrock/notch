@@ -96,3 +96,7 @@ A useful repository pilot is: have one helper trace request cancellation, a seco
 Teams help when independent investigation is the slow part and the reports change the lead's decision. They do not help when the edit is small, tasks depend on each other, the lead must answer many questions, or integration/review erases the parallel time saved. Keep the feature off in those cases.
 
 The first live walkthrough should be done with the user because authorization, intervention count, and perceived usefulness cannot be established by automated tests alone. Record those measurements before claiming that teams are better for a class of work.
+
+## Reusable role contracts
+
+Helper `role` values use the global reusable role resolver shared with `run_subagent` and `explore_codebase`. `developer` is canonical and `implementer` remains an alias. Global custom roles are accepted, but they do not bypass helper kind validation, read-only defaults, write approval, tool limits, or worktree checks. See [reusable specialist roles](roles.md).

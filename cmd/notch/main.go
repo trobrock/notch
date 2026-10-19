@@ -74,15 +74,15 @@ Run 'notch COMMAND --help' for command-specific help.`
 const delegationProviderPolicy = "When using subagents, stay on the currently selected provider by default. Use a different provider only when the user explicitly requests it or has explicitly configured a provider-qualified delegation model. If the user requests a model that is unavailable on the current provider without naming another provider, ask before trying another provider; never silently fall back across providers."
 
 type options struct {
-	provider, modelName, thinking, profile, routingSnapshot, prompt, systemPrompt, systemPromptFile, mcpConfig, resumeSession, mode, toolAllow, toolExclude string
-	settingSources                                                                                                                                          string
-	maxTurns                                                                                                                                                int
-	maxCostUSD                                                                                                                                              float64
-	idleTimeout                                                                                                                                             time.Duration
-	printMode, planMode, continueSession, resumeSpecified, noSession, jsonOutput, noTUI, init, showVersion, rpcMode                                         bool
-	showEffectiveSettings, acknowledgeProfileChange                                                                                                         bool
-	noTools, noBuiltinTools, noExtensions, noResources                                                                                                      bool
-	safe, trustWorkspace                                                                                                                                    bool
+	provider, modelName, thinking, profile, routingSnapshot, prompt, systemPrompt, systemPromptFile, delegationInstructionsFile, mcpConfig, resumeSession, mode, toolAllow, toolExclude string
+	settingSources                                                                                                                                                                      string
+	maxTurns                                                                                                                                                                            int
+	maxCostUSD                                                                                                                                                                          float64
+	idleTimeout                                                                                                                                                                         time.Duration
+	printMode, planMode, continueSession, resumeSpecified, noSession, jsonOutput, noTUI, init, showVersion, rpcMode                                                                     bool
+	showEffectiveSettings, acknowledgeProfileChange                                                                                                                                     bool
+	noTools, noBuiltinTools, noExtensions, noResources                                                                                                                                  bool
+	safe, trustWorkspace                                                                                                                                                                bool
 }
 
 type optionalStringFlag struct {
@@ -146,6 +146,7 @@ func newRootFlagSet(opts *options) *flag.FlagSet {
 	flags.BoolVar(&opts.planMode, "plan", false, "start with read-only plan mode enabled")
 	flags.StringVar(&opts.systemPrompt, "system-prompt", "", "override the configured system prompt")
 	flags.StringVar(&opts.systemPromptFile, "system-prompt-file", "", "read the system prompt override from a file")
+	flags.StringVar(&opts.delegationInstructionsFile, "delegation-instructions-file", "", "append trusted delegation instructions after project guidance")
 	flags.StringVar(&opts.mcpConfig, "mcp-config", "", "path to MCP JSON config")
 	flags.BoolVar(&opts.continueSession, "continue", false, "continue the latest session for this working directory")
 	flags.Var(&resume, "resume", "select a recent session; pass an ID, prefix, filename, or path to resume directly")
@@ -547,7 +548,7 @@ func run(args []string) error {
 			if encodeErr != nil {
 				return encodeErr
 			}
-			if err := officialext.RegisterWithRouting(registry, extensionHost, opts.settingSources, cfg.Provider, cfg.Model, routingValue, allowedProviders); err != nil {
+			if err := officialext.RegisterWithRoleConfig(registry, extensionHost, opts.settingSources, cfg.Provider, cfg.Model, routingValue, allowedProviders, cfg, activeRouting); err != nil {
 				return err
 			}
 		}
@@ -649,6 +650,15 @@ func run(args []string) error {
 	systemPrompt += "\n\n" + delegationProviderPolicy
 	if cfg.ExploreModel != "" {
 		systemPrompt += "\n\nThe configured default for explore_codebase is `" + cfg.ExploreModel + "`. Omit model to use it. If it is unavailable, call list_models for its provider and retry once with the closest listed model in the same family and capability tier; never guess an unlisted model ID."
+	}
+	if opts.delegationInstructionsFile != "" {
+		data, readErr := os.ReadFile(opts.delegationInstructionsFile)
+		if readErr != nil {
+			return fmt.Errorf("read delegation instructions file: %w", readErr)
+		}
+		if extra := strings.TrimSpace(string(data)); extra != "" {
+			systemPrompt += "\n\n" + extra
+		}
 	}
 
 	modelsRegistry := modelRegistryFor(cfg)

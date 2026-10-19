@@ -19,6 +19,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/trobrock/notch/internal/config"
 	"github.com/trobrock/notch/internal/delegation"
 	"github.com/trobrock/notch/internal/extension"
 	"github.com/trobrock/notch/internal/model"
@@ -40,17 +41,26 @@ const (
 var readOnlyTools = map[string]bool{"read": true, "grep": true, "find": true, "ls": true}
 
 type Input struct {
-	Prompt          string  `json:"prompt"`
-	Model           string  `json:"model,omitempty"`
-	CWD             string  `json:"cwd,omitempty"`
-	Tools           string  `json:"tools,omitempty"`
-	AllowWriteTools bool    `json:"allowWriteTools,omitempty"`
-	TimeoutSeconds  int     `json:"timeoutSeconds,omitempty"`
-	MaxOutputChars  int     `json:"maxOutputChars,omitempty"`
-	MaxTurns        int     `json:"maxTurns,omitempty"`
-	MaxCostUSD      float64 `json:"maxCostUSD,omitempty"`
-	SystemPrompt    string  `json:"systemPrompt,omitempty"`
-	Thinking        string  `json:"thinking,omitempty"`
+	Prompt            string  `json:"prompt"`
+	Role              string  `json:"role,omitempty"`
+	Model             string  `json:"model,omitempty"`
+	CWD               string  `json:"cwd,omitempty"`
+	Tools             string  `json:"tools,omitempty"`
+	AllowWriteTools   bool    `json:"allowWriteTools,omitempty"`
+	TimeoutSeconds    int     `json:"timeoutSeconds,omitempty"`
+	MaxOutputChars    int     `json:"maxOutputChars,omitempty"`
+	MaxTurns          int     `json:"maxTurns,omitempty"`
+	MaxCostUSD        float64 `json:"maxCostUSD,omitempty"`
+	SystemPrompt      string  `json:"systemPrompt,omitempty"`
+	Thinking          string  `json:"thinking,omitempty"`
+	ModelExplicit     bool    `json:"-"`
+	ThinkingExplicit  bool    `json:"-"`
+	TimeoutExplicit   bool    `json:"-"`
+	MaxOutputExplicit bool    `json:"-"`
+	MaxTurnsExplicit  bool    `json:"-"`
+	MaxCostExplicit   bool    `json:"-"`
+	TimeoutLimit      int     `json:"-"`
+	MaxOutputLimit    int     `json:"-"`
 }
 
 type Usage struct {
@@ -67,15 +77,147 @@ type Usage struct {
 }
 
 type Result struct {
-	Output   string `json:"output"`
-	Stderr   string `json:"stderr,omitempty"`
-	ExitCode int    `json:"exitCode"`
-	TimedOut bool   `json:"timedOut"`
-	Usage    Usage  `json:"usage"`
+	Output   string                 `json:"output"`
+	Stderr   string                 `json:"stderr,omitempty"`
+	ExitCode int                    `json:"exitCode"`
+	TimedOut bool                   `json:"timedOut"`
+	Usage    Usage                  `json:"usage"`
+	Role     *config.RoleResolution `json:"role,omitempty"`
 }
 
 type Runner interface {
 	Run(context.Context, Input, func(string)) (Result, error)
+}
+
+type roleRunner struct {
+	base            Runner
+	host            extension.Host
+	cfg             config.Config
+	routing         *config.RoutingSnapshot
+	defaultProvider string
+}
+
+// NewRoleRunner adds reusable role policy without changing the authority of
+// the wrapped runner.
+func NewRoleRunner(base Runner, host extension.Host, cfg config.Config, routing *config.RoutingSnapshot, provider string) Runner {
+	if base == nil || host == nil {
+		return base
+	}
+	return &roleRunner{base: base, host: host, cfg: cfg, routing: routing, defaultProvider: provider}
+}
+
+func (r *roleRunner) Run(ctx context.Context, input Input, update func(string)) (Result, error) {
+	if strings.TrimSpace(input.Role) == "" {
+		return r.base.Run(ctx, input, update)
+	}
+	resolved, err := config.ResolveRole(r.cfg, r.routing, input.Role)
+	if err != nil {
+		return Result{}, err
+	}
+	if !input.ModelExplicit && strings.TrimSpace(input.Model) == "" {
+		input.Model = resolved.Model
+	}
+	if !input.ThinkingExplicit && resolved.Thinking != "" {
+		input.Thinking = resolved.Thinking
+	}
+	if !input.TimeoutExplicit && resolved.TimeoutSeconds > 0 {
+		input.TimeoutSeconds = resolved.TimeoutSeconds
+	}
+	if !input.MaxOutputExplicit && resolved.MaxOutputChars > 0 {
+		input.MaxOutputChars = resolved.MaxOutputChars
+	}
+	if !input.MaxTurnsExplicit && resolved.MaxTurns > 0 {
+		input.MaxTurns = resolved.MaxTurns
+	}
+	if !input.MaxCostExplicit && resolved.MaxCostUSD > 0 {
+		input.MaxCostUSD = resolved.MaxCostUSD
+	}
+	if input.TimeoutLimit > 0 && input.TimeoutSeconds > input.TimeoutLimit {
+		return Result{}, fmt.Errorf("role %q timeout_seconds %d exceeds this delegation tool's limit %d", resolved.Name, input.TimeoutSeconds, input.TimeoutLimit)
+	}
+	if input.MaxOutputLimit > 0 && input.MaxOutputChars > input.MaxOutputLimit {
+		return Result{}, fmt.Errorf("role %q max_output_chars %d exceeds this delegation tool's limit %d", resolved.Name, input.MaxOutputChars, input.MaxOutputLimit)
+	}
+	if input.ModelExplicit {
+		resolved.Model, resolved.ModelProvenance = input.Model, "explicit task override"
+	}
+	resolved.Thinking = input.Thinking
+	resolved.TimeoutSeconds = input.TimeoutSeconds
+	resolved.MaxOutputChars = input.MaxOutputChars
+	resolved.MaxTurns = input.MaxTurns
+	resolved.MaxCostUSD = input.MaxCostUSD
+	input.SystemPrompt = strings.TrimSpace(resolved.Instructions + "\n" + input.SystemPrompt)
+	if err := r.validateModel(ctx, input.Model); err != nil {
+		return Result{}, err
+	}
+	config.RefreshRoleHash(&resolved)
+	if sessionID := r.host.SessionID(); sessionID != "" {
+		if err := r.host.AppendSessionEntry(sessionID, "delegation_role", resolved); err != nil {
+			return Result{}, fmt.Errorf("record resolved role before dispatch: %w", err)
+		}
+	}
+	if update != nil {
+		update("role " + resolved.Name + " · model " + effectiveModelLabel(input.Model))
+	}
+	result, err := r.base.Run(ctx, input, update)
+	if resolved.Model == "" && result.Usage.Model != "" {
+		resolved.Model = result.Usage.Model
+	}
+	config.RefreshRoleHash(&resolved)
+	if sessionID := r.host.SessionID(); sessionID != "" {
+		if appendErr := r.host.AppendSessionEntry(sessionID, "delegation_role_result", resolved); appendErr != nil && err == nil {
+			err = fmt.Errorf("record resolved role result: %w", appendErr)
+		}
+	}
+	result.Role = &resolved
+	return result, err
+}
+
+func effectiveModelLabel(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "base default"
+	}
+	return strings.TrimSpace(value)
+}
+
+func (r *roleRunner) validateModel(ctx context.Context, value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	provider, modelName := strings.ToLower(strings.TrimSpace(r.defaultProvider)), value
+	if current, ok := r.host.(interface{ CurrentModel() (string, string) }); ok {
+		if currentProvider, _ := current.CurrentModel(); strings.TrimSpace(currentProvider) != "" {
+			provider = strings.ToLower(strings.TrimSpace(currentProvider))
+		}
+	}
+	if prefix, rest, found := strings.Cut(value, "/"); found && isProviderName(prefix) {
+		provider, modelName = strings.ToLower(prefix), rest
+	}
+	if r.routing != nil {
+		if err := r.routing.ValidateProvider(provider); err != nil {
+			return err
+		}
+	}
+	models, err := r.host.ListModels(ctx, provider, false)
+	if err != nil {
+		return fmt.Errorf("validate role model %q with provider %q before dispatch: %w", modelName, provider, err)
+	}
+	for _, available := range models {
+		if available.ID == modelName {
+			return nil
+		}
+	}
+	return fmt.Errorf("role model %q is unavailable from provider %q; call list_models for that provider and update the role mapping (no cross-provider fallback was attempted)", modelName, provider)
+}
+
+func isProviderName(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "openai-codex", "anthropic-claude-code", "openrouter", "anthropic", "openai":
+		return true
+	default:
+		return false
+	}
 }
 
 type processRunner struct {
@@ -181,7 +323,7 @@ func RegisterWithRunner(registry *extension.Registry, runner Runner) error {
 			delegated := delegatedUsage(result.Usage)
 			details := map[string]any{
 				"output": result.Output, "stderr": result.Stderr, "exitCode": result.ExitCode,
-				"timedOut": result.TimedOut, "usage": result.Usage,
+				"timedOut": result.TimedOut, "usage": result.Usage, "role": result.Role,
 				"usageLine":       fmt.Sprintf("subagent usage: %s, %d turns, %d tool calls, in %d, out %d, %d ms", result.Usage.Model, result.Usage.Turns, result.Usage.ToolCalls, result.Usage.Input, result.Usage.Output, result.Usage.WallMS),
 				"delegated_usage": delegated,
 			}
@@ -199,6 +341,7 @@ func schema() map[string]any {
 		"type": "object",
 		"properties": map[string]any{
 			"prompt":          map[string]any{"type": "string", "minLength": 1, "description": "Self-contained task or question for the subagent."},
+			"role":            map[string]any{"type": "string", "description": "Reusable specialist role. Built-ins: lead, researcher, designer, developer (implementer alias), qa, reviewer. Global custom roles are also accepted."},
 			"model":           map[string]any{"type": "string", "description": "Model ID, optionally provider/model. Omit to use the current parent provider/model. An unqualified ID stays on the current provider; qualify it only for a user-requested or explicitly configured provider change."},
 			"cwd":             map[string]any{"type": "string", "description": "Working directory. Defaults to the parent working directory."},
 			"tools":           map[string]any{"type": "string", "description": "Comma-separated tool allowlist. Defaults to read,grep,find,ls. bash is NOT read-only, even for inspection commands. Any other tool requires explicit delegated write authorization and allowWriteTools=true."},
@@ -224,6 +367,14 @@ func decodeInput(raw json.RawMessage) (Input, error) {
 	if err := decoder.Decode(&input); err != nil {
 		return input, fmt.Errorf("decode arguments: %w", err)
 	}
+	var present map[string]json.RawMessage
+	_ = json.Unmarshal(raw, &present)
+	_, input.ModelExplicit = present["model"]
+	_, input.ThinkingExplicit = present["thinking"]
+	_, input.TimeoutExplicit = present["timeoutSeconds"]
+	_, input.MaxOutputExplicit = present["maxOutputChars"]
+	_, input.MaxTurnsExplicit = present["maxTurns"]
+	_, input.MaxCostExplicit = present["maxCostUSD"]
 	input.Prompt = strings.TrimSpace(input.Prompt)
 	if input.Prompt == "" {
 		return input, errors.New("prompt must not be empty")
@@ -310,8 +461,15 @@ func (r *processRunner) Run(ctx context.Context, input Input, update func(string
 	}
 	defer os.RemoveAll(tempDir)
 	systemPath := filepath.Join(tempDir, "SYSTEM.md")
-	if err := os.WriteFile(systemPath, []byte(baseSystemPrompt(input.SystemPrompt)), 0o600); err != nil {
+	if err := os.WriteFile(systemPath, []byte(baseSystemPrompt("")), 0o600); err != nil {
 		return Result{}, fmt.Errorf("write subagent system prompt: %w", err)
+	}
+	delegationPath := ""
+	if extra := strings.TrimSpace(input.SystemPrompt); extra != "" {
+		delegationPath = filepath.Join(tempDir, "DELEGATION.md")
+		if err := os.WriteFile(delegationPath, []byte(extra), 0o600); err != nil {
+			return Result{}, fmt.Errorf("write subagent delegation instructions: %w", err)
+		}
 	}
 
 	settingSources := r.settingSources
@@ -320,6 +478,9 @@ func (r *processRunner) Run(ctx context.Context, input Input, update func(string
 	}
 	args := []string{"--json", "--setting-sources", settingSources, "--no-session", "--no-tui", "--no-extensions", "--no-resources", "--tools", input.Tools,
 		"--thinking", input.Thinking, "--system-prompt-file", systemPath}
+	if delegationPath != "" {
+		args = append(args, "--delegation-instructions-file", delegationPath)
+	}
 	if input.MaxTurns > 0 {
 		args = append(args, "--max-turns", strconv.Itoa(input.MaxTurns))
 	}

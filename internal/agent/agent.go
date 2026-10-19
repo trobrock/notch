@@ -949,9 +949,20 @@ func (a *Agent) applyDelegationModelDefault(call *model.Block) {
 	}
 
 	modelName, _ := arguments["model"].(string)
+	roleName, _ := arguments["role"].(string)
+	hasRole := strings.TrimSpace(roleName) != ""
+	if tasks, ok := arguments["tasks"].([]any); ok {
+		for _, rawTask := range tasks {
+			if task, ok := rawTask.(map[string]any); ok {
+				if taskRole, _ := task["role"].(string); strings.TrimSpace(taskRole) != "" {
+					hasRole = true
+				}
+			}
+		}
+	}
 	if strings.TrimSpace(modelName) != "" {
 		arguments["model"] = qualify(modelName)
-	} else {
+	} else if !hasRole {
 		if call.Name == "explore_codebase" {
 			modelName = strings.TrimSpace(a.exploreModel)
 			if modelName != "" {
@@ -971,8 +982,17 @@ func (a *Agent) applyDelegationModelDefault(call *model.Block) {
 
 	// Per-task explore overrides follow the same rule: an unqualified model is
 	// resolved on the current parent provider, while provider/model remains an
-	// explicit cross-provider selection.
+	// explicit cross-provider selection. In a mixed batch, roleless tasks still
+	// receive the configured explore/base default instead of losing it because
+	// another task selected a role.
 	if tasks, ok := arguments["tasks"].([]any); ok {
+		_, hasBatchModel := arguments["model"]
+		fallbackModel := strings.TrimSpace(a.exploreModel)
+		if fallbackModel != "" {
+			fallbackModel = qualify(fallbackModel)
+		} else if fallbackModel = strings.TrimSpace(a.model); fallbackModel != "" && providerName != "" {
+			fallbackModel = providerName + "/" + fallbackModel
+		}
 		for _, rawTask := range tasks {
 			task, ok := rawTask.(map[string]any)
 			if !ok {
@@ -980,6 +1000,11 @@ func (a *Agent) applyDelegationModelDefault(call *model.Block) {
 			}
 			if taskModel, _ := task["model"].(string); strings.TrimSpace(taskModel) != "" {
 				task["model"] = qualify(taskModel)
+				continue
+			}
+			taskRole, _ := task["role"].(string)
+			if !hasBatchModel && strings.TrimSpace(roleName) == "" && strings.TrimSpace(taskRole) == "" && fallbackModel != "" {
+				task["model"] = fallbackModel
 			}
 		}
 	}

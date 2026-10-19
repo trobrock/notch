@@ -1467,6 +1467,27 @@ func TestDelegationToolsUseConfiguredDefaults(t *testing.T) {
 	if !strings.Contains(string(perTask.Arguments), `"openrouter/gpt-task"`) || !strings.Contains(string(perTask.Arguments), `"anthropic/claude-task"`) {
 		t.Fatalf("per-task models not resolved safely: %s", perTask.Arguments)
 	}
+	roleCall := model.Block{Name: "run_subagent", Arguments: json.RawMessage(`{"prompt":"inspect","role":"reviewer"}`)}
+	a.applyDelegationModelDefault(&roleCall)
+	if strings.Contains(string(roleCall.Arguments), `"model"`) {
+		t.Fatalf("role model mapping was shadowed: %s", roleCall.Arguments)
+	}
+	roleExplore := model.Block{Name: "explore_codebase", Arguments: json.RawMessage(`{"tasks":[{"task":"one","role":"researcher"}]}`)}
+	a.applyDelegationModelDefault(&roleExplore)
+	if strings.Contains(string(roleExplore.Arguments), `"model"`) {
+		t.Fatalf("task role model mapping was shadowed: %s", roleExplore.Arguments)
+	}
+	mixedExplore := model.Block{Name: "explore_codebase", Arguments: json.RawMessage(`{"tasks":[{"task":"role","role":"researcher"},{"task":"plain"}]}`)}
+	a.applyDelegationModelDefault(&mixedExplore)
+	var mixedArgs struct {
+		Tasks []map[string]any `json:"tasks"`
+	}
+	if err := json.Unmarshal(mixedExplore.Arguments, &mixedArgs); err != nil {
+		t.Fatal(err)
+	}
+	if mixedArgs.Tasks[0]["model"] != nil || mixedArgs.Tasks[1]["model"] != "openai-codex/gpt-explore" {
+		t.Fatalf("mixed role defaults = %s", mixedExplore.Arguments)
+	}
 	ordinary := model.Block{Name: "read", Arguments: json.RawMessage(`{"path":"x"}`)}
 	a.applyDelegationModelDefault(&ordinary)
 	if string(ordinary.Arguments) != `{"path":"x"}` {
