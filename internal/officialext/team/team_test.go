@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/trobrock/notch/internal/config"
 	"github.com/trobrock/notch/internal/delegation"
 	"github.com/trobrock/notch/internal/extension"
 	"github.com/trobrock/notch/internal/officialext/subagent"
@@ -185,8 +186,8 @@ func TestRoleSpecificModelAndBudgetsOverrideDefaults(t *testing.T) {
 	if got.Model != "cheap-reviewer" || got.Thinking != "medium" || got.TimeoutSeconds != 45 || got.MaxOutputChars != 4000 || got.MaxTurns != 5 || got.MaxCostUSD != 0.3 {
 		t.Fatalf("role input = %#v", got)
 	}
-	if !strings.Contains(got.Prompt, "Role: reviewer") {
-		t.Fatalf("role prompt = %q", got.Prompt)
+	if got.Role != "reviewer" {
+		t.Fatalf("role = %q", got.Role)
 	}
 }
 
@@ -208,8 +209,8 @@ func TestExecuteRejectsUnknownFields(t *testing.T) {
 
 func TestRoleValidationRejectsUnsafeCombinations(t *testing.T) {
 	for _, raw := range []string{
-		`{"tasks":[{"id":"x","kind":"research","role":"implementer","prompt":"x","acceptance_checks":["x"]}]}`,
-		`{"tasks":[{"id":"x","kind":"research","role":"unknown","prompt":"x","acceptance_checks":["x"]}]}`,
+		`{"tasks":[{"id":"x","kind":"research","role":"developer","prompt":"x","acceptance_checks":["x"]}]}`,
+		`{"tasks":[{"id":"x","kind":"research","role":"reviewer","prompt":"x","acceptance_checks":["x"]}]}`,
 		`{"tasks":[{"id":"x","kind":"research","prompt":"x","acceptance_checks":["x"],"max_cost_usd":-1}]}`,
 	} {
 		input := Input{}
@@ -432,5 +433,44 @@ func TestUnknownCostRemainsUnknownAndEnvelopeValidation(t *testing.T) {
 	}
 	if got := unsafeTools("read, bash, edit"); !reflect.DeepEqual(got, []string{"bash", "edit"}) {
 		t.Fatalf("unsafe = %#v", got)
+	}
+}
+
+func TestCustomRoleDoesNotBypassTeamValidation(t *testing.T) {
+	input := Input{Tasks: []Task{{ID: "x", Kind: "research", Role: "auditor", Prompt: "check", AcceptanceChecks: []string{"evidence"}}}}
+	if _, err := normalizeAndValidate(&input, "/lead", "/git", "main", "base", nil, &fakeGit{}, context.Background()); err != nil {
+		t.Fatalf("custom read-only role rejected: %v", err)
+	}
+	input = Input{AllowWriteTools: true, IntegrationOwner: "lead", Tasks: []Task{{ID: "x", Kind: "change", Role: "auditor", Prompt: "change", AcceptanceChecks: []string{"evidence"}}}}
+	if _, err := normalizeAndValidate(&input, "/lead", "/git", "main", "base", nil, &fakeGit{}, context.Background()); err == nil {
+		t.Fatal("custom role bypassed writer worktree checks")
+	}
+}
+
+func TestRoleDefaultBudgetCarriesAcrossClarification(t *testing.T) {
+	firstCost, secondCost := 0.2, 0.1
+	base := &scriptedRunner{outputs: map[string][]subagent.Result{"role budget": {
+		{Output: `{"status":"clarification","question":"Which format?"}`, Usage: subagent.Usage{Turns: 2, CostUSD: &firstCost}},
+		{Output: complete("done"), Usage: subagent.Usage{Turns: 1, CostUSD: &secondCost}},
+	}}}
+	host := &fakeHost{cwd: "/lead", answer: "JSON", asked: make(chan string, 1)}
+	roles := config.Config{Roles: map[string]config.RoleConfig{"auditor": {Instructions: "Audit.", MaxTurns: 5, MaxCostUSD: 0.5}}}
+	runner := subagent.NewRoleRunner(base, host, roles, nil, "openai")
+	git := &fakeGit{states: map[string][]gitSnapshot{"/lead": {{root: "/lead", branch: "main", head: "base"}}}}
+	registry := extension.NewRegistry()
+	if err := register(registry, host, runner, git); err != nil {
+		t.Fatal(err)
+	}
+	tool, _ := registry.Tool(ToolName)
+	raw := json.RawMessage(`{"tasks":[{"id":"budget","kind":"research","role":"auditor","prompt":"role budget","acceptance_checks":["done"]}],"clarify_wait_seconds":2}`)
+	result, err := tool.Execute(context.Background(), raw, nil)
+	if err != nil || result.IsError || len(base.inputs) != 2 {
+		t.Fatalf("execute=%#v err=%v inputs=%#v", result, err, base.inputs)
+	}
+	if base.inputs[0].MaxTurns != 5 || base.inputs[0].MaxCostUSD != 0.5 {
+		t.Fatalf("first budget=%#v", base.inputs[0])
+	}
+	if base.inputs[1].MaxTurns != 3 || base.inputs[1].MaxCostUSD < 0.299999 || base.inputs[1].MaxCostUSD > 0.300001 {
+		t.Fatalf("remaining role budget: turns=%d cost=%f", base.inputs[1].MaxTurns, base.inputs[1].MaxCostUSD)
 	}
 }

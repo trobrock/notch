@@ -70,23 +70,37 @@ type PresetConfig struct {
 // ProfileConfig is a global routing boundary. It contains no credential
 // material. CredentialRef names an entry in the existing credential store.
 type ProfileConfig struct {
-	Provider         string   `json:"provider"`
-	Model            string   `json:"model"`
-	ThinkingLevel    string   `json:"thinking_level,omitempty"`
-	AllowedProviders []string `json:"allowed_providers"`
-	CredentialRef    string   `json:"credential_ref,omitempty"`
+	Provider         string            `json:"provider"`
+	Model            string            `json:"model"`
+	ThinkingLevel    string            `json:"thinking_level,omitempty"`
+	AllowedProviders []string          `json:"allowed_providers"`
+	CredentialRef    string            `json:"credential_ref,omitempty"`
+	RoleModels       map[string]string `json:"role_models,omitempty"`
+}
+
+// RoleConfig defines reusable additive instructions and bounded delegation
+// defaults. Roles never grant tools or other authority.
+type RoleConfig struct {
+	Instructions   string  `json:"instructions"`
+	Model          string  `json:"model,omitempty"`
+	Thinking       string  `json:"thinking,omitempty"`
+	TimeoutSeconds int     `json:"timeout_seconds,omitempty"`
+	MaxOutputChars int     `json:"max_output_chars,omitempty"`
+	MaxTurns       int     `json:"max_turns,omitempty"`
+	MaxCostUSD     float64 `json:"max_cost_usd,omitempty"`
 }
 
 // RoutingSnapshot is the non-secret routing state passed to child processes
 // and stored in session headers.
 type RoutingSnapshot struct {
-	Profile          string   `json:"profile"`
-	Provider         string   `json:"provider"`
-	Model            string   `json:"model"`
-	ThinkingLevel    string   `json:"thinking_level"`
-	AllowedProviders []string `json:"allowed_providers"`
-	CredentialRef    string   `json:"credential_ref,omitempty"`
-	DefinitionHash   string   `json:"definition_hash"`
+	Profile          string            `json:"profile"`
+	Provider         string            `json:"provider"`
+	Model            string            `json:"model"`
+	ThinkingLevel    string            `json:"thinking_level"`
+	AllowedProviders []string          `json:"allowed_providers"`
+	CredentialRef    string            `json:"credential_ref,omitempty"`
+	RoleModels       map[string]string `json:"role_models,omitempty"`
+	DefinitionHash   string            `json:"definition_hash"`
 }
 
 // Config is the configuration for the notch process. Provider credentials are
@@ -114,6 +128,7 @@ type Config struct {
 	CacheRetention        string                   `json:"cache_retention,omitempty"`
 	Presets               map[string]PresetConfig  `json:"presets,omitempty"`
 	Profiles              map[string]ProfileConfig `json:"profiles,omitempty"`
+	Roles                 map[string]RoleConfig    `json:"roles,omitempty"`
 	SelectedProfile       string                   `json:"profile,omitempty"`
 	CredentialRef         string                   `json:"-"`
 	MouseCapture          *bool                    `json:"mouse,omitempty"`
@@ -267,6 +282,9 @@ func load(home, workspaceRoot string, includeUser, includeProject bool) (Config,
 				if len(layer.Profiles) != 0 {
 					return Config{}, fmt.Errorf("project config %q cannot define profiles; profiles are global-only", projectPath)
 				}
+				if len(layer.Roles) != 0 {
+					return Config{}, fmt.Errorf("project config %q cannot define roles; roles are global-only", projectPath)
+				}
 				resolveProjectPaths(&layer, workspaceRoot)
 				mergeProject(&cfg, layer)
 			} else if !errors.Is(err, os.ErrNotExist) {
@@ -350,6 +368,9 @@ func read(path string) (Config, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return Config{}, fmt.Errorf("parse config %q: %w", path, err)
 	}
+	if err := validateRoleNames(cfg.Roles); err != nil {
+		return Config{}, fmt.Errorf("parse config %q: %w", path, err)
+	}
 	return cfg, nil
 }
 
@@ -359,6 +380,7 @@ func mergeProject(dst *Config, src Config) {
 	// after the workspace is trusted.
 	providerChanged := src.Provider != "" && !strings.EqualFold(strings.TrimSpace(src.Provider), strings.TrimSpace(dst.Provider))
 	src.Profiles = nil
+	src.Roles = nil
 	src.SelectedProfile = ""
 	src.CredentialRef = ""
 	src.BaseURL = ""
@@ -437,6 +459,14 @@ func merge(dst *Config, src Config) {
 		}
 		for key, profile := range src.Profiles {
 			dst.Profiles[strings.ToLower(strings.TrimSpace(key))] = profile
+		}
+	}
+	if len(src.Roles) != 0 {
+		if dst.Roles == nil {
+			dst.Roles = make(map[string]RoleConfig, len(src.Roles))
+		}
+		for key, role := range src.Roles {
+			dst.Roles[CanonicalRoleName(key)] = role
 		}
 	}
 	if src.MouseCapture != nil {
@@ -677,7 +707,31 @@ func ResolveProfile(cfg *Config, name string) (RoutingSnapshot, error) {
 			return RoutingSnapshot{}, fmt.Errorf("profile %q: unsupported allowed provider %q", name, provider)
 		}
 	}
-	snapshot := RoutingSnapshot{Profile: name, Provider: profile.Provider, Model: profile.Model, ThinkingLevel: profile.ThinkingLevel, AllowedProviders: allowed, CredentialRef: profile.CredentialRef}
+	roleModels := normalizeRoleModels(profile.RoleModels)
+	seenRoleModels := map[string]string{}
+	for rawRole, rawModel := range profile.RoleModels {
+		canonicalRole := CanonicalRoleName(rawRole)
+		if canonicalRole == "" || strings.TrimSpace(rawModel) == "" {
+			return RoutingSnapshot{}, fmt.Errorf("profile %q role_models names and models must not be empty", name)
+		}
+		if prior, exists := seenRoleModels[canonicalRole]; exists {
+			return RoutingSnapshot{}, fmt.Errorf("profile %q role_models names %q and %q resolve to the same role", name, prior, rawRole)
+		}
+		seenRoleModels[canonicalRole] = rawRole
+	}
+	for roleName, modelName := range roleModels {
+		if _, err := ResolveRole(*cfg, nil, roleName); err != nil {
+			return RoutingSnapshot{}, fmt.Errorf("profile %q role_models: %w", name, err)
+		}
+		provider := profile.Provider
+		if prefix, _, found := strings.Cut(modelName, "/"); found && supportedRoutingProvider(prefix) {
+			provider = normalizeRoutingProvider(prefix)
+		}
+		if !containsProvider(allowed, provider) {
+			return RoutingSnapshot{}, fmt.Errorf("profile %q role %q selects provider %q, which is outside allowed_providers", name, roleName, provider)
+		}
+	}
+	snapshot := RoutingSnapshot{Profile: name, Provider: profile.Provider, Model: profile.Model, ThinkingLevel: profile.ThinkingLevel, AllowedProviders: allowed, CredentialRef: profile.CredentialRef, RoleModels: roleModels}
 	if err := snapshot.ValidateProvider(profile.Provider); err != nil {
 		return RoutingSnapshot{}, fmt.Errorf("profile %q: %w", name, err)
 	}
@@ -738,6 +792,16 @@ func (s RoutingSnapshot) ValidateProvider(provider string) error {
 	return fmt.Errorf("provider %q is not allowed by profile %q (allowed: %s)", provider, s.Profile, strings.Join(s.AllowedProviders, ", "))
 }
 
+func containsProvider(values []string, wanted string) bool {
+	wanted = normalizeRoutingProvider(wanted)
+	for _, value := range values {
+		if normalizeRoutingProvider(value) == wanted {
+			return true
+		}
+	}
+	return false
+}
+
 func normalizeProviders(values []string) []string {
 	seen := map[string]bool{}
 	out := make([]string, 0, len(values))
@@ -773,6 +837,21 @@ func defaultModelForProvider(provider string) string {
 	default:
 		return "gpt-5"
 	}
+}
+
+func validateRoleNames(roles map[string]RoleConfig) error {
+	seen := make(map[string]string, len(roles))
+	for name := range roles {
+		canonical := CanonicalRoleName(name)
+		if canonical == "" {
+			return errors.New("role names must not be empty")
+		}
+		if prior, ok := seen[canonical]; ok {
+			return fmt.Errorf("role names %q and %q resolve to the same canonical role", prior, name)
+		}
+		seen[canonical] = name
+	}
+	return nil
 }
 
 func validateProfileNames(profiles map[string]ProfileConfig) error {

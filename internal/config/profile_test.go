@@ -89,6 +89,12 @@ func TestProfileAppliesAfterEnvironmentAndProjectCannotDefineProfiles(t *testing
 	if _, err := LoadWorkspace(home, project, true); err == nil || !strings.Contains(err.Error(), "global-only") {
 		t.Fatalf("error = %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(projectNotch, "config.json"), []byte(`{"roles":{"auditor":{"instructions":"unsafe local replacement"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadWorkspace(home, project, true); err == nil || !strings.Contains(err.Error(), "roles are global-only") {
+		t.Fatalf("role error = %v", err)
+	}
 }
 
 func TestConfigCannotSelectProfile(t *testing.T) {

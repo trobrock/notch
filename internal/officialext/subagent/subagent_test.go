@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/trobrock/notch/internal/config"
 	"github.com/trobrock/notch/internal/delegation"
 	"github.com/trobrock/notch/internal/extension"
 )
@@ -405,5 +406,102 @@ printf '{"type":"turn_end","message":{"role":"assistant","content":[{"type":"tex
 	result, err := runner.Run(context.Background(), Input{Prompt: "go", Tools: defaultTools, Thinking: DefaultThinking, TimeoutSeconds: 1, MaxOutputChars: 2000}, nil)
 	if err != nil || result.ExitCode != 0 {
 		t.Fatalf("Run() = %#v, %v", result, err)
+	}
+}
+
+type roleTestHost struct {
+	models  []extension.ModelInfo
+	session string
+	entries []string
+}
+
+func (*roleTestHost) CWD() string { return "." }
+func (*roleTestHost) Exec(context.Context, string, []string) (string, string, int, error) {
+	return "", "", 0, nil
+}
+func (*roleTestHost) Input(context.Context, string, string) (string, error)    { return "", nil }
+func (*roleTestHost) Select(context.Context, string, []string) (string, error) { return "", nil }
+func (*roleTestHost) Notify(string, string)                                    {}
+func (*roleTestHost) FollowUp(string) error                                    { return nil }
+func (*roleTestHost) Handoff(string, bool) error                               { return nil }
+func (*roleTestHost) SetActiveTools([]string) error                            { return nil }
+func (*roleTestHost) SwitchModel(context.Context, string, string) (string, int, error) {
+	return "", 0, nil
+}
+func (h *roleTestHost) ListModels(context.Context, string, bool) ([]extension.ModelInfo, error) {
+	return h.models, nil
+}
+func (h *roleTestHost) SessionID() string { return h.session }
+func (h *roleTestHost) AppendSessionEntry(_ string, kind string, _ any) error {
+	h.entries = append(h.entries, kind)
+	return nil
+}
+func (*roleTestHost) SessionEntries(string) ([]json.RawMessage, error) { return nil, nil }
+func (*roleTestHost) EditorText(context.Context) (string, error)       { return "", nil }
+func (*roleTestHost) SetEditorText(context.Context, string) error      { return nil }
+func (*roleTestHost) SetStatus(string, string)                         {}
+func (*roleTestHost) SetPanel(string, string, []string)                {}
+
+func TestRoleRunnerPrecedenceProvenanceAndAdditivePrompt(t *testing.T) {
+	base := &fakeRunner{result: Result{Output: "ok"}}
+	host := &roleTestHost{models: []extension.ModelInfo{{ID: "profile-review"}, {ID: "explicit-review"}}, session: "saved"}
+	cfg := config.Config{Roles: map[string]config.RoleConfig{"reviewer": {
+		Instructions: "ROLE CONTRACT", Model: "role-review", Thinking: "high", TimeoutSeconds: 40, MaxOutputChars: 4000, MaxTurns: 4, MaxCostUSD: .2,
+	}}}
+	routing := &config.RoutingSnapshot{Profile: "work", Provider: "openai", AllowedProviders: []string{"openai"}, RoleModels: map[string]string{"reviewer": "profile-review"}}
+	runner := NewRoleRunner(base, host, cfg, routing, "openai")
+	result, err := runner.Run(context.Background(), Input{Prompt: "task", Role: "reviewer", Tools: "read", Model: "explicit-review", ModelExplicit: true, SystemPrompt: "CALLER ADDITION", TimeoutSeconds: 99, TimeoutExplicit: true}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if base.input.Tools != "read" {
+		t.Fatalf("role changed tools: %#v", base.input)
+	}
+	if base.input.Model != "explicit-review" || base.input.Thinking != "high" || base.input.TimeoutSeconds != 99 || base.input.MaxTurns != 4 {
+		t.Fatalf("input=%#v", base.input)
+	}
+	if !strings.Contains(base.input.SystemPrompt, "ROLE CONTRACT\nCALLER ADDITION") {
+		t.Fatalf("system prompt=%q", base.input.SystemPrompt)
+	}
+	if result.Role == nil || result.Role.Name != "reviewer" || result.Role.ModelProvenance != "explicit task override" || result.Role.DefinitionHash == "" {
+		t.Fatalf("role=%#v", result.Role)
+	}
+	if !reflect.DeepEqual(host.entries, []string{"delegation_role", "delegation_role_result"}) {
+		t.Fatalf("session entries=%v", host.entries)
+	}
+	prompt := baseSystemPrompt(base.input.SystemPrompt)
+	if strings.Index(prompt, "focused Notch subagent") > strings.Index(prompt, "ROLE CONTRACT") {
+		t.Fatalf("invariant replaced: %q", prompt)
+	}
+}
+
+func TestRoleRunnerRejectsUnavailableModelBeforeDispatch(t *testing.T) {
+	base := &fakeRunner{}
+	runner := NewRoleRunner(base, &roleTestHost{}, config.Config{}, &config.RoutingSnapshot{Profile: "work", Provider: "openai", AllowedProviders: []string{"openai"}, RoleModels: map[string]string{"researcher": "missing"}}, "openai")
+	_, err := runner.Run(context.Background(), Input{Prompt: "task", Role: "researcher"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "unavailable") {
+		t.Fatalf("err=%v", err)
+	}
+	if base.input.Prompt != "" {
+		t.Fatalf("runner dispatched: %#v", base.input)
+	}
+}
+
+func TestRunSubagentAcceptsGlobalCustomRole(t *testing.T) {
+	base := &fakeRunner{result: Result{Output: "audited", Usage: Usage{Model: "audit-model"}}}
+	host := &roleTestHost{models: []extension.ModelInfo{{ID: "audit-model"}}}
+	cfg := config.Config{Roles: map[string]config.RoleConfig{"auditor": {Instructions: "Audit carefully.", Model: "audit-model", Thinking: "high"}}}
+	registry := extension.NewRegistry()
+	if err := RegisterWithRunner(registry, NewRoleRunner(base, host, cfg, nil, "openai")); err != nil {
+		t.Fatal(err)
+	}
+	tool, _ := registry.Tool(ToolName)
+	result, err := tool.Execute(context.Background(), json.RawMessage(`{"prompt":"check","role":"auditor"}`), nil)
+	if err != nil || result.Content != "audited" {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	role, ok := result.Details["role"].(*config.RoleResolution)
+	if !ok || role.Name != "auditor" || base.input.Thinking != "high" {
+		t.Fatalf("role=%#v input=%#v", result.Details["role"], base.input)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/trobrock/notch/internal/config"
 	"github.com/trobrock/notch/internal/extension"
 	"github.com/trobrock/notch/internal/officialext/askuser"
 	"github.com/trobrock/notch/internal/officialext/explore"
@@ -39,6 +40,16 @@ func RegisterWithRuntime(registry *extension.Registry, host extension.Host, sett
 // RegisterWithRouting propagates an immutable profile snapshot to every child
 // process used by all delegation tools.
 func RegisterWithRouting(registry *extension.Registry, host extension.Host, settingSources, provider, modelName, routingSnapshot string, allowedProviders []string) error {
+	return registerWithRoleConfig(registry, host, settingSources, provider, modelName, routingSnapshot, allowedProviders, config.Config{}, nil)
+}
+
+// RegisterWithRoleConfig adds global reusable role contracts to all existing
+// delegation tools. Authority and tool grants remain in those tools.
+func RegisterWithRoleConfig(registry *extension.Registry, host extension.Host, settingSources, provider, modelName, routingSnapshot string, allowedProviders []string, cfg config.Config, routing *config.RoutingSnapshot) error {
+	return registerWithRoleConfig(registry, host, settingSources, provider, modelName, routingSnapshot, allowedProviders, cfg, routing)
+}
+
+func registerWithRoleConfig(registry *extension.Registry, host extension.Host, settingSources, provider, modelName, routingSnapshot string, allowedProviders []string, cfg config.Config, routing *config.RoutingSnapshot) error {
 	if registry == nil || host == nil {
 		return errors.New("register official extensions: registry and host are required")
 	}
@@ -46,6 +57,7 @@ func RegisterWithRouting(registry *extension.Registry, host extension.Host, sett
 	if err != nil {
 		return err
 	}
+	exploreRunner = subagent.NewRoleRunner(exploreRunner, host, cfg, routing, provider)
 	registrations := []func() error{
 		func() error { return askuser.Register(registry, host) },
 		func() error { return explore.RegisterWithRunner(registry, exploreRunner) },
@@ -54,12 +66,8 @@ func RegisterWithRouting(registry *extension.Registry, host extension.Host, sett
 		func() error { return modelswitch.Register(registry, host) },
 		func() error { return plan.Register(registry, host) },
 		func() error { return rtk.Register(registry, host) },
-		func() error {
-			return subagent.RegisterWithRouting(registry, host, settingSources, provider, modelName, routingSnapshot, allowedProviders)
-		},
-		func() error {
-			return team.RegisterWithRouting(registry, host, settingSources, provider, modelName, routingSnapshot, allowedProviders)
-		},
+		func() error { return subagent.RegisterWithRunner(registry, exploreRunner) },
+		func() error { return team.RegisterWithRunner(registry, host, exploreRunner) },
 		func() error { return tasklist.Register(registry, host) },
 	}
 	for _, register := range registrations {

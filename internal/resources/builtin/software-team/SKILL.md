@@ -1,6 +1,6 @@
 ---
 name: software-team
-description: Coordinate an end-to-end software task with a senior lead and bounded designer, implementer, QA, and reviewer agents using role-specific models and budgets.
+description: Coordinate an end-to-end software task with a senior lead and bounded designer, developer, QA, and reviewer agents using reusable roles, profile-specific models, and budgets.
 ---
 
 # Software team workflow
@@ -11,11 +11,11 @@ Use this workflow only when the user asks for coordinated end-to-end software de
 
 - **Coordinator:** Keep the current strong parent model. Break down work, approve design and architecture, integrate changes, and decide completion. Do not spend coordinator turns on routine isolated work when a bounded helper can do it safely.
 - **Designer:** Use a strong model for user flows, information hierarchy, interaction states, responsive behavior, visual direction, and accessibility. Designers are read-only unless the user explicitly authorizes a separate writer task.
-- **Implementer:** Use a lower-cost model for narrow approved changes. A writing implementer requires explicit user authorization, a separate clean Git worktree and branch, an exact base commit, and `integration_owner=lead`.
+- **Developer (`implementer` alias):** Use the reusable `developer` role for narrow approved changes. A writing developer requires explicit user authorization, a separate clean Git worktree and branch, an exact base commit, and `integration_owner=lead`.
 - **QA:** Use a lower-cost model for focused tests, browser checks, boundary cases, and reproducible evidence. Keep it read-only unless test-file changes are explicitly authorized as a writer task.
 - **Reviewer:** Use an independent medium or strong model after integration. It does not edit code. It prioritizes correctness, security, maintainability, accessibility, and missing-test findings.
 
-Use only model IDs available from the current provider. If a configured role model is unavailable, list models and choose the closest model in the same family and capability tier. Never switch providers silently.
+Use the global reusable role contracts and the active profile's `role_models` mapping. Do not repeat role system instructions in each task. Use only model IDs available from the current provider. If a configured role model is unavailable, stop before dispatch, list models for that same provider, and explicitly update or override the mapping with the closest suitable model. Never switch providers silently. Roles never grant tools, write approval, network access, or worktrees.
 
 ## Sequence
 

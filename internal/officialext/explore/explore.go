@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/trobrock/notch/internal/config"
 	"github.com/trobrock/notch/internal/delegation"
 	"github.com/trobrock/notch/internal/extension"
 	"github.com/trobrock/notch/internal/model"
@@ -27,6 +28,7 @@ const (
 
 type Task struct {
 	Task  string `json:"task"`
+	Role  string `json:"role,omitempty"`
 	Model string `json:"model,omitempty"`
 	CWD   string `json:"cwd,omitempty"`
 }
@@ -34,16 +36,18 @@ type Task struct {
 type Input struct {
 	Task  string `json:"task,omitempty"`
 	Tasks []Task `json:"tasks,omitempty"`
+	Role  string `json:"role,omitempty"`
 	Model string `json:"model,omitempty"`
 	CWD   string `json:"cwd,omitempty"`
 }
 
 type taskResult struct {
-	Index    int            `json:"index"`
-	Task     string         `json:"task"`
-	Output   string         `json:"output"`
-	ExitCode int            `json:"exitCode"`
-	Usage    subagent.Usage `json:"usage"`
+	Index    int                    `json:"index"`
+	Task     string                 `json:"task"`
+	Output   string                 `json:"output"`
+	ExitCode int                    `json:"exitCode"`
+	Usage    subagent.Usage         `json:"usage"`
+	Role     *config.RoleResolution `json:"role,omitempty"`
 }
 
 type runResult struct {
@@ -107,6 +111,7 @@ func schema() map[string]any {
 		"type": "object",
 		"properties": map[string]any{
 			"task":  map[string]any{"type": "string", "minLength": 1, "description": "Focused exploration question."},
+			"role":  map[string]any{"type": "string", "description": "Optional reusable role; researcher is the usual choice."},
 			"model": map[string]any{"type": "string", "description": "Optional per-task override. Normally omit or leave empty; use an unqualified ID for the current provider, and a provider-qualified ID only for an explicitly requested provider change."},
 			"cwd":   map[string]any{"type": "string", "description": "Optional working directory override."},
 		},
@@ -116,6 +121,7 @@ func schema() map[string]any {
 		"type": "object",
 		"properties": map[string]any{
 			"tasks": map[string]any{"type": "array", "minItems": 1, "maxItems": maxTasks, "items": task, "description": "Exploration questions. Use one item for a single focused question or multiple independent items to run in parallel."},
+			"role":  map[string]any{"type": "string", "description": "Optional default reusable role for every task."},
 			"model": map[string]any{"type": "string", "description": "Optional batch override. Normally omit or leave empty to use configured explore_model or the parent model. Unqualified IDs stay on the current provider; never guess an ID."},
 			"cwd":   map[string]any{"type": "string", "description": "Default working directory override."},
 		},
@@ -173,18 +179,29 @@ func run(ctx context.Context, runner subagent.Runner, input Input, update func(s
 			defer wg.Done()
 			for index := range jobs {
 				task := input.Tasks[index]
-				modelName, cwd := task.Model, task.CWD
+				modelName, cwd, roleName := task.Model, task.CWD, task.Role
 				if modelName == "" {
 					modelName = input.Model
+				}
+				if roleName == "" {
+					roleName = input.Role
 				}
 				if cwd == "" {
 					cwd = input.CWD
 				}
+				taskUpdate := func(value string) {
+					if update == nil {
+						return
+					}
+					progressMu.Lock()
+					update(fmt.Sprintf("explore %d: %s", index+1, value))
+					progressMu.Unlock()
+				}
 				result, err := runner.Run(ctx, subagent.Input{
-					Prompt: "Explore task: " + task.Task, Model: modelName, CWD: cwd,
+					Prompt: "Explore task: " + task.Task, Role: roleName, Model: modelName, CWD: cwd,
 					Tools: "read,grep,find,ls", Thinking: subagent.DefaultThinking, TimeoutSeconds: 300,
-					MaxOutputChars: 8000, SystemPrompt: systemPrompt(),
-				}, nil)
+					MaxOutputChars: 8000, SystemPrompt: systemPrompt(), ModelExplicit: strings.TrimSpace(modelName) != "",
+				}, taskUpdate)
 				if err != nil {
 					errMu.Lock()
 					if firstErr == nil {
@@ -193,7 +210,7 @@ func run(ctx context.Context, runner subagent.Runner, input Input, update func(s
 					errMu.Unlock()
 					continue
 				}
-				results[index] = taskResult{Index: index + 1, Task: task.Task, Output: result.Output, ExitCode: result.ExitCode, Usage: result.Usage}
+				results[index] = taskResult{Index: index + 1, Task: task.Task, Output: result.Output, ExitCode: result.ExitCode, Usage: result.Usage, Role: result.Role}
 				progressMu.Lock()
 				completed++
 				if update != nil {

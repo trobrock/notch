@@ -79,3 +79,7 @@ New profile sessions store the profile name, effective non-secret route, allowli
 5. Run `notch --profile personal --continue`; it must select only the personal session.
 6. Try an explicit work session with `--profile personal --resume WORK_SESSION_ID`; it must fail before a provider request.
 7. Ask a helper to use a forbidden provider; the delegation tool must reject it before starting the child.
+
+## Specialist model mappings
+
+A global profile may map reusable specialist roles to models with `role_models`. The mapping is part of the profile definition hash, so changing it requires explicit acknowledgement when resuming a saved session. The mapped provider must remain inside `allowed_providers`, and Notch does not fall back across providers. See [reusable specialist roles](roles.md).

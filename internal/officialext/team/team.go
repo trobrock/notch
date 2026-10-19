@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/trobrock/notch/internal/config"
 	"github.com/trobrock/notch/internal/delegation"
 	"github.com/trobrock/notch/internal/extension"
 	"github.com/trobrock/notch/internal/model"
@@ -65,6 +66,12 @@ type Input struct {
 	MaxCostUSD         float64 `json:"max_cost_usd,omitempty"`
 	AllowWriteTools    bool    `json:"allow_write_tools,omitempty"`
 	IntegrationOwner   string  `json:"integration_owner,omitempty"`
+	modelExplicit      bool
+	thinkingExplicit   bool
+	timeoutExplicit    bool
+	maxOutputExplicit  bool
+	maxTurnsExplicit   bool
+	maxCostExplicit    bool
 }
 
 type envelope struct {
@@ -76,20 +83,21 @@ type envelope struct {
 }
 
 type taskResult struct {
-	ID         string         `json:"id"`
-	Kind       string         `json:"kind"`
-	Role       string         `json:"role,omitempty"`
-	Status     string         `json:"status"`
-	Summary    string         `json:"summary,omitempty"`
-	QuestionID string         `json:"question_id,omitempty"`
-	Artifacts  []string       `json:"artifacts,omitempty"`
-	Checks     []string       `json:"checks,omitempty"`
-	Output     string         `json:"output,omitempty"`
-	ExitCode   int            `json:"exit_code,omitempty"`
-	Usage      subagent.Usage `json:"usage"`
-	Calls      int            `json:"calls"`
-	Isolation  *writerState   `json:"isolation,omitempty"`
-	Error      string         `json:"error,omitempty"`
+	ID           string                 `json:"id"`
+	Kind         string                 `json:"kind"`
+	Role         string                 `json:"role,omitempty"`
+	ResolvedRole *config.RoleResolution `json:"resolved_role,omitempty"`
+	Status       string                 `json:"status"`
+	Summary      string                 `json:"summary,omitempty"`
+	QuestionID   string                 `json:"question_id,omitempty"`
+	Artifacts    []string               `json:"artifacts,omitempty"`
+	Checks       []string               `json:"checks,omitempty"`
+	Output       string                 `json:"output,omitempty"`
+	ExitCode     int                    `json:"exit_code,omitempty"`
+	Usage        subagent.Usage         `json:"usage"`
+	Calls        int                    `json:"calls"`
+	Isolation    *writerState           `json:"isolation,omitempty"`
+	Error        string                 `json:"error,omitempty"`
 }
 
 type writerState struct {
@@ -198,6 +206,11 @@ func RegisterWithRouting(registry *extension.Registry, host extension.Host, sett
 	if err != nil {
 		return err
 	}
+	return RegisterWithRunner(registry, host, runner)
+}
+
+// RegisterWithRunner exposes a shared policy-wrapped runner.
+func RegisterWithRunner(registry *extension.Registry, host extension.Host, runner subagent.Runner) error {
 	return register(registry, host, runner, commandGit{})
 }
 
@@ -236,7 +249,7 @@ func teamSchema() map[string]any {
 	}
 	task := map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
 		"id": str("Short unique helper ID"), "kind": map[string]any{"type": "string", "enum": []string{"research", "review", "change"}},
-		"role":   map[string]any{"type": "string", "enum": []string{"designer", "implementer", "qa", "reviewer"}, "description": "Optional specialist role used to focus the helper contract"},
+		"role":   map[string]any{"type": "string", "description": "Optional reusable specialist role. Built-ins include designer, developer (implementer alias), qa, and reviewer; global custom roles are accepted."},
 		"prompt": str("One narrow task; do not include another helper's result"), "cwd": str("Working directory; required for a change helper"),
 		"tools": str("Comma-separated tools; defaults to read,grep,find,ls"), "acceptance_checks": map[string]any{"type": "array", "items": str("One check this helper owns"), "minItems": 1},
 		"expected_base":    str("Exact lead commit used to create this writer worktree; required for change"),
@@ -267,6 +280,14 @@ func (c *coordinator) execute(ctx context.Context, raw json.RawMessage, update f
 	if err := decoder.Decode(&input); err != nil {
 		return extension.ToolResult{}, fmt.Errorf("decode coordinated helpers: %w", err)
 	}
+	var present map[string]json.RawMessage
+	_ = json.Unmarshal(raw, &present)
+	_, input.modelExplicit = present["model"]
+	_, input.thinkingExplicit = present["thinking"]
+	_, input.timeoutExplicit = present["timeout_seconds"]
+	_, input.maxOutputExplicit = present["max_output_chars"]
+	_, input.maxTurnsExplicit = present["max_turns"]
+	_, input.maxCostExplicit = present["max_cost_usd"]
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		if err == nil {
 			err = errors.New("unexpected trailing JSON")
@@ -357,13 +378,11 @@ func normalizeAndValidate(input *Input, leadRoot, leadCommon, leadBranch, leadHe
 		if t.Kind != "research" && t.Kind != "review" && t.Kind != "change" {
 			return nil, fmt.Errorf("task %s has invalid kind %q", t.ID, t.Kind)
 		}
-		if t.Role != "" && t.Role != "designer" && t.Role != "implementer" && t.Role != "qa" && t.Role != "reviewer" {
-			return nil, fmt.Errorf("task %s has invalid role %q", t.ID, t.Role)
+		canonicalRole := config.CanonicalRoleName(t.Role)
+		if canonicalRole == "developer" && t.Kind != "change" {
+			return nil, fmt.Errorf("developer/implementer task %s must have kind change", t.ID)
 		}
-		if t.Role == "implementer" && t.Kind != "change" {
-			return nil, fmt.Errorf("implementer task %s must have kind change", t.ID)
-		}
-		if t.Role == "reviewer" && t.Kind != "review" {
+		if canonicalRole == "reviewer" && t.Kind != "review" {
 			return nil, fmt.Errorf("reviewer task %s must have kind review", t.ID)
 		}
 		if t.TimeoutSeconds < 0 || t.TimeoutSeconds > maxTimeout {
@@ -479,8 +498,11 @@ func (c *coordinator) runTask(ctx context.Context, input Input, task Task, isola
 	if task.MaxCostUSD > 0 {
 		maxCostUSD = task.MaxCostUSD
 	}
-	child := subagent.Input{Prompt: helperPrompt(task, "", ""), Model: modelName, CWD: task.CWD, Tools: task.Tools, AllowWriteTools: task.Kind == "change" && input.AllowWriteTools, TimeoutSeconds: timeoutSeconds, MaxOutputChars: maxOutputChars, MaxTurns: maxTurns, MaxCostUSD: maxCostUSD, Thinking: thinking}
+	child := subagent.Input{Prompt: helperPrompt(task, "", ""), Role: task.Role, Model: modelName, CWD: task.CWD, Tools: task.Tools, AllowWriteTools: task.Kind == "change" && input.AllowWriteTools, TimeoutSeconds: timeoutSeconds, MaxOutputChars: maxOutputChars, MaxTurns: maxTurns, MaxCostUSD: maxCostUSD, Thinking: thinking,
+		ModelExplicit: task.Model != "" || input.modelExplicit, ThinkingExplicit: task.Thinking != "" || input.thinkingExplicit, TimeoutExplicit: task.TimeoutSeconds > 0 || input.timeoutExplicit, MaxOutputExplicit: task.MaxOutputChars > 0 || input.maxOutputExplicit, MaxTurnsExplicit: task.MaxTurns > 0 || input.maxTurnsExplicit, MaxCostExplicit: task.MaxCostUSD > 0 || input.maxCostExplicit,
+		TimeoutLimit: maxTimeout, MaxOutputLimit: 50000}
 	run, err := c.runner.Run(ctx, child, prefixedUpdate(update, task.ID))
+	result.ResolvedRole = run.Role
 	result.Calls = 1
 	result.Usage = run.Usage
 	result.ExitCode, result.Output = run.ExitCode, run.Output
@@ -498,6 +520,17 @@ func (c *coordinator) runTask(ctx context.Context, input Input, task Task, isola
 		return result
 	}
 	if env.Status == "clarification" {
+		// The role wrapper receives Input by value. Copy its resolved budgets back
+		// before calculating the continuation so role defaults cannot reset to a
+		// fresh budget on the second call.
+		if run.Role != nil {
+			if !child.MaxTurnsExplicit {
+				child.MaxTurns, child.MaxTurnsExplicit = run.Role.MaxTurns, true
+			}
+			if !child.MaxCostExplicit {
+				child.MaxCostUSD, child.MaxCostExplicit = run.Role.MaxCostUSD, true
+			}
+		}
 		if budgetErr := applyRemainingBudget(&child, run.Usage); budgetErr != nil {
 			result.Error = "clarification continuation denied: " + budgetErr.Error()
 			return result
@@ -648,26 +681,10 @@ func applyRemainingBudget(child *subagent.Input, used subagent.Usage) error {
 	return nil
 }
 
-func roleInstruction(role string) string {
-	switch role {
-	case "designer":
-		return "Role: designer. Own user flows, information hierarchy, interaction states, responsive behavior, visual direction, and accessibility evidence. Prefer a concrete design brief or browser findings; do not write application code unless the task is explicitly an authorized change task."
-	case "implementer":
-		return "Role: implementer. Execute the approved narrow specification exactly, add focused tests, and avoid product or architecture expansion."
-	case "qa":
-		return "Role: QA. Verify behavior from the user's point of view, cover failure and boundary cases, and return reproducible evidence. Do not fix defects in a read-only task."
-	case "reviewer":
-		return "Role: reviewer. Independently inspect the integrated result for correctness, security, maintainability, accessibility, and missing tests. Prioritize findings and cite exact evidence."
-	default:
-		return ""
-	}
-}
-
 func helperPrompt(task Task, questionID, answer string) string {
 	checks, _ := json.Marshal(task.AcceptanceChecks)
 	parts := []string{
 		"You are one bounded helper. Work only on this narrow assignment. Do not coordinate with or assume results from other helpers.",
-		roleInstruction(task.Role),
 		"Task: " + task.Prompt,
 		"Acceptance checks: " + string(checks),
 		"Return only one JSON object. For success: {\"status\":\"complete\",\"summary\":\"concise result\",\"artifacts\":[\"path:line, command output, or commit\"],\"checks\":[\"check: pass/fail plus evidence\"]}.",

@@ -83,7 +83,7 @@ func TestExploreSingleTaskUsesReadOnlyRunner(t *testing.T) {
 		t.Fatalf("result = %#v", result)
 	}
 	input := runner.inputs[0]
-	if input.Tools != "read,grep,find,ls" || input.Thinking != subagent.DefaultThinking || input.Model != "test/model" || input.CWD != "/work" || !strings.Contains(input.SystemPrompt, "read-only") {
+	if input.Tools != "read,grep,find,ls" || input.Thinking != subagent.DefaultThinking || input.Model != "test/model" || !input.ModelExplicit || input.CWD != "/work" || !strings.Contains(input.SystemPrompt, "read-only") {
 		t.Fatalf("input = %#v", input)
 	}
 }
