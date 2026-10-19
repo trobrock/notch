@@ -190,7 +190,11 @@ func RegisterWithSettingSources(registry *extension.Registry, host extension.Hos
 }
 
 func RegisterWithRuntime(registry *extension.Registry, host extension.Host, settingSources, provider, modelName string) error {
-	runner, err := subagent.NewRunnerWithRuntime(host, settingSources, provider, modelName)
+	return RegisterWithRouting(registry, host, settingSources, provider, modelName, "", nil)
+}
+
+func RegisterWithRouting(registry *extension.Registry, host extension.Host, settingSources, provider, modelName, routingSnapshot string, allowedProviders []string) error {
+	runner, err := subagent.NewRunnerWithRouting(host, settingSources, provider, modelName, routingSnapshot, allowedProviders)
 	if err != nil {
 		return err
 	}

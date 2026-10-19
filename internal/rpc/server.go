@@ -34,6 +34,7 @@ var (
 // StateConfig describes static process/session state returned by get_state.
 type StateConfig struct {
 	Provider              string
+	Profile               string
 	Model                 string
 	API                   string
 	BaseURL               string
@@ -584,6 +585,9 @@ func (s *Server) getState() map[string]any {
 		"isCompacting": compacting, "steeringMode": "one-at-a-time", "followUpMode": "one-at-a-time",
 		"autoCompactionEnabled": state.AutoCompactionEnabled, "messageCount": runner.MessageCount(),
 		"pendingMessageCount": len(steering) + len(followUps), "tools": tools,
+	}
+	if state.Profile != "" {
+		data["profile"] = state.Profile
 	}
 	if state.SessionFile != "" {
 		data["sessionFile"] = state.SessionFile

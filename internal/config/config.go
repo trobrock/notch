@@ -2,11 +2,14 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -64,37 +67,62 @@ type PresetConfig struct {
 	ThinkingLevel string `json:"thinking_level,omitempty"`
 }
 
+// ProfileConfig is a global routing boundary. It contains no credential
+// material. CredentialRef names an entry in the existing credential store.
+type ProfileConfig struct {
+	Provider         string   `json:"provider"`
+	Model            string   `json:"model"`
+	ThinkingLevel    string   `json:"thinking_level,omitempty"`
+	AllowedProviders []string `json:"allowed_providers"`
+	CredentialRef    string   `json:"credential_ref,omitempty"`
+}
+
+// RoutingSnapshot is the non-secret routing state passed to child processes
+// and stored in session headers.
+type RoutingSnapshot struct {
+	Profile          string   `json:"profile"`
+	Provider         string   `json:"provider"`
+	Model            string   `json:"model"`
+	ThinkingLevel    string   `json:"thinking_level"`
+	AllowedProviders []string `json:"allowed_providers"`
+	CredentialRef    string   `json:"credential_ref,omitempty"`
+	DefinitionHash   string   `json:"definition_hash"`
+}
+
 // Config is the configuration for the notch process. Provider credentials are
 // deliberately not represented here; providers obtain credentials from their
 // environment.
 type Config struct {
-	Provider              string                  `json:"provider,omitempty"`
-	Model                 string                  `json:"model,omitempty"`
-	ExploreModel          string                  `json:"explore_model,omitempty"`
-	BaseURL               string                  `json:"base_url,omitempty"`
-	MaxTokens             int                     `json:"max_tokens,omitempty"`
-	SystemPrompt          string                  `json:"system_prompt,omitempty"`
-	MCPConfig             string                  `json:"mcp_config,omitempty"`
-	ExtensionDirs         []string                `json:"extension_dirs,omitempty"`
-	SkillDirs             []string                `json:"skill_dirs,omitempty"`
-	PromptDirs            []string                `json:"prompt_dirs,omitempty"`
-	ThemeDirs             []string                `json:"theme_dirs,omitempty"`
-	AgentSkillDirs        []string                `json:"-"`
-	AgentCommandDirs      []string                `json:"-"`
-	SessionDir            string                  `json:"-"`
-	AuthFile              string                  `json:"-"`
-	MCPAuthFile           string                  `json:"-"`
-	Theme                 string                  `json:"theme,omitempty"`
-	ThinkingLevel         string                  `json:"thinking_level,omitempty"`
-	CacheRetention        string                  `json:"cache_retention,omitempty"`
-	Presets               map[string]PresetConfig `json:"presets,omitempty"`
-	MouseCapture          *bool                   `json:"mouse,omitempty"`
-	ContextWindow         int                     `json:"context_window,omitempty"`
-	DisablePricingRefresh *bool                   `json:"disable_pricing_refresh,omitempty"`
-	ModelCache            string                  `json:"-"`
-	ModelRefreshHours     int                     `json:"model_refresh_hours,omitempty"`
-	AutoUpdate            *bool                   `json:"auto_update,omitempty"`
-	Compaction            *CompactionConfig       `json:"compaction,omitempty"`
+	Provider              string                   `json:"provider,omitempty"`
+	Model                 string                   `json:"model,omitempty"`
+	ExploreModel          string                   `json:"explore_model,omitempty"`
+	BaseURL               string                   `json:"base_url,omitempty"`
+	MaxTokens             int                      `json:"max_tokens,omitempty"`
+	SystemPrompt          string                   `json:"system_prompt,omitempty"`
+	MCPConfig             string                   `json:"mcp_config,omitempty"`
+	ExtensionDirs         []string                 `json:"extension_dirs,omitempty"`
+	SkillDirs             []string                 `json:"skill_dirs,omitempty"`
+	PromptDirs            []string                 `json:"prompt_dirs,omitempty"`
+	ThemeDirs             []string                 `json:"theme_dirs,omitempty"`
+	AgentSkillDirs        []string                 `json:"-"`
+	AgentCommandDirs      []string                 `json:"-"`
+	SessionDir            string                   `json:"-"`
+	AuthFile              string                   `json:"-"`
+	MCPAuthFile           string                   `json:"-"`
+	Theme                 string                   `json:"theme,omitempty"`
+	ThinkingLevel         string                   `json:"thinking_level,omitempty"`
+	CacheRetention        string                   `json:"cache_retention,omitempty"`
+	Presets               map[string]PresetConfig  `json:"presets,omitempty"`
+	Profiles              map[string]ProfileConfig `json:"profiles,omitempty"`
+	SelectedProfile       string                   `json:"profile,omitempty"`
+	CredentialRef         string                   `json:"-"`
+	MouseCapture          *bool                    `json:"mouse,omitempty"`
+	ContextWindow         int                      `json:"context_window,omitempty"`
+	DisablePricingRefresh *bool                    `json:"disable_pricing_refresh,omitempty"`
+	ModelCache            string                   `json:"-"`
+	ModelRefreshHours     int                      `json:"model_refresh_hours,omitempty"`
+	AutoUpdate            *bool                    `json:"auto_update,omitempty"`
+	Compaction            *CompactionConfig        `json:"compaction,omitempty"`
 	configRoot            string
 	dataRoot              string
 }
@@ -197,6 +225,12 @@ func load(home, workspaceRoot string, includeUser, includeProject bool) (Config,
 			if err != nil {
 				return Config{}, err
 			}
+			if strings.TrimSpace(layer.SelectedProfile) != "" {
+				return Config{}, fmt.Errorf("config %q cannot select profile %q; use --profile at startup", globalPath, layer.SelectedProfile)
+			}
+			if err := validateProfileNames(layer.Profiles); err != nil {
+				return Config{}, fmt.Errorf("config %q: %w", globalPath, err)
+			}
 			resolveGlobalPaths(&layer, cfg.configRoot)
 			merge(&cfg, layer)
 		} else if !errors.Is(err, os.ErrNotExist) {
@@ -226,6 +260,12 @@ func load(home, workspaceRoot string, includeUser, includeProject bool) (Config,
 				layer, err := read(projectPath)
 				if err != nil {
 					return Config{}, err
+				}
+				if strings.TrimSpace(layer.SelectedProfile) != "" {
+					return Config{}, fmt.Errorf("project config %q cannot select profile %q; use --profile at startup", projectPath, layer.SelectedProfile)
+				}
+				if len(layer.Profiles) != 0 {
+					return Config{}, fmt.Errorf("project config %q cannot define profiles; profiles are global-only", projectPath)
 				}
 				resolveProjectPaths(&layer, workspaceRoot)
 				mergeProject(&cfg, layer)
@@ -271,6 +311,10 @@ func resolveRelative(root, path string) string {
 
 func applyEnvironment(cfg *Config) {
 	if value := strings.TrimSpace(os.Getenv("NOTCH_PROVIDER")); value != "" {
+		if normalizeRoutingProvider(value) != normalizeRoutingProvider(cfg.Provider) {
+			cfg.BaseURL = ""
+			cfg.Model = defaultModelForProvider(value)
+		}
 		cfg.Provider = value
 	}
 	if value := strings.TrimSpace(os.Getenv("NOTCH_MODEL")); value != "" {
@@ -299,6 +343,9 @@ func read(path string) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("read config %q: %w", path, err)
 	}
+	if err := validateRawProfileNames(data); err != nil {
+		return Config{}, fmt.Errorf("parse config %q: %w", path, err)
+	}
 	var cfg Config
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return Config{}, fmt.Errorf("parse config %q: %w", path, err)
@@ -310,7 +357,10 @@ func mergeProject(dst *Config, src Config) {
 	// These values choose remote endpoints, executable-update policy, or
 	// credential/session/cache files and therefore remain global-only even
 	// after the workspace is trusted.
-	providerChanged := src.Provider != "" && src.Provider != dst.Provider
+	providerChanged := src.Provider != "" && !strings.EqualFold(strings.TrimSpace(src.Provider), strings.TrimSpace(dst.Provider))
+	src.Profiles = nil
+	src.SelectedProfile = ""
+	src.CredentialRef = ""
 	src.BaseURL = ""
 	src.AuthFile = ""
 	src.MCPAuthFile = ""
@@ -328,6 +378,10 @@ func mergeProject(dst *Config, src Config) {
 
 func merge(dst *Config, src Config) {
 	if src.Provider != "" {
+		if normalizeRoutingProvider(src.Provider) != normalizeRoutingProvider(dst.Provider) {
+			dst.BaseURL = ""
+			dst.Model = defaultModelForProvider(src.Provider)
+		}
 		dst.Provider = src.Provider
 	}
 	if src.Model != "" {
@@ -375,6 +429,14 @@ func merge(dst *Config, src Config) {
 		}
 		for key, preset := range src.Presets {
 			dst.Presets[strings.ToLower(strings.TrimSpace(key))] = preset
+		}
+	}
+	if len(src.Profiles) != 0 {
+		if dst.Profiles == nil {
+			dst.Profiles = make(map[string]ProfileConfig, len(src.Profiles))
+		}
+		for key, profile := range src.Profiles {
+			dst.Profiles[strings.ToLower(strings.TrimSpace(key))] = profile
 		}
 	}
 	if src.MouseCapture != nil {
@@ -562,4 +624,249 @@ func uniquePaths(paths ...string) []string {
 		}
 	}
 	return out
+}
+
+// ResolveProfile applies a named global profile after environment settings.
+// Explicit CLI overrides should be applied after this call and then checked
+// with RoutingSnapshot.ValidateProvider.
+func ResolveProfile(cfg *Config, name string) (RoutingSnapshot, error) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		return RoutingSnapshot{}, nil
+	}
+	profile, ok := cfg.Profiles[name]
+	if !ok {
+		names := make([]string, 0, len(cfg.Profiles))
+		for candidate := range cfg.Profiles {
+			names = append(names, candidate)
+		}
+		sort.Strings(names)
+		if len(names) == 0 {
+			return RoutingSnapshot{}, fmt.Errorf("unknown profile %q; no profiles are defined in the user config", name)
+		}
+		return RoutingSnapshot{}, fmt.Errorf("unknown profile %q; available profiles: %s", name, strings.Join(names, ", "))
+	}
+	profile.Provider = normalizeRoutingProvider(profile.Provider)
+	profile.Model = strings.TrimSpace(profile.Model)
+	profile.ThinkingLevel = strings.ToLower(strings.TrimSpace(profile.ThinkingLevel))
+	profile.CredentialRef = strings.TrimSpace(profile.CredentialRef)
+	if profile.Provider == "" {
+		return RoutingSnapshot{}, fmt.Errorf("profile %q: provider is required", name)
+	}
+	if !supportedRoutingProvider(profile.Provider) {
+		return RoutingSnapshot{}, fmt.Errorf("profile %q: unsupported provider %q (expected openai-codex, anthropic-claude-code, openrouter, anthropic, or openai)", name, profile.Provider)
+	}
+	if profile.CredentialRef != "" && !validCredentialReference(profile.Provider, profile.CredentialRef) {
+		return RoutingSnapshot{}, fmt.Errorf("profile %q: credential_ref %q must be %q or use the provider-prefixed form %q", name, profile.CredentialRef, profile.Provider, profile.Provider+":NAME")
+	}
+	if profile.Model == "" {
+		return RoutingSnapshot{}, fmt.Errorf("profile %q: model is required", name)
+	}
+	if profile.ThinkingLevel == "" {
+		profile.ThinkingLevel = cfg.ThinkingLevel
+	}
+	if !validProfileThinking(profile.ThinkingLevel) {
+		return RoutingSnapshot{}, fmt.Errorf("profile %q: invalid thinking level %q", name, profile.ThinkingLevel)
+	}
+	allowed := normalizeProviders(profile.AllowedProviders)
+	if len(allowed) == 0 {
+		allowed = []string{profile.Provider}
+	}
+	for _, provider := range allowed {
+		if !supportedRoutingProvider(provider) {
+			return RoutingSnapshot{}, fmt.Errorf("profile %q: unsupported allowed provider %q", name, provider)
+		}
+	}
+	snapshot := RoutingSnapshot{Profile: name, Provider: profile.Provider, Model: profile.Model, ThinkingLevel: profile.ThinkingLevel, AllowedProviders: allowed, CredentialRef: profile.CredentialRef}
+	if err := snapshot.ValidateProvider(profile.Provider); err != nil {
+		return RoutingSnapshot{}, fmt.Errorf("profile %q: %w", name, err)
+	}
+	canonical, _ := json.Marshal(snapshot)
+	sum := sha256.Sum256(canonical)
+	snapshot.DefinitionHash = hex.EncodeToString(sum[:])
+	if normalizeRoutingProvider(cfg.Provider) != profile.Provider {
+		cfg.BaseURL = ""
+	}
+	cfg.Provider, cfg.Model, cfg.ThinkingLevel, cfg.CredentialRef = profile.Provider, profile.Model, profile.ThinkingLevel, profile.CredentialRef
+	return snapshot, nil
+}
+
+// ApplyRoutingSnapshot restores immutable non-secret routing inherited by a
+// child process. It intentionally ignores profile definitions read by the child.
+func ApplyRoutingSnapshot(cfg *Config, snapshot RoutingSnapshot) error {
+	if strings.TrimSpace(snapshot.Profile) == "" || strings.TrimSpace(snapshot.DefinitionHash) == "" {
+		return errors.New("routing snapshot requires profile and definition_hash")
+	}
+	if err := snapshot.ValidateProvider(snapshot.Provider); err != nil {
+		return err
+	}
+	provider := normalizeRoutingProvider(snapshot.Provider)
+	if !supportedRoutingProvider(provider) {
+		return fmt.Errorf("routing snapshot has unsupported provider %q", snapshot.Provider)
+	}
+	for _, allowed := range snapshot.AllowedProviders {
+		if !supportedRoutingProvider(allowed) {
+			return fmt.Errorf("routing snapshot has unsupported allowed provider %q", allowed)
+		}
+	}
+	if snapshot.CredentialRef != "" && !validCredentialReference(provider, snapshot.CredentialRef) {
+		return fmt.Errorf("routing snapshot credential_ref %q does not belong to provider %q", snapshot.CredentialRef, provider)
+	}
+	if strings.TrimSpace(snapshot.Model) == "" {
+		return errors.New("routing snapshot model is required")
+	}
+	if !validProfileThinking(snapshot.ThinkingLevel) {
+		return fmt.Errorf("routing snapshot has invalid thinking level %q", snapshot.ThinkingLevel)
+	}
+	if normalizeRoutingProvider(cfg.Provider) != normalizeRoutingProvider(snapshot.Provider) {
+		cfg.BaseURL = ""
+	}
+	cfg.Provider = normalizeRoutingProvider(snapshot.Provider)
+	cfg.Model = strings.TrimSpace(snapshot.Model)
+	cfg.ThinkingLevel = strings.ToLower(strings.TrimSpace(snapshot.ThinkingLevel))
+	cfg.CredentialRef = strings.TrimSpace(snapshot.CredentialRef)
+	return nil
+}
+
+func (s RoutingSnapshot) ValidateProvider(provider string) error {
+	provider = normalizeRoutingProvider(provider)
+	for _, allowed := range s.AllowedProviders {
+		if normalizeRoutingProvider(allowed) == provider {
+			return nil
+		}
+	}
+	return fmt.Errorf("provider %q is not allowed by profile %q (allowed: %s)", provider, s.Profile, strings.Join(s.AllowedProviders, ", "))
+}
+
+func normalizeProviders(values []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = normalizeRoutingProvider(value)
+		if value != "" && !seen[value] {
+			seen[value] = true
+			out = append(out, value)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func normalizeRoutingProvider(value string) string { return strings.ToLower(strings.TrimSpace(value)) }
+func validProfileThinking(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "off", "minimal", "low", "medium", "high", "xhigh":
+		return true
+	default:
+		return false
+	}
+}
+
+func defaultModelForProvider(provider string) string {
+	switch normalizeRoutingProvider(provider) {
+	case "openai-codex":
+		return "gpt-5.6-terra"
+	case "openrouter":
+		return "anthropic/claude-sonnet-4.5"
+	case "anthropic", "anthropic-claude-code":
+		return "claude-sonnet-4-5"
+	default:
+		return "gpt-5"
+	}
+}
+
+func validateProfileNames(profiles map[string]ProfileConfig) error {
+	seen := make(map[string]string, len(profiles))
+	for name := range profiles {
+		normalized := strings.ToLower(strings.TrimSpace(name))
+		if normalized == "" {
+			return errors.New("profile names must not be empty")
+		}
+		if prior, ok := seen[normalized]; ok {
+			return fmt.Errorf("profile names %q and %q differ only by case or surrounding whitespace", prior, name)
+		}
+		seen[normalized] = name
+	}
+	return nil
+}
+
+func supportedRoutingProvider(provider string) bool {
+	switch normalizeRoutingProvider(provider) {
+	case "openai-codex", "anthropic-claude-code", "openrouter", "anthropic", "openai":
+		return true
+	default:
+		return false
+	}
+}
+
+func validateRawProfileNames(data []byte) error {
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	start, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	if start != json.Delim('{') {
+		return errors.New("top-level config must be an object")
+	}
+	seen := map[string]string{}
+	for decoder.More() {
+		keyToken, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		key, ok := keyToken.(string)
+		if !ok {
+			return errors.New("config object key must be a string")
+		}
+		if !strings.EqualFold(key, "profiles") {
+			var discard json.RawMessage
+			if err := decoder.Decode(&discard); err != nil {
+				return err
+			}
+			continue
+		}
+		token, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		if token == nil {
+			continue
+		}
+		if token != json.Delim('{') {
+			return errors.New("profiles must be an object")
+		}
+		for decoder.More() {
+			nameToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			name, ok := nameToken.(string)
+			if !ok {
+				return errors.New("profile name must be a string")
+			}
+			normalized := strings.ToLower(strings.TrimSpace(name))
+			if normalized == "" {
+				return errors.New("profile names must not be empty")
+			}
+			if prior, ok := seen[normalized]; ok {
+				return fmt.Errorf("profile names %q and %q differ only by case or surrounding whitespace, or are duplicated", prior, name)
+			}
+			seen[normalized] = name
+			var discard json.RawMessage
+			if err := decoder.Decode(&discard); err != nil {
+				return err
+			}
+		}
+		if _, err := decoder.Token(); err != nil {
+			return err
+		}
+	}
+	_, err = decoder.Token()
+	return err
+}
+
+func validCredentialReference(provider, reference string) bool {
+	provider = normalizeRoutingProvider(provider)
+	reference = strings.TrimSpace(reference)
+	return reference == provider || strings.HasPrefix(reference, provider+":")
 }

@@ -79,13 +79,15 @@ type Runner interface {
 }
 
 type processRunner struct {
-	executable      string
-	defaultCWD      string
-	heartbeatPeriod time.Duration
-	settingSources  string
-	defaultProvider string
-	defaultModel    string
-	currentModel    func() (string, string)
+	executable       string
+	defaultCWD       string
+	heartbeatPeriod  time.Duration
+	settingSources   string
+	defaultProvider  string
+	defaultModel     string
+	currentModel     func() (string, string)
+	routingSnapshot  string
+	allowedProviders map[string]bool
 }
 
 // NewRunner creates a subprocess runner using the current Notch executable.
@@ -100,6 +102,11 @@ func NewRunnerWithSettingSources(host extension.Host, settingSources string) (Ru
 // NewRunnerWithRuntime also supplies the parent provider/model used when a
 // helper omits a model or gives an unqualified model ID.
 func NewRunnerWithRuntime(host extension.Host, settingSources, provider, modelName string) (Runner, error) {
+	return NewRunnerWithRouting(host, settingSources, provider, modelName, "", nil)
+}
+
+// NewRunnerWithRouting pins child routing to the parent's resolved snapshot.
+func NewRunnerWithRouting(host extension.Host, settingSources, provider, modelName, routingSnapshot string, allowedProviders []string) (Runner, error) {
 	if host == nil {
 		return nil, errors.New("create subagent runner: host is required")
 	}
@@ -107,7 +114,14 @@ func NewRunnerWithRuntime(host extension.Host, settingSources, provider, modelNa
 	if err != nil {
 		return nil, fmt.Errorf("resolve Notch executable: %w", err)
 	}
-	runner := &processRunner{executable: executable, defaultCWD: host.CWD(), settingSources: settingSources, defaultProvider: provider, defaultModel: modelName}
+	allowed := make(map[string]bool, len(allowedProviders))
+	for _, name := range allowedProviders {
+		name = strings.ToLower(strings.TrimSpace(name))
+		if name != "" {
+			allowed[name] = true
+		}
+	}
+	runner := &processRunner{executable: executable, defaultCWD: host.CWD(), settingSources: settingSources, defaultProvider: provider, defaultModel: modelName, routingSnapshot: routingSnapshot, allowedProviders: allowed}
 	if current, ok := host.(interface{ CurrentModel() (string, string) }); ok {
 		runner.currentModel = current.CurrentModel
 	}
@@ -124,10 +138,14 @@ func RegisterWithSettingSources(registry *extension.Registry, host extension.Hos
 }
 
 func RegisterWithRuntime(registry *extension.Registry, host extension.Host, settingSources, provider, modelName string) error {
+	return RegisterWithRouting(registry, host, settingSources, provider, modelName, "", nil)
+}
+
+func RegisterWithRouting(registry *extension.Registry, host extension.Host, settingSources, provider, modelName, routingSnapshot string, allowedProviders []string) error {
 	if registry == nil || host == nil {
 		return errors.New("register subagent: registry and host are required")
 	}
-	runner, err := NewRunnerWithRuntime(host, settingSources, provider, modelName)
+	runner, err := NewRunnerWithRouting(host, settingSources, provider, modelName, routingSnapshot, allowedProviders)
 	if err != nil {
 		return err
 	}
@@ -313,6 +331,16 @@ func (r *processRunner) Run(ctx context.Context, input Input, update func(string
 		if currentProvider, currentName := r.currentModel(); currentProvider != "" || currentName != "" {
 			provider, parentModel = currentProvider, currentName
 		}
+	}
+	selectedProvider := strings.ToLower(strings.TrimSpace(provider))
+	if requestedProvider, _, found := strings.Cut(strings.TrimSpace(input.Model), "/"); found && requestedProvider != "" {
+		selectedProvider = strings.ToLower(strings.TrimSpace(requestedProvider))
+	}
+	if len(r.allowedProviders) != 0 && !r.allowedProviders[selectedProvider] {
+		return Result{}, fmt.Errorf("provider %q is not allowed by the active profile", selectedProvider)
+	}
+	if r.routingSnapshot != "" {
+		args = append(args, "--routing-snapshot", r.routingSnapshot)
 	}
 	args = append(args, modelArgs(input.Model, provider, parentModel)...)
 	args = append(args, "--print")

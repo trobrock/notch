@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -19,6 +21,7 @@ import (
 	"github.com/trobrock/notch/internal/extension"
 	"github.com/trobrock/notch/internal/model"
 	"github.com/trobrock/notch/internal/modelregistry"
+	"github.com/trobrock/notch/internal/session"
 )
 
 func TestSelectRunMode(t *testing.T) {
@@ -605,5 +608,138 @@ func TestRunModeClassifiesPrintFromArgumentOrStdin(t *testing.T) {
 	}
 	if got := runMode(false, false, options{printMode: true, prompt: "hello"}); got != "print" {
 		t.Fatalf("argument print mode = %q", got)
+	}
+}
+
+func TestRunRejectsCrossProfileResumeBeforeProviderCreation(t *testing.T) {
+	home, configHome, dataHome := t.TempDir(), t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	configDir := filepath.Join(configHome, "notch")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"profiles":{"work":{"provider":"anthropic","model":"configured-work-model","allowed_providers":["anthropic"]}}}`
+	if err := os.WriteFile(filepath.Join(configDir, "config.json"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadGlobal(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	personal := config.RoutingSnapshot{Profile: "personal", Provider: "anthropic", Model: "configured-personal-model", ThinkingLevel: "medium", AllowedProviders: []string{"anthropic"}, DefinitionHash: "old-personal"}
+	store, err := session.NewWithRouting(cfg.SessionDir, t.TempDir(), personal.Provider, personal.Model, &personal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := store.Path()
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	err = run([]string{"--setting-sources=user", "--profile=work", "--resume", path, "--no-tui", "--print"})
+	if err == nil || !strings.Contains(err.Error(), "belongs to profile") {
+		t.Fatalf("error = %v", err)
+	}
+	if strings.Contains(err.Error(), "ANTHROPIC_API_KEY") {
+		t.Fatalf("provider was created before resume rejection: %v", err)
+	}
+}
+
+func TestRunRequiresAcknowledgementForChangedProfileBeforeProviderCreation(t *testing.T) {
+	home, configHome, dataHome := t.TempDir(), t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	configDir := filepath.Join(configHome, "notch")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"profiles":{"work":{"provider":"anthropic","model":"configured-work-model","allowed_providers":["anthropic"]}}}`
+	if err := os.WriteFile(filepath.Join(configDir, "config.json"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadGlobal(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := config.ResolveProfile(&cfg, "work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := current
+	old.DefinitionHash = "old-definition"
+	store, err := session.NewWithRouting(cfg.SessionDir, t.TempDir(), old.Provider, old.Model, &old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := store.Path()
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	err = run([]string{"--setting-sources=user", "--profile=work", "--resume", path, "--no-tui", "--print"})
+	if err == nil || !strings.Contains(err.Error(), "--acknowledge-profile-change") {
+		t.Fatalf("error = %v", err)
+	}
+	if strings.Contains(err.Error(), "ANTHROPIC_API_KEY") {
+		t.Fatalf("provider was created before resume rejection: %v", err)
+	}
+}
+
+func TestConfigForProviderClearsProviderSpecificCredentialReference(t *testing.T) {
+	base := config.Config{Provider: "anthropic-claude-code", Model: "old", BaseURL: "https://old.example", CredentialRef: "work-login"}
+	same := configForProvider(base, "anthropic-claude-code")
+	if same.CredentialRef != "work-login" {
+		t.Fatalf("same-provider credential ref = %q", same.CredentialRef)
+	}
+	changed := configForProvider(base, "openai-codex")
+	if changed.CredentialRef != "" || changed.BaseURL != "" {
+		t.Fatalf("changed config = %+v", changed)
+	}
+}
+
+func TestOpenRouterCredentialReferenceOverridesAmbientEnvironment(t *testing.T) {
+	var authorization string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorization = r.Header.Get("Authorization")
+		http.Error(w, "stop", http.StatusUnauthorized)
+	}))
+	defer server.Close()
+	t.Setenv("OPENROUTER_API_KEY", "ambient-key")
+	store := credentials.New(filepath.Join(t.TempDir(), "auth.json"))
+	if err := store.Put("openrouter:work", credentials.Credential{Type: "api_key", Access: "referenced-key"}); err != nil {
+		t.Fatal(err)
+	}
+	provider, err := makeProvider(context.Background(), config.Config{Provider: "openrouter", BaseURL: server.URL, CredentialRef: "openrouter:work"}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = provider.Stream(context.Background(), model.Request{Model: "test", Messages: []model.Message{{Role: "user", Content: []model.Block{{Type: "text", Text: "hi"}}}}}, func(model.StreamEvent) {})
+	if authorization != "Bearer referenced-key" {
+		t.Fatalf("Authorization = %q", authorization)
+	}
+}
+
+func TestSelectedProfileNameUsesEnvironmentAndCLIOverridesIt(t *testing.T) {
+	t.Setenv("NOTCH_PROFILE", "personal")
+	if got := selectedProfileName(""); got != "personal" {
+		t.Fatalf("environment profile = %q", got)
+	}
+	if got := selectedProfileName(" work "); got != "work" {
+		t.Fatalf("CLI profile = %q", got)
+	}
+}
+
+func TestRunRejectsUnknownEnvironmentProfile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "data"))
+	t.Setenv("NOTCH_PROFILE", "missing")
+	err := run([]string{"--setting-sources=none", "--show-effective-settings"})
+	if err == nil || !strings.Contains(err.Error(), `unknown profile "missing"`) {
+		t.Fatalf("error = %v", err)
 	}
 }

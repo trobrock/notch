@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -73,14 +74,15 @@ Run 'notch COMMAND --help' for command-specific help.`
 const delegationProviderPolicy = "When using subagents, stay on the currently selected provider by default. Use a different provider only when the user explicitly requests it or has explicitly configured a provider-qualified delegation model. If the user requests a model that is unavailable on the current provider without naming another provider, ask before trying another provider; never silently fall back across providers."
 
 type options struct {
-	provider, modelName, thinking, prompt, systemPrompt, systemPromptFile, mcpConfig, resumeSession, mode, toolAllow, toolExclude string
-	settingSources                                                                                                                string
-	maxTurns                                                                                                                      int
-	maxCostUSD                                                                                                                    float64
-	idleTimeout                                                                                                                   time.Duration
-	printMode, planMode, continueSession, resumeSpecified, noSession, jsonOutput, noTUI, init, showVersion, rpcMode               bool
-	noTools, noBuiltinTools, noExtensions, noResources                                                                            bool
-	safe, trustWorkspace                                                                                                          bool
+	provider, modelName, thinking, profile, routingSnapshot, prompt, systemPrompt, systemPromptFile, mcpConfig, resumeSession, mode, toolAllow, toolExclude string
+	settingSources                                                                                                                                          string
+	maxTurns                                                                                                                                                int
+	maxCostUSD                                                                                                                                              float64
+	idleTimeout                                                                                                                                             time.Duration
+	printMode, planMode, continueSession, resumeSpecified, noSession, jsonOutput, noTUI, init, showVersion, rpcMode                                         bool
+	showEffectiveSettings, acknowledgeProfileChange                                                                                                         bool
+	noTools, noBuiltinTools, noExtensions, noResources                                                                                                      bool
+	safe, trustWorkspace                                                                                                                                    bool
 }
 
 type optionalStringFlag struct {
@@ -128,6 +130,10 @@ func newRootFlagSet(opts *options) *flag.FlagSet {
 	flags := flag.NewFlagSet("notch", flag.ContinueOnError)
 	resume := optionalStringFlag{value: &opts.resumeSession, specified: &opts.resumeSpecified}
 	flags.StringVar(&opts.provider, "provider", "", "provider: openai-codex, anthropic-claude-code, openrouter, anthropic, or openai")
+	flags.StringVar(&opts.profile, "profile", "", "global routing profile name")
+	flags.StringVar(&opts.routingSnapshot, "routing-snapshot", "", "inherited non-secret routing snapshot (child processes)")
+	flags.BoolVar(&opts.showEffectiveSettings, "show-effective-settings", false, "print resolved non-secret settings as JSON and exit")
+	flags.BoolVar(&opts.acknowledgeProfileChange, "acknowledge-profile-change", false, "allow resume after the selected profile definition changed")
 	flags.StringVar(&opts.modelName, "model", "", "model ID")
 	flags.StringVar(&opts.modelName, "m", "", "model ID (shorthand)")
 	flags.StringVar(&opts.thinking, "thinking", "", "reasoning effort: off, minimal, low, medium, high, or xhigh")
@@ -295,10 +301,31 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	var activeRouting *config.RoutingSnapshot
+	if opts.routingSnapshot != "" {
+		if opts.profile != "" {
+			return errors.New("--routing-snapshot cannot be combined with --profile")
+		}
+		snapshot, decodeErr := decodeRoutingSnapshot(opts.routingSnapshot)
+		if decodeErr != nil {
+			return decodeErr
+		}
+		if applyErr := config.ApplyRoutingSnapshot(&cfg, snapshot); applyErr != nil {
+			return fmt.Errorf("apply inherited routing: %w", applyErr)
+		}
+		activeRouting = &snapshot
+	} else if selectedProfile := selectedProfileName(opts.profile); selectedProfile != "" {
+		snapshot, profileErr := config.ResolveProfile(&cfg, selectedProfile)
+		if profileErr != nil {
+			return profileErr
+		}
+		activeRouting = &snapshot
+	}
 	if opts.provider != "" {
 		changed := normalizeProvider(opts.provider) != normalizeProvider(cfg.Provider)
 		if changed {
 			cfg.BaseURL = ""
+			cfg.CredentialRef = ""
 			if opts.modelName == "" {
 				cfg.Model = defaultModelFor(opts.provider)
 			}
@@ -314,9 +341,24 @@ func run(args []string) error {
 			return fmt.Errorf("invalid thinking level %q (expected off, minimal, low, medium, high, or xhigh)", opts.thinking)
 		}
 	}
+	if activeRouting != nil {
+		if err := activeRouting.ValidateProvider(cfg.Provider); err != nil {
+			return err
+		}
+		if strings.TrimSpace(cfg.Model) == "" {
+			return fmt.Errorf("profile %q resolved an empty model", activeRouting.Profile)
+		}
+		activeRouting.Provider = normalizeProvider(cfg.Provider)
+		activeRouting.Model = cfg.Model
+		activeRouting.ThinkingLevel = cfg.ThinkingLevel
+		activeRouting.CredentialRef = cfg.CredentialRef
+	}
 	cfg.CacheRetention = strings.ToLower(strings.TrimSpace(cfg.CacheRetention))
 	if cfg.CacheRetention != "none" && cfg.CacheRetention != "short" && cfg.CacheRetention != "long" {
 		return fmt.Errorf("invalid cache_retention %q (expected none, short, or long)", cfg.CacheRetention)
+	}
+	if opts.showEffectiveSettings {
+		return writeEffectiveSettings(os.Stdout, cfg, activeRouting, includeUser, workspaceTrusted && includeProject)
 	}
 	if opts.init {
 		return initialize(home, workspaceRoot, cfg)
@@ -366,6 +408,9 @@ func run(args []string) error {
 	interactiveTerminal := terminalsInteractive(os.Stdin, os.Stdout)
 	type startupNotice struct{ message, level string }
 	var startupNotices []startupNotice
+	if activeRouting != nil {
+		startupNotices = append(startupNotices, startupNotice{"Active profile: " + activeRouting.Profile + " (" + cfg.Provider + "/" + cfg.Model + ")", "info"})
+	}
 	if interactiveTerminal && !rpcMode && (cfg.AutoUpdate == nil || *cfg.AutoUpdate) {
 		dataRoot, rootErr := config.DataDir(home)
 		if rootErr != nil {
@@ -409,7 +454,14 @@ func run(args []string) error {
 			return listErr
 		}
 		recent := make([]session.Info, 0, 5)
+		activeProfile := ""
+		if activeRouting != nil {
+			activeProfile = activeRouting.Profile
+		}
 		for _, info := range infos {
+			if !strings.EqualFold(strings.TrimSpace(info.Header.Profile), activeProfile) {
+				continue
+			}
 			if info.MessageCount > 0 && filepath.Clean(info.Header.CWD) == filepath.Clean(cwd) {
 				recent = append(recent, info)
 				if len(recent) == 5 {
@@ -462,7 +514,12 @@ func run(args []string) error {
 			Theme: selectedTheme, ThemeName: cfg.Theme, Themes: themeCatalog, ThinkingLevel: cfg.ThinkingLevel,
 			Presets:       tuiPresets(cfg.Presets),
 			InitialPrompt: opts.prompt, MouseCapture: cfg.MouseCapture,
-			GitBranch: gitBranch, In: os.Stdin, Out: os.Stdout,
+			GitBranch: gitBranch, Profile: func() string {
+				if activeRouting != nil {
+					return activeRouting.Profile
+				}
+				return ""
+			}(), Routing: activeRouting, AcknowledgeProfileChange: opts.acknowledgeProfileChange, In: os.Stdin, Out: os.Stdout,
 		})
 		extensionHost = fullscreen
 		for _, warning := range themeWarnings {
@@ -486,7 +543,11 @@ func run(args []string) error {
 			}
 		}
 		if !opts.noExtensions {
-			if err := officialext.RegisterWithRuntime(registry, extensionHost, opts.settingSources, cfg.Provider, cfg.Model); err != nil {
+			routingValue, allowedProviders, encodeErr := routingChildArgs(activeRouting)
+			if encodeErr != nil {
+				return encodeErr
+			}
+			if err := officialext.RegisterWithRouting(registry, extensionHost, opts.settingSources, cfg.Provider, cfg.Model, routingValue, allowedProviders); err != nil {
 				return err
 			}
 		}
@@ -590,9 +651,50 @@ func run(args []string) error {
 		systemPrompt += "\n\nThe configured default for explore_codebase is `" + cfg.ExploreModel + "`. Omit model to use it. If it is unavailable, call list_models for its provider and retry once with the closest listed model in the same family and capability tier; never guess an unlisted model ID."
 	}
 
+	modelsRegistry := modelRegistryFor(cfg)
+	modelValidated := false
+	var store *session.Session
+	if !opts.noSession {
+		if opts.resumeSpecified {
+			var path string
+			path, err = session.Resolve(cfg.SessionDir, opts.resumeSession)
+			if err == nil {
+				store, err = session.Load(path)
+			}
+		} else if opts.continueSession {
+			profileName := ""
+			if activeRouting != nil {
+				profileName = activeRouting.Profile
+			}
+			store, err = session.LatestForCWDProfile(cfg.SessionDir, cwd, profileName)
+		} else {
+			if activeRouting != nil {
+				err = validateProfileModelCache(modelsRegistry, cfg)
+				modelValidated = err == nil
+			}
+			if err == nil {
+				store, err = session.NewWithRouting(cfg.SessionDir, cwd, cfg.Provider, cfg.Model, activeRouting)
+			}
+		}
+		if err == nil && (opts.resumeSpecified || opts.continueSession) {
+			err = session.ValidateRouting(store.Header, activeRouting, opts.acknowledgeProfileChange)
+		}
+		if err != nil {
+			if store != nil {
+				_ = store.Close()
+			}
+			return err
+		}
+		defer store.Close()
+	}
+	if activeRouting != nil && !modelValidated {
+		if modelErr := validateProfileModelCache(modelsRegistry, cfg); modelErr != nil {
+			return modelErr
+		}
+	}
+
 	credentialStore := credentials.New(cfg.AuthFile)
 	baseModelConfig := cfg
-	modelsRegistry := modelRegistryFor(cfg)
 	prices := pricingServiceFor(cfg)
 	provider, err := makeProvider(ctx, cfg, credentialStore)
 	if err != nil {
@@ -608,24 +710,6 @@ func run(args []string) error {
 		}
 	}()
 
-	var store *session.Session
-	if !opts.noSession {
-		if opts.resumeSpecified {
-			var path string
-			path, err = session.Resolve(cfg.SessionDir, opts.resumeSession)
-			if err == nil {
-				store, err = session.Load(path)
-			}
-		} else if opts.continueSession {
-			store, err = session.LatestForCWD(cfg.SessionDir, cwd)
-		} else {
-			store, err = session.New(cfg.SessionDir, cwd, cfg.Provider, cfg.Model)
-		}
-		if err != nil {
-			return err
-		}
-		defer store.Close()
-	}
 	// Extensions receive their host before the agent is configured. Publish the
 	// initial session before session_start so durable extension state can be
 	// restored during that lifecycle hook; /new's factory is added later.
@@ -689,6 +773,10 @@ func run(args []string) error {
 		"thinking_level": cfg.ThinkingLevel, "mode": runMode(rpcMode, useFullscreen, opts),
 		"resumed": opts.continueSession || opts.resumeSpecified,
 	}
+	if activeRouting != nil {
+		lifecycleEvent["profile"] = activeRouting.Profile
+		lifecycleEvent["routing_hash"] = activeRouting.DefinitionHash
+	}
 	if store != nil {
 		lifecycleEvent["session_id"] = store.Header.ID
 		lifecycleEvent["session_file"] = store.Path()
@@ -717,7 +805,12 @@ func run(args []string) error {
 			sessionFile, sessionID = store.Path(), store.Header.ID
 		}
 		rpcServer.Configure(runner, registry, catalog, notchrpc.StateConfig{
-			Provider: normalizeProvider(cfg.Provider), Model: cfg.Model, API: rpcAPIForProvider(cfg.Provider), BaseURL: cfg.BaseURL,
+			Provider: normalizeProvider(cfg.Provider), Profile: func() string {
+				if activeRouting != nil {
+					return activeRouting.Profile
+				}
+				return ""
+			}(), Model: cfg.Model, API: rpcAPIForProvider(cfg.Provider), BaseURL: cfg.BaseURL,
 			ContextWindow: contextWindow, MaxTokens: cfg.MaxTokens, SessionFile: sessionFile, SessionID: sessionID,
 			AutoCompactionEnabled: compactionEnabled,
 		})
@@ -731,11 +824,21 @@ func run(args []string) error {
 	if fullscreen != nil {
 		fullscreen.SetModelManager(
 			func(listCtx context.Context, providerName string, force bool) ([]modelregistry.Entry, error) {
+				if activeRouting != nil {
+					if policyErr := activeRouting.ValidateProvider(providerName); policyErr != nil {
+						return nil, policyErr
+					}
+				}
 				priceErr := prices.Refresh(listCtx, force)
 				entries, modelErr := discoverModels(listCtx, modelsRegistry, baseModelConfig, credentialStore, providerName, force)
 				return entries, errors.Join(priceErr, modelErr)
 			},
 			func(switchCtx context.Context, providerName, modelName string, discoveredWindow int) (int, error) {
+				if activeRouting != nil {
+					if policyErr := activeRouting.ValidateProvider(providerName); policyErr != nil {
+						return 0, policyErr
+					}
+				}
 				candidate := configForProvider(baseModelConfig, providerName)
 				candidate.Model = modelName
 				nextProvider, makeErr := makeProvider(switchCtx, candidate, credentialStore)
@@ -752,14 +855,19 @@ func run(args []string) error {
 				if switchErr := runner.QueueProviderSwitch(normalizeProvider(providerName), nextProvider, modelName, window); switchErr != nil {
 					return 0, switchErr
 				}
-				cfg.Provider, cfg.Model = normalizeProvider(providerName), modelName
+				cfg.Provider, cfg.Model, cfg.CredentialRef = normalizeProvider(providerName), modelName, candidate.CredentialRef
+				if activeRouting != nil {
+					activeRouting.Provider, activeRouting.Model, activeRouting.CredentialRef = cfg.Provider, cfg.Model, cfg.CredentialRef
+				}
 				herdrReporter.SetModel(cfg.Provider, cfg.Model)
 				return window, nil
 			},
 		)
 		var sessionFactory func() (*session.Session, error)
 		if !opts.noSession {
-			sessionFactory = func() (*session.Session, error) { return session.New(cfg.SessionDir, cwd, cfg.Provider, cfg.Model) }
+			sessionFactory = func() (*session.Session, error) {
+				return session.NewWithRouting(cfg.SessionDir, cwd, cfg.Provider, cfg.Model, activeRouting)
+			}
 		}
 		fullscreen.SetSessionFactory(store, sessionFactory)
 		fullscreen.Configure(runner, registry, catalog)
@@ -812,7 +920,11 @@ func run(args []string) error {
 	}
 
 	if !opts.jsonOutput {
-		fmt.Fprintf(os.Stderr, "Notch %s · %s/%s · %d tools\n", currentBuildInfo().Version, cfg.Provider, cfg.Model, len(registry.Tools()))
+		profileLabel := ""
+		if activeRouting != nil {
+			profileLabel = " · profile " + activeRouting.Profile
+		}
+		fmt.Fprintf(os.Stderr, "Notch %s · %s/%s%s · %d tools\n", currentBuildInfo().Version, cfg.Provider, cfg.Model, profileLabel, len(registry.Tools()))
 		if store != nil {
 			fmt.Fprintf(os.Stderr, "session: %s\n", store.Path())
 		}
@@ -964,6 +1076,7 @@ func configForProvider(base config.Config, providerName string) config.Config {
 	candidate := base
 	if providerName != normalizeProvider(base.Provider) {
 		candidate.BaseURL = ""
+		candidate.CredentialRef = ""
 	}
 	candidate.Provider = providerName
 	candidate.Model = defaultModelFor(providerName)
@@ -1222,23 +1335,34 @@ func writeModelList(w io.Writer, models []modelregistry.Entry, jsonOutput bool) 
 
 func makeProvider(ctx context.Context, cfg config.Config, store *credentials.Store) (model.Provider, error) {
 	provider := normalizeProvider(cfg.Provider)
+	credentialKey := provider
+	if strings.TrimSpace(cfg.CredentialRef) != "" {
+		credentialKey = strings.TrimSpace(cfg.CredentialRef)
+	}
 	switch provider {
 	case "anthropic":
-		if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
+		if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" && cfg.CredentialRef == "" {
 			return anthropic.New(anthropic.Config{APIKey: key, BaseURL: cfg.BaseURL}), nil
+		}
+		if cfg.CredentialRef != "" {
+			credential, err := resolveCredential(ctx, store, provider, credentialKey)
+			if err != nil {
+				return nil, err
+			}
+			return anthropic.New(anthropic.Config{APIKey: credential.Access, BaseURL: cfg.BaseURL}), nil
 		}
 		return nil, errors.New("ANTHROPIC_API_KEY is not set")
 	case "anthropic-claude-code":
-		if token := os.Getenv("ANTHROPIC_OAUTH_TOKEN"); token != "" {
+		if token := os.Getenv("ANTHROPIC_OAUTH_TOKEN"); token != "" && cfg.CredentialRef == "" {
 			return anthropic.New(anthropic.Config{OAuthToken: token, OAuthMode: true, BaseURL: cfg.BaseURL}), nil
 		}
-		authorizer := newAuthorizer(store, provider)
+		authorizer := newAuthorizer(store, provider, credentialKey)
 		if _, err := authorizer.Credential(ctx); err != nil {
 			return nil, err
 		}
 		return anthropic.New(anthropic.Config{Authorize: authorizer.Token, OAuthMode: true, BaseURL: cfg.BaseURL}), nil
 	case "openai-codex":
-		authorizer := newAuthorizer(store, provider)
+		authorizer := newAuthorizer(store, provider, credentialKey)
 		credential, err := authorizer.Credential(ctx)
 		if err != nil {
 			return nil, err
@@ -1246,8 +1370,14 @@ func makeProvider(ctx context.Context, cfg config.Config, store *credentials.Sto
 		return codex.New(codex.Config{Authorize: authorizer.Token, AccountID: credential.AccountID, BaseURL: cfg.BaseURL}), nil
 	case "openrouter":
 		key := os.Getenv("OPENROUTER_API_KEY")
-		if key == "" {
-			credential, err := resolveCredential(ctx, store, provider)
+		if cfg.CredentialRef != "" {
+			credential, err := resolveCredential(ctx, store, provider, credentialKey)
+			if err != nil {
+				return nil, err
+			}
+			key = credential.Access
+		} else if key == "" {
+			credential, err := resolveCredential(ctx, store, provider, credentialKey)
 			if err != nil {
 				return nil, err
 			}
@@ -1256,6 +1386,13 @@ func makeProvider(ctx context.Context, cfg config.Config, store *credentials.Sto
 		return openrouter.New(openrouter.Config{APIKey: key, BaseURL: cfg.BaseURL, AppName: "Notch"}), nil
 	case "openai":
 		key := os.Getenv("OPENAI_API_KEY")
+		if cfg.CredentialRef != "" {
+			credential, err := resolveCredential(ctx, store, provider, credentialKey)
+			if err != nil {
+				return nil, err
+			}
+			key = credential.Access
+		}
 		if key == "" && cfg.BaseURL == "" {
 			return nil, errors.New("OPENAI_API_KEY is not set")
 		}
@@ -1417,16 +1554,16 @@ func contextWindowFor(provider, modelName string) int {
 // newAuthorizer returns the OAuth token source for provider. The authorizer
 // re-reads and refreshes the stored credential for the life of the process, so
 // a session outliving its access token recovers without a restart.
-func newAuthorizer(store *credentials.Store, provider string) *providerauth.Authorizer {
+func newAuthorizer(store *credentials.Store, provider, storeKey string) *providerauth.Authorizer {
 	legacyProvider := ""
-	if provider == credentials.AnthropicClaudeCodeProvider {
+	if provider == credentials.AnthropicClaudeCodeProvider && storeKey == provider {
 		legacyProvider = credentials.LegacyAnthropicProvider
 	}
-	return providerauth.New(store, provider, legacyProvider, oauth.Refresh)
+	return providerauth.NewWithKey(store, storeKey, provider, legacyProvider, oauth.Refresh)
 }
 
-func resolveCredential(ctx context.Context, store *credentials.Store, provider string) (credentials.Credential, error) {
-	return newAuthorizer(store, provider).Credential(ctx)
+func resolveCredential(ctx context.Context, store *credentials.Store, provider, storeKey string) (credentials.Credential, error) {
+	return newAuthorizer(store, provider, storeKey).Credential(ctx)
 }
 
 func runAuth(args []string) error {
@@ -1609,4 +1746,75 @@ func initialize(home, cwd string, cfg config.Config) error {
 	fmt.Println("project extensions:", filepath.Join(cwd, ".notch", "extensions"))
 	fmt.Println("project themes:", filepath.Join(cwd, ".notch", "themes"))
 	return nil
+}
+
+func routingChildArgs(snapshot *config.RoutingSnapshot) (string, []string, error) {
+	if snapshot == nil {
+		return "", nil, nil
+	}
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		return "", nil, fmt.Errorf("encode routing snapshot: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(data), append([]string(nil), snapshot.AllowedProviders...), nil
+}
+
+func decodeRoutingSnapshot(value string) (config.RoutingSnapshot, error) {
+	data, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(value))
+	if err != nil {
+		return config.RoutingSnapshot{}, fmt.Errorf("decode --routing-snapshot: %w", err)
+	}
+	var snapshot config.RoutingSnapshot
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		return config.RoutingSnapshot{}, fmt.Errorf("parse --routing-snapshot: %w", err)
+	}
+	return snapshot, nil
+}
+
+func writeEffectiveSettings(w io.Writer, cfg config.Config, routing *config.RoutingSnapshot, user, project bool) error {
+	profile := ""
+	allowed := []string(nil)
+	credentialRef := ""
+	definitionHash := ""
+	if routing != nil {
+		profile, allowed, credentialRef, definitionHash = routing.Profile, routing.AllowedProviders, routing.CredentialRef, routing.DefinitionHash
+	}
+	out := struct {
+		Version              int      `json:"version"`
+		Profile              string   `json:"profile,omitempty"`
+		Provider             string   `json:"provider"`
+		Model                string   `json:"model"`
+		ThinkingLevel        string   `json:"thinking_level"`
+		ExploreModel         string   `json:"explore_model,omitempty"`
+		AllowedProviders     []string `json:"allowed_providers,omitempty"`
+		CredentialRef        string   `json:"credential_ref,omitempty"`
+		DefinitionHash       string   `json:"definition_hash,omitempty"`
+		UserConfig           bool     `json:"user_config"`
+		TrustedProjectConfig bool     `json:"trusted_project_config"`
+	}{1, profile, normalizeProvider(cfg.Provider), cfg.Model, cfg.ThinkingLevel, cfg.ExploreModel, allowed, credentialRef, definitionHash, user, project}
+	return json.NewEncoder(w).Encode(out)
+}
+
+func validateProfileModelCache(registry *modelregistry.Registry, cfg config.Config) error {
+	if registry == nil || strings.TrimSpace(cfg.Model) == "" {
+		return nil
+	}
+	provider := normalizeProvider(cfg.Provider)
+	entries, err := registry.Cached(provider, modelregistry.Scope(provider, cfg.BaseURL))
+	if err != nil || len(entries) == 0 {
+		return nil
+	}
+	for _, entry := range entries {
+		if entry.ID == cfg.Model {
+			return nil
+		}
+	}
+	return fmt.Errorf("unknown model %q for provider %q in the local model registry; run 'notch models --refresh %s' and choose an available ID", cfg.Model, provider, provider)
+}
+
+func selectedProfileName(cliValue string) string {
+	if value := strings.TrimSpace(cliValue); value != "" {
+		return value
+	}
+	return strings.TrimSpace(os.Getenv("NOTCH_PROFILE"))
 }

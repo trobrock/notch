@@ -75,3 +75,10 @@ func TestSetPanelBoundsPublishedContent(t *testing.T) {
 		t.Fatalf("line bytes = %d valid=%v", len(panel.lines[0]), utf8.ValidString(panel.lines[0]))
 	}
 }
+
+func TestActiveProfileIsVisibleInFooter(t *testing.T) {
+	footer := footerText(&LayoutState{Provider: "anthropic", Model: "configured", Profile: "work", ThinkingLevel: "high"}, 100)[1]
+	if !strings.Contains(footer, "[work]") {
+		t.Fatalf("footer = %q", footer)
+	}
+}
