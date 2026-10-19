@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/trobrock/notch/internal/config"
 	"github.com/trobrock/notch/internal/model"
 )
 
@@ -871,5 +872,61 @@ func TestLoadRepairsPersistedInvalidCallWithoutResult(t *testing.T) {
 	defer loaded.Close()
 	if len(loaded.Messages) != 2 || loaded.Messages[1].Role != "user" || len(loaded.Messages[1].Content) != 1 || loaded.Messages[1].Content[0].ToolUseID != "bad" || !loaded.Messages[1].Content[0].IsError {
 		t.Fatalf("loaded messages = %#v", loaded.Messages)
+	}
+}
+
+func TestProfileSessionMetadataAndResumeValidation(t *testing.T) {
+	routing := config.RoutingSnapshot{Profile: "work", Provider: "anthropic-claude-code", Model: "configured-model", ThinkingLevel: "high", AllowedProviders: []string{"anthropic-claude-code"}, CredentialRef: "anthropic-claude-code:work", DefinitionHash: "hash-one"}
+	store, err := NewWithRouting(t.TempDir(), "/work", routing.Provider, routing.Model, &routing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := store.Path()
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer loaded.Close()
+	if loaded.Header.Profile != "work" || loaded.Header.Routing == nil || loaded.Header.Routing.CredentialRef != "anthropic-claude-code:work" {
+		t.Fatalf("header = %+v", loaded.Header)
+	}
+	if err := ValidateRouting(loaded.Header, &routing, false); err != nil {
+		t.Fatal(err)
+	}
+	personal := routing
+	personal.Profile = "personal"
+	if err := ValidateRouting(loaded.Header, &personal, false); err == nil || !strings.Contains(err.Error(), "not active profile") {
+		t.Fatalf("mismatch error = %v", err)
+	}
+	changed := routing
+	changed.DefinitionHash = "hash-two"
+	if err := ValidateRouting(loaded.Header, &changed, false); err == nil || !strings.Contains(err.Error(), "acknowledge") {
+		t.Fatalf("changed error = %v", err)
+	}
+	if err := ValidateRouting(loaded.Header, &changed, true); err != nil {
+		t.Fatal(err)
+	}
+	changedThinking := routing
+	changedThinking.ThinkingLevel = "low"
+	if err := ValidateRouting(loaded.Header, &changedThinking, false); err == nil || !strings.Contains(err.Error(), "acknowledge") {
+		t.Fatalf("thinking change error = %v", err)
+	}
+}
+
+func TestLegacySessionOnlyMatchesUnprofiledResume(t *testing.T) {
+	store, err := New(t.TempDir(), "/work", "anthropic", "legacy-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := ValidateRouting(store.Header, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	routing := config.RoutingSnapshot{Profile: "work", Provider: "anthropic", Model: "new", AllowedProviders: []string{"anthropic"}, DefinitionHash: "hash"}
+	if err := ValidateRouting(store.Header, &routing, false); err == nil || !strings.Contains(err.Error(), "legacy") {
+		t.Fatalf("error = %v", err)
 	}
 }

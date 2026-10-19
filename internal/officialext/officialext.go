@@ -33,19 +33,33 @@ func RegisterWithSettingSources(registry *extension.Registry, host extension.Hos
 // RegisterWithRuntime also supplies the active parent model used by delegated
 // helpers when they do not request an explicit model.
 func RegisterWithRuntime(registry *extension.Registry, host extension.Host, settingSources, provider, modelName string) error {
+	return RegisterWithRouting(registry, host, settingSources, provider, modelName, "", nil)
+}
+
+// RegisterWithRouting propagates an immutable profile snapshot to every child
+// process used by all delegation tools.
+func RegisterWithRouting(registry *extension.Registry, host extension.Host, settingSources, provider, modelName, routingSnapshot string, allowedProviders []string) error {
 	if registry == nil || host == nil {
 		return errors.New("register official extensions: registry and host are required")
 	}
+	exploreRunner, err := subagent.NewRunnerWithRouting(host, settingSources, provider, modelName, routingSnapshot, allowedProviders)
+	if err != nil {
+		return err
+	}
 	registrations := []func() error{
 		func() error { return askuser.Register(registry, host) },
-		func() error { return explore.RegisterWithSettingSources(registry, host, settingSources) },
+		func() error { return explore.RegisterWithRunner(registry, exploreRunner) },
 		func() error { return goal.Register(registry, host) },
 		func() error { return monitor.Register(registry, host) },
 		func() error { return modelswitch.Register(registry, host) },
 		func() error { return plan.Register(registry, host) },
 		func() error { return rtk.Register(registry, host) },
-		func() error { return subagent.RegisterWithRuntime(registry, host, settingSources, provider, modelName) },
-		func() error { return team.RegisterWithRuntime(registry, host, settingSources, provider, modelName) },
+		func() error {
+			return subagent.RegisterWithRouting(registry, host, settingSources, provider, modelName, routingSnapshot, allowedProviders)
+		},
+		func() error {
+			return team.RegisterWithRouting(registry, host, settingSources, provider, modelName, routingSnapshot, allowedProviders)
+		},
 		func() error { return tasklist.Register(registry, host) },
 	}
 	for _, register := range registrations {

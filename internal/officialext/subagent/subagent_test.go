@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
@@ -360,5 +361,49 @@ func TestReadOnlyShellRejectionGivesSafeRecovery(t *testing.T) {
 		if !strings.Contains(description, "bash") {
 			t.Errorf("%s schema must warn about bash: %s", name, description)
 		}
+	}
+}
+
+func TestProcessRunnerEnforcesProfileBeforeChildDispatch(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "started")
+	path := filepath.Join(t.TempDir(), "child.sh")
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script test")
+	}
+	if err := os.WriteFile(path, []byte("#!/bin/sh\ntouch "+marker+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runner := &processRunner{executable: path, defaultCWD: t.TempDir(), defaultProvider: "anthropic", defaultModel: "safe", allowedProviders: map[string]bool{"anthropic": true}}
+	_, err := runner.Run(context.Background(), Input{Prompt: "go", Model: "openai/forbidden", Tools: defaultTools, Thinking: DefaultThinking, TimeoutSeconds: 1, MaxOutputChars: 2000}, nil)
+	if err == nil || !strings.Contains(err.Error(), "not allowed") {
+		t.Fatalf("error = %v", err)
+	}
+	if _, statErr := os.Stat(marker); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("child was dispatched: %v", statErr)
+	}
+}
+
+func TestProcessRunnerPassesImmutableRoutingSnapshot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script test")
+	}
+	path := filepath.Join(t.TempDir(), "routing-child.sh")
+	script := `#!/bin/sh
+previous=""
+snapshot=""
+for arg in "$@"; do
+  if [ "$previous" = "--routing-snapshot" ]; then snapshot="$arg"; fi
+  previous="$arg"
+done
+[ "$snapshot" = "pinned-snapshot" ] || exit 14
+printf '{"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}\n'
+`
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runner := &processRunner{executable: path, defaultCWD: t.TempDir(), defaultProvider: "anthropic", defaultModel: "safe", routingSnapshot: "pinned-snapshot", allowedProviders: map[string]bool{"anthropic": true}}
+	result, err := runner.Run(context.Background(), Input{Prompt: "go", Tools: defaultTools, Thinking: DefaultThinking, TimeoutSeconds: 1, MaxOutputChars: 2000}, nil)
+	if err != nil || result.ExitCode != 0 {
+		t.Fatalf("Run() = %#v, %v", result, err)
 	}
 }

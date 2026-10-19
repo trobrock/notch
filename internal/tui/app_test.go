@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/trobrock/notch/internal/agent"
+	"github.com/trobrock/notch/internal/config"
 	"github.com/trobrock/notch/internal/delegation"
 	"github.com/trobrock/notch/internal/extension"
 	"github.com/trobrock/notch/internal/model"
@@ -1161,7 +1162,8 @@ func TestConfigureOmitsEmptyStartupResourceSections(t *testing.T) {
 }
 
 func TestAppThinkingCycleForwardsToAgent(t *testing.T) {
-	a := NewApp(AppConfig{})
+	routing := &config.RoutingSnapshot{Profile: "work", ThinkingLevel: "off"}
+	a := NewApp(AppConfig{Routing: routing})
 	runner := newAppTestAgent(t, nil)
 	a.Configure(runner, extension.NewRegistry(), nil)
 
@@ -1175,6 +1177,9 @@ func TestAppThinkingCycleForwardsToAgent(t *testing.T) {
 		}
 		if got := a.state.layout.ThinkingLevel; got != want {
 			t.Fatalf("layout thinking = %q, want %q", got, want)
+		}
+		if routing.ThinkingLevel != want {
+			t.Fatalf("routing thinking = %q, want %q", routing.ThinkingLevel, want)
 		}
 	}
 }

@@ -92,6 +92,7 @@ type LayoutState struct {
 	ScrollOffset  int
 	Provider      string
 	Model         string
+	Profile       string
 	Status        string
 	Statuses      map[string]string
 	Panels        map[string]ExtensionPanel
@@ -868,6 +869,9 @@ func footerText(state *LayoutState, width int) [2]string {
 		if model != "" {
 			right += " " + model
 		}
+	}
+	if profile := strings.TrimSpace(state.Profile); profile != "" {
+		right = "[" + profile + "] " + right
 	}
 	level := strings.ToLower(strings.TrimSpace(state.ThinkingLevel))
 	if level == "" || level == "off" {

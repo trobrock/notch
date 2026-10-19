@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/trobrock/notch/internal/agent"
+	"github.com/trobrock/notch/internal/config"
 	"github.com/trobrock/notch/internal/extension"
 	"github.com/trobrock/notch/internal/model"
 	"github.com/trobrock/notch/internal/modelregistry"
@@ -46,21 +47,24 @@ type ModelPreset struct {
 
 // AppConfig describes the terminal and the labels shown in the status line.
 type AppConfig struct {
-	MouseCapture  *bool
-	CWD           string
-	Provider      string
-	Model         string
-	Session       string
-	SessionDir    string
-	Theme         Theme
-	ThemeName     string
-	Themes        *ThemeCatalog
-	ThinkingLevel string
-	Presets       map[string]ModelPreset
-	InitialPrompt string
-	GitBranch     string
-	In            *os.File
-	Out           *os.File
+	MouseCapture             *bool
+	CWD                      string
+	Provider                 string
+	Model                    string
+	Session                  string
+	SessionDir               string
+	Theme                    Theme
+	ThemeName                string
+	Themes                   *ThemeCatalog
+	ThinkingLevel            string
+	Presets                  map[string]ModelPreset
+	InitialPrompt            string
+	GitBranch                string
+	Profile                  string
+	Routing                  *config.RoutingSnapshot
+	AcknowledgeProfileChange bool
+	In                       *os.File
+	Out                      *os.File
 }
 
 // App is the fullscreen, event-driven terminal host. It is safe to pass an App
@@ -252,7 +256,7 @@ func NewApp(cfg AppConfig) *App {
 	a.state = appState{
 		editor: editor,
 		layout: LayoutState{
-			Editor: editor, Provider: cfg.Provider, Model: cfg.Model,
+			Editor: editor, Provider: cfg.Provider, Model: cfg.Model, Profile: cfg.Profile,
 			Session: cfg.Session, Status: "ready", Statuses: make(map[string]string), Panels: make(map[string]ExtensionPanel), CWD: abbreviateHome(cfg.CWD),
 			GitBranch: cfg.GitBranch, Theme: cfg.Theme, ThemeName: cfg.ThemeName,
 			ThinkingLevel: cfg.ThinkingLevel,
@@ -1793,6 +1797,9 @@ func (a *App) applyThinkingLevel(level string, report bool) {
 		return
 	}
 	a.cfg.ThinkingLevel = level
+	if a.cfg.Routing != nil {
+		a.cfg.Routing.ThinkingLevel = level
+	}
 	a.state.layout.ThinkingLevel = level
 	if report {
 		a.addNotice("thinking level: "+level, "notice")
@@ -2060,6 +2067,13 @@ func (a *App) startResume(runCtx context.Context) {
 		choices := make([]string, 0, len(infos))
 		byLabel := make(map[string]session.Info, len(infos))
 		for _, info := range infos {
+			activeProfile := ""
+			if a.cfg.Routing != nil {
+				activeProfile = a.cfg.Routing.Profile
+			}
+			if !strings.EqualFold(strings.TrimSpace(info.Header.Profile), activeProfile) {
+				continue
+			}
 			if current != nil && filepath.Clean(info.Path) == filepath.Clean(current.Path()) {
 				continue
 			}
@@ -2082,6 +2096,13 @@ func (a *App) startResume(runCtx context.Context) {
 			return
 		}
 		loaded, err := session.Load(info.Path)
+		if err == nil {
+			err = session.ValidateRouting(loaded.Header, a.cfg.Routing, a.cfg.AcknowledgeProfileChange)
+			if err != nil {
+				_ = loaded.Close()
+				loaded = nil
+			}
+		}
 		a.post(runCtx, appEvent{resumeDone: &resumeResult{session: loaded, err: err}}, false)
 	}()
 }

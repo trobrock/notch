@@ -25,6 +25,7 @@ type Refresher func(ctx context.Context, provider string, credential credentials
 type Authorizer struct {
 	store          *credentials.Store
 	provider       string
+	storeKey       string
 	legacyProvider string
 	refresh        Refresher
 
@@ -35,7 +36,12 @@ type Authorizer struct {
 // set, a credential stored under that key is migrated on first read. A nil
 // refresh function disables refreshing.
 func New(store *credentials.Store, provider, legacyProvider string, refresh Refresher) *Authorizer {
-	return &Authorizer{store: store, provider: provider, legacyProvider: legacyProvider, refresh: refresh}
+	return NewWithKey(store, provider, provider, legacyProvider, refresh)
+}
+
+// NewWithKey reads and updates storeKey while using provider for OAuth refresh.
+func NewWithKey(store *credentials.Store, storeKey, provider, legacyProvider string, refresh Refresher) *Authorizer {
+	return &Authorizer{store: store, provider: provider, storeKey: storeKey, legacyProvider: legacyProvider, refresh: refresh}
 }
 
 // Credential returns a currently valid credential, refreshing it when it is
@@ -76,7 +82,7 @@ func (a *Authorizer) resolve(ctx context.Context, stale string) (credentials.Cre
 	if err != nil {
 		return credentials.Credential{}, fmt.Errorf("refresh %s login: %w", a.provider, err)
 	}
-	if err := a.store.Put(a.provider, refreshed); err != nil {
+	if err := a.store.Put(a.storeKey, refreshed); err != nil {
 		return credentials.Credential{}, err
 	}
 	return refreshed, nil
@@ -89,9 +95,9 @@ func (a *Authorizer) load() (credentials.Credential, error) {
 		err        error
 	)
 	if a.legacyProvider != "" {
-		credential, ok, err = a.store.GetWithLegacyFallback(a.provider, a.legacyProvider)
+		credential, ok, err = a.store.GetWithLegacyFallback(a.storeKey, a.legacyProvider)
 	} else {
-		credential, ok, err = a.store.Get(a.provider)
+		credential, ok, err = a.store.Get(a.storeKey)
 	}
 	if err != nil {
 		return credentials.Credential{}, err
