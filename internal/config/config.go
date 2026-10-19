@@ -810,9 +810,13 @@ func validateRawProfileNames(data []byte) error {
 	}
 	seen := map[string]string{}
 	for decoder.More() {
-		var key string
-		if err := decoder.Decode(&key); err != nil {
+		keyToken, err := decoder.Token()
+		if err != nil {
 			return err
+		}
+		key, ok := keyToken.(string)
+		if !ok {
+			return errors.New("config object key must be a string")
 		}
 		if !strings.EqualFold(key, "profiles") {
 			var discard json.RawMessage
@@ -832,9 +836,13 @@ func validateRawProfileNames(data []byte) error {
 			return errors.New("profiles must be an object")
 		}
 		for decoder.More() {
-			var name string
-			if err := decoder.Decode(&name); err != nil {
+			nameToken, err := decoder.Token()
+			if err != nil {
 				return err
+			}
+			name, ok := nameToken.(string)
+			if !ok {
+				return errors.New("profile name must be a string")
 			}
 			normalized := strings.ToLower(strings.TrimSpace(name))
 			if normalized == "" {
