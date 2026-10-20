@@ -351,7 +351,7 @@ func TestReadOnlyShellRejectionGivesSafeRecovery(t *testing.T) {
 	if err == nil {
 		t.Fatal("bash accepted without authorization")
 	}
-	for _, text := range []string{"bash is write-capable", "read,grep,find,ls", "parent", "explicit user authorization"} {
+	for _, text := range []string{"bash is write-capable", "read,grep,find,ls", "parent", "allowWriteTools=true"} {
 		if !strings.Contains(err.Error(), text) {
 			t.Errorf("error lacks %q: %v", text, err)
 		}

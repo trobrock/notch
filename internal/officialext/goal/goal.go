@@ -71,7 +71,7 @@ func Register(registry *extension.Registry, host extension.Host) error {
 			Name: "goal", Description: "Run a bounded, durable single-agent goal", Source: Source,
 			AllowWhileStreamingArgs: allowWhileStreaming, Execute: s.command,
 		}},
-		Tools: []extension.Tool{s.startTool(), s.progressTool(), s.completeTool(), s.pauseTool()},
+		Tools: []extension.Tool{s.startTool(), s.progressTool(), s.completeTool()},
 		Hooks: []extension.HookRegistration{
 			{Event: "session_start", Source: Source, Handler: s.sessionChange},
 			{Event: "session_change", Source: Source, Handler: s.sessionChange},
@@ -111,7 +111,7 @@ func (s *state) command(ctx context.Context, args string) (string, error) {
 	case "start":
 		return s.start(ctx, rest)
 	case "pause":
-		return s.pause("paused by user")
+		return "", errors.New("/goal pause was removed; use Escape or Ctrl-C to stop the active run, or /goal clear to discard the goal")
 	case "resume":
 		return s.resume()
 	case "clear":
@@ -169,7 +169,7 @@ func (s *state) startGoal(objective string, checks []string, maxSteps int, follo
 	s.mu.Lock()
 	if s.goal.Status == "active" {
 		s.mu.Unlock()
-		return "", errors.New("a goal is already active; pause or clear it first")
+		return "", errors.New("a goal is already active; complete or clear it first")
 	}
 	s.goal = snapshot{Version: 1, ID: strconv.FormatInt(time.Now().UnixNano(), 36), Objective: objective,
 		Checks: checks, Status: "active", MaxSteps: maxSteps}
@@ -246,6 +246,10 @@ func (s *state) resume() (string, error) {
 	if s.goal.Steps >= s.goal.MaxSteps {
 		s.mu.Unlock()
 		return "", errors.New("goal step limit is exhausted; clear and start a new goal")
+	}
+	if s.goal.Turns >= s.goal.MaxSteps*turnsPerStep {
+		s.mu.Unlock()
+		return "", errors.New("goal model-turn limit is exhausted; clear and start a new goal")
 	}
 	s.goal.Status, s.goal.Reason = "active", ""
 	s.haltRun = false
@@ -356,7 +360,7 @@ func (s *state) beforeAgent(_ context.Context, event map[string]any) (map[string
 	base, _ := event["system_prompt"].(string)
 	var b strings.Builder
 	b.WriteString(base)
-	b.WriteString("\n\n<goal_mode>\nYou are working on an opt-in bounded goal. Work on the objective, not on this control text. Human messages have priority. Call report_goal_progress once per work cycle with concrete new evidence. Do not claim completion in prose. Call complete_goal only after every completion check is met with concise evidence. If blocked by permissions or missing input, call pause_goal with the exact reason.\nObjective: ")
+	b.WriteString("\n\n<goal_mode>\nYou are working on an opt-in bounded goal. Work on the objective, not on this control text. Human messages have priority. Call report_goal_progress once per work cycle with concrete new evidence. Do not claim completion in prose. Call complete_goal only after every completion check is met with concise evidence. If blocked by permissions or missing input, explain exactly what is needed to the user and do not claim progress or completion.\nObjective: ")
 	b.WriteString(s.goal.Objective)
 	b.WriteString("\nCompletion checks:")
 	for _, check := range s.goal.Checks {
@@ -533,7 +537,7 @@ func (s *state) startTool() extension.Tool {
 		if err != nil {
 			return extension.ToolResult{Content: err.Error(), IsError: true}, nil
 		}
-		return extension.ToolResult{Content: content + " Begin work now and use the goal progress, completion, or pause tools as needed."}, nil
+		return extension.ToolResult{Content: content + " Begin work now. Record concrete progress and complete only with evidence for every check."}, nil
 	}}
 }
 
@@ -615,37 +619,6 @@ func (s *state) completeTool() extension.Tool {
 	}}
 }
 
-func (s *state) pauseTool() extension.Tool {
-	return extension.Tool{Source: Source, Definition: model.ToolDefinition{Name: "pause_goal",
-		Description: "Pause the active /goal when permissions, required input, or another concrete blocker prevents progress.",
-		InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-			"reason": map[string]any{"type": "string"},
-		}, "required": []any{"reason"}}}, Execute: func(_ context.Context, raw json.RawMessage, _ func(string)) (extension.ToolResult, error) {
-		var input struct {
-			Reason string `json:"reason"`
-		}
-		if err := json.Unmarshal(raw, &input); err != nil {
-			return extension.ToolResult{}, err
-		}
-		input.Reason = strings.TrimSpace(input.Reason)
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		if s.goal.Status != "active" {
-			return extension.ToolResult{Content: "No active goal.", IsError: true}, nil
-		}
-		if input.Reason == "" {
-			return extension.ToolResult{Content: "A concrete blocker reason is required.", IsError: true}, nil
-		}
-		s.goal.Status, s.goal.Reason = "paused", "blocked: "+input.Reason
-		s.haltRun = true
-		if err := s.persistLocked(); err != nil {
-			return extension.ToolResult{}, err
-		}
-		s.updateStatusLocked()
-		return extension.ToolResult{Content: "Goal paused. Tell the user what is needed to resume."}, nil
-	}}
-}
-
 func (s *state) persistLocked() error {
 	copy := cloneSnapshot(s.goal)
 	copy.SessionID = s.sessionID
@@ -703,7 +676,7 @@ func (s *state) updateStatusLocked() {
 
 func allowWhileStreaming(args string) bool {
 	name, _ := splitFirst(strings.TrimSpace(args))
-	return name == "" || name == "status" || name == "pause" || name == "clear"
+	return name == "" || name == "status" || name == "clear"
 }
 
 func startMessage(objective string, checks []string) string {

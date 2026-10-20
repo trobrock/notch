@@ -177,6 +177,9 @@ func TestStartGoalTool(t *testing.T) {
 	if err != nil || result.IsError {
 		t.Fatalf("start_goal = %#v, %v", result, err)
 	}
+	if strings.Contains(result.Content, "pause") || !strings.Contains(result.Content, "complete only with evidence") {
+		t.Fatalf("start_goal guidance = %q", result.Content)
+	}
 	got := latest(t, host)
 	if got.Status != "active" || got.Objective != "fix the parser" || got.MaxSteps != 4 || len(got.Checks) != 2 {
 		t.Fatalf("started goal = %#v", got)
@@ -375,36 +378,16 @@ func TestGoalPersistenceFailureRollsBackState(t *testing.T) {
 	}
 }
 
-func TestGoalBlockedTaskPausesCleanly(t *testing.T) {
-	host := newTestHost("blocked")
-	r := setup(t, host)
-	runCommand(t, r, "start publish release --check release is visible")
-	pause, _ := r.Tool("pause_goal")
-	result, err := pause.Execute(context.Background(), json.RawMessage(`{"reason":"release credentials are not available"}`), nil)
-	if err != nil || result.IsError {
-		t.Fatalf("pause result = %#v, %v", result, err)
-	}
-	got := latest(t, host)
-	if got.Status != "paused" || got.Reason != "blocked: release credentials are not available" {
-		t.Fatalf("blocked state = %#v", got)
-	}
-	end, err := r.RunHooks(context.Background(), "agent_end", nil)
-	if err != nil || end["follow_up"] != nil {
-		t.Fatalf("blocked agent end = %#v, %v", end, err)
-	}
-}
-
-func TestGoalPauseResumeClearAndFailedQueue(t *testing.T) {
+func TestGoalPauseRemovedClearAndFailedQueue(t *testing.T) {
 	host := newTestHost("commands")
 	r := setup(t, host)
 	runCommand(t, r, "start work --check done")
-	runCommand(t, r, "pause")
-	if got := latest(t, host); got.Status != "paused" {
-		t.Fatalf("paused = %#v", got)
+	command, _ := r.Command("goal")
+	if _, err := command.Execute(context.Background(), "pause"); err == nil || !strings.Contains(err.Error(), "removed") {
+		t.Fatalf("pause command err = %v", err)
 	}
-	runCommand(t, r, "resume")
-	if got := latest(t, host); got.Status != "active" {
-		t.Fatalf("resumed = %#v", got)
+	if _, ok := r.Tool("pause_goal"); ok {
+		t.Fatal("pause_goal tool is still registered")
 	}
 	runCommand(t, r, "clear")
 	if got := latest(t, host); got.Status != "cleared" {
@@ -414,7 +397,7 @@ func TestGoalPauseResumeClearAndFailedQueue(t *testing.T) {
 	host = newTestHost("queue-error")
 	host.followErr = errors.New("queue unavailable")
 	r = setup(t, host)
-	command, _ := r.Command("goal")
+	command, _ = r.Command("goal")
 	if _, err := command.Execute(context.Background(), "start work --check done"); err == nil {
 		t.Fatal("expected queue error")
 	}
@@ -440,6 +423,10 @@ func TestGoalHardModelTurnLimitStopsToolLoops(t *testing.T) {
 	got := latest(t, host)
 	if got.Status != "paused" || got.Turns != turnsPerStep || got.Reason != "goal model-turn limit reached" {
 		t.Fatalf("limited state = %#v", got)
+	}
+	command, _ := r.Command("goal")
+	if _, err := command.Execute(context.Background(), "resume"); err == nil || !strings.Contains(err.Error(), "model-turn limit") {
+		t.Fatalf("resume exhausted goal err = %v", err)
 	}
 }
 
@@ -536,7 +523,9 @@ func TestDelayedSessionChangeDoesNotUndoExplicitResume(t *testing.T) {
 	host := newTestHost("delayed")
 	r := setup(t, host)
 	runCommand(t, r, "start work --check done")
-	runCommand(t, r, "pause")
+	if _, err := r.RunHooks(context.Background(), "session_shutdown", nil); err != nil {
+		t.Fatal(err)
+	}
 	runCommand(t, r, "resume")
 	if _, err := r.RunHooks(context.Background(), "session_change", map[string]any{"session_id": "delayed"}); err != nil {
 		t.Fatal(err)

@@ -344,8 +344,8 @@ func schema() map[string]any {
 			"role":            map[string]any{"type": "string", "description": "Reusable specialist role. Built-ins: lead, researcher, designer, developer (implementer alias), qa, reviewer. Global custom roles are also accepted."},
 			"model":           map[string]any{"type": "string", "description": "Model ID, optionally provider/model. Omit to use the current parent provider/model. An unqualified ID stays on the current provider; qualify it only for a user-requested or explicitly configured provider change."},
 			"cwd":             map[string]any{"type": "string", "description": "Working directory. Defaults to the parent working directory."},
-			"tools":           map[string]any{"type": "string", "description": "Comma-separated tool allowlist. Defaults to read,grep,find,ls. bash is NOT read-only, even for inspection commands. Any other tool requires explicit delegated write authorization and allowWriteTools=true."},
-			"allowWriteTools": map[string]any{"type": "boolean", "description": "Permit tools outside read,grep,find,ls (including bash). Enable only when the user explicitly authorizes delegated write access; never enable just to run read-only shell commands."},
+			"tools":           map[string]any{"type": "string", "description": "Comma-separated tool allowlist. Defaults to read,grep,find,ls. bash is NOT read-only, even for inspection commands. Any other tool requires allowWriteTools=true, which authorizes write-capable tools for this invocation."},
+			"allowWriteTools": map[string]any{"type": "boolean", "description": "Permit tools outside read,grep,find,ls (including bash) for this helper invocation. Never enable it merely to run read-only shell commands."},
 			"timeoutSeconds":  map[string]any{"type": "integer", "minimum": 1, "maximum": maxTimeoutSeconds},
 			"maxOutputChars":  map[string]any{"type": "integer", "minimum": 1000, "maximum": maxOutputChars},
 			"maxTurns":        map[string]any{"type": "integer", "minimum": 1, "description": "Maximum model turns for this subagent."},
@@ -411,7 +411,7 @@ func decodeInput(raw json.RawMessage) (Input, error) {
 		}
 	}
 	if len(unsafe) > 0 && !input.AllowWriteTools {
-		return input, fmt.Errorf("tools include non-read-only tools (%s). bash is write-capable regardless of the intended command. For read-only discovery omit tools or use read,grep,find,ls; run shell analysis in the parent. Set allowWriteTools=true only with explicit user authorization for delegated write access", strings.Join(unsafe, ", "))
+		return input, fmt.Errorf("tools include non-read-only tools (%s). bash is write-capable regardless of the intended command. For read-only discovery omit tools or use read,grep,find,ls; run shell analysis in the parent. Set allowWriteTools=true to authorize write-capable tools for this helper invocation", strings.Join(unsafe, ", "))
 	}
 	input.Tools = strings.Join(tools, ",")
 	if input.Thinking == "" {
