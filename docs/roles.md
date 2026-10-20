@@ -1,6 +1,6 @@
 # Reusable specialist roles
 
-Notch can apply one reusable role contract to the existing delegation tools. A role adds task instructions and bounded defaults. It does **not** grant tools, shell or network access, write approval, credentials, or a worktree.
+Notch can apply one reusable role contract to the existing delegation tools. A role adds task instructions and bounded defaults. It does **not** grant tools, shell or network access, write-capable tools, credentials, or a worktree.
 
 Built-in roles are `lead`, `researcher`, `designer`, `developer`, `qa`, and `reviewer`. `implementer` is a supported alias for `developer`, so older team calls keep working.
 
@@ -62,7 +62,7 @@ Resolution order is:
 3. the active profile's `role_models` entry;
 4. explicit batch or task overrides.
 
-Parent cost and turn limits, profile provider boundaries, the tool allowlist, and separate write authorization always win. A role cannot add a tool.
+Parent cost and turn limits, profile provider boundaries, and the tool allowlist always win. A role cannot add a tool. The caller enables write-capable tools for one helper invocation with `allowWriteTools=true` or `allow_write_tools=true`.
 
 ## Prompt and handoff order
 

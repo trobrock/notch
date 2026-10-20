@@ -38,15 +38,15 @@ var starterRoles = map[string]RoleConfig{
 		Thinking:     "low", TimeoutSeconds: 300, MaxOutputChars: 12000, MaxTurns: 8,
 	},
 	"designer": {
-		Instructions: "Design the smallest coherent solution. State tradeoffs, boundaries, risks, and clear acceptance checks. Do not implement unless the task explicitly asks for it and write access is separately granted.",
+		Instructions: "Design the smallest coherent solution. State tradeoffs, boundaries, risks, and clear acceptance checks. Do not implement unless the task asks for it and the invocation enables write-capable tools.",
 		Thinking:     "high", TimeoutSeconds: 300, MaxOutputChars: 12000, MaxTurns: 8,
 	},
 	"developer": {
-		Instructions: "Implement only the approved scope. Preserve unrelated changes, add focused tests, and report exact files and checks.",
+		Instructions: "When the invocation enables write-capable tools, implement only the scoped task, preserve unrelated changes, add focused tests, and report exact files and checks. Otherwise provide read-only implementation guidance.",
 		Thinking:     "medium", TimeoutSeconds: 600, MaxOutputChars: 16000, MaxTurns: 12,
 	},
 	"qa": {
-		Instructions: "Test the scoped behavior against its acceptance checks. Report commands, evidence, regressions, and remaining uncertainty. Do not fix issues unless separately asked and authorized.",
+		Instructions: "Test the scoped behavior against its acceptance checks. Report commands, evidence, regressions, and remaining uncertainty. Do not fix issues unless the task asks for fixes and the invocation enables write-capable tools.",
 		Thinking:     "medium", TimeoutSeconds: 300, MaxOutputChars: 12000, MaxTurns: 8,
 	},
 	"reviewer": {

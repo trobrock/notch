@@ -1,58 +1,97 @@
 ---
 name: software-team
-description: Coordinate an end-to-end software task with a senior lead and bounded designer, developer, QA, and reviewer agents using reusable roles, profile-specific models, and budgets.
+description: Autonomously deliver a software objective with measurable outcomes, choosing direct work or bounded specialist helpers as useful.
 ---
 
-# Software team workflow
+# Software delivery workflow
 
-Use this workflow only when the user asks for coordinated end-to-end software delivery. Keep one lead coordinator. The lead owns scope, architecture, integration, risk decisions, final checks, and completion evidence.
+Use this workflow when the user or a Developerly handoff provides a software objective and measurable outcomes. Keep one lead. The lead owns scope, architecture, integration, final checks, and completion evidence.
 
-## Roles
+Developerly is the source of truth for the work item. Do not create a second project plan or duplicate its status. Keep the Developerly work-item ID in the result when one is provided.
 
-- **Coordinator:** Keep the current strong parent model. Break down work, approve design and architecture, integrate changes, and decide completion. Do not spend coordinator turns on routine isolated work when a bounded helper can do it safely.
-- **Designer:** Use a strong model for user flows, information hierarchy, interaction states, responsive behavior, visual direction, and accessibility. Designers are read-only unless the user explicitly authorizes a separate writer task.
-- **Developer (`implementer` alias):** Use the reusable `developer` role for narrow approved changes. A writing developer requires explicit user authorization, a separate clean Git worktree and branch, an exact base commit, and `integration_owner=lead`.
-- **QA:** Use a lower-cost model for focused tests, browser checks, boundary cases, and reproducible evidence. Keep it read-only unless test-file changes are explicitly authorized as a writer task.
-- **Reviewer:** Use an independent medium or strong model after integration. It does not edit code. It prioritizes correctness, security, maintainability, accessibility, and missing-test findings.
+## Start from outcomes
 
-Use the global reusable role contracts and the active profile's `role_models` mapping. Do not repeat role system instructions in each task. Use only model IDs available from the current provider. If a configured role model is unavailable, stop before dispatch, list models for that same provider, and explicitly update or override the mapping with the closest suitable model. Never switch providers silently. Roles never grant tools, write approval, network access, or worktrees.
+1. Read the objective, measurable outcomes, constraints, and requested Git result.
+2. If the handoff explicitly asks for bounded goal mode, call `start_goal` with the objective and the outcomes as exact completion checks. Do not add vague checks.
+3. Inspect the repository and its guidance before choosing an approach.
+4. Make the smallest coherent plan. Ask a question only when a missing answer truly blocks safe work.
 
-## Sequence
+A good Developerly handoff looks like:
 
-1. Turn the task into measurable outcome, risk, deployment, and Git-result checks.
-2. For user-facing work, ask a designer for a short design brief before implementation.
-3. Let the coordinator approve the design and architecture.
-4. Delegate narrow independent implementation tasks only when separate worktrees are worth the integration cost.
-5. Integrate and inspect every writer commit. Helpers never merge their own work.
-6. Run focused checks on the integrated tree.
-7. Ask QA to verify user behavior and failure cases.
-8. For user-facing work, ask the designer to review the real integrated UI in a browser.
-9. Ask an independent reviewer to inspect the final integrated result.
-10. Fix valid findings and rerun affected checks.
-11. Run repository-required final checks and verify the requested Git result.
+```text
+Use goal mode to complete Developerly work item 123.
 
-## Intercom gates
+Objective: Add CSV export to filtered reports.
 
-Use Intercom for long-lived peer agents only. Set `wake=true` only for a bounded request that needs timely work and only when the peer opted into wakeups. Replies never wake agents.
+Completion checks:
+- Export uses the active filters.
+- Exported values match the visible table.
+- Focused tests pass.
+- Required repository checks pass.
 
-A delivered request is not a completed review. Save the request ID and call `intercom_request_status`. Do not complete a check requiring peer review until status is `replied` and the response has been inspected. If Intercom adds no value over a short-lived helper, use the helper instead.
+Choose direct work or specialist helpers based on expected value. Keep one lead responsible for integration and evidence.
+```
 
-## Budgets and escalation
+## Choose tools intelligently
 
-Set per-helper `model`, `thinking`, `max_turns`, `max_cost_usd`, `timeout_seconds`, and `max_output_chars`. Start routine implementer and QA tasks with low bounds. Use strong models for design or review judgment. Escalate a helper only when its evidence shows the cheaper attempt is blocked or unreliable; record why.
+Direct execution is the default for small, tightly coupled work. Do not create a team merely because roles exist.
 
-Stop repeated or duplicate review passes. Any code change after review reruns only the affected checks plus required final checks.
+Use helpers when they reduce uncertainty or elapsed time:
+
+- **Researcher:** Trace a broad or unfamiliar code path. Read-only.
+- **Designer:** Define user flow, states, accessibility, and visual behavior for meaningful UI work. Usually read-only.
+- **Developer (`implementer` alias):** Make one narrow, separable change in an existing clean worktree.
+- **QA:** Run focused checks and boundary cases. Usually read-only.
+- **Reviewer:** Independently inspect the integrated result. Read-only.
+
+Use `explore_codebase` for broad read-only discovery. Use `run_subagent` for one focused helper. Use `coordinate_helpers` only for two or more independent tasks whose parallel value exceeds startup and integration cost. Do not require every role.
+
+Use the global role contracts and the active profile's `role_models`. Never switch providers silently. A role changes instructions and model defaults; it does not change tools.
+
+## Writing helpers
+
+Helpers are read-only by default. Setting `allowWriteTools=true` or `allow_write_tools=true` authorizes that helper invocation to use the requested write-capable tools. Do not ask for a second permission after choosing that flag.
+
+For coordinated change helpers, preserve the existing Git safety rules:
+
+- use a separate clean worktree and named branch;
+- start at the exact expected lead commit;
+- set `integration_owner=lead`;
+- never let a helper merge, reset, clean, or delete a worktree;
+- inspect the helper result and integrate explicitly.
+
+Prefer lead-owned edits when creating and integrating a writer worktree costs more than the change itself.
+
+## Delivery loop
+
+1. Investigate only enough to choose a sound implementation.
+2. Record concrete progress with `report_goal_progress` when goal mode is active.
+3. Implement directly or delegate narrow work.
+4. Inspect all helper evidence. A helper success flag is not proof.
+5. Integrate writer changes explicitly and resolve conflicts in the lead tree.
+6. Run focused tests, then required repository checks.
+7. Use QA or an independent reviewer when risk warrants it.
+8. Fix material findings and rerun affected checks.
+9. Call `complete_goal` only with evidence for every configured check.
+10. Return a concise result suitable for updating the Developerly work item: changes, evidence, Git state, usage when known, and unresolved risk.
+
+If blocked, explain exactly what is missing. Do not pause the goal yourself and do not claim completion.
+
+## Budgets and stopping
+
+Give every helper finite turn, timeout, output, and cost estimates when pricing is known. Start routine research, implementation, and QA with low bounds. Escalate only when evidence shows the first attempt was insufficient.
+
+Human cancellation has priority. Do not retry an interrupted write unless the user asks. Stop duplicate research and repeated review passes.
 
 ## Completion contract
 
 Before completion, provide evidence for:
 
-- each user-visible acceptance check;
-- final integrated tests/build/lint as required by the repository;
-- received and resolved review findings, not merely a sent request;
-- deployment state and rollback plan when deployment was requested;
-- exact Git result requested by the task: validated diff, clean commit, branch, or pull request;
-- cost/turn usage by delegated role when available;
+- every measurable outcome;
+- required tests, build, and lint checks;
+- resolved material review findings;
+- the requested Git result;
+- deployment and rollback state only when deployment was requested;
 - remaining uncertainty.
 
-Never claim a deployment, review, test, or clean Git state without direct evidence.
+Never claim a deployment, review, test, clean tree, or improvement over a single-agent baseline without direct evidence.

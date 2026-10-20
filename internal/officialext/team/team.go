@@ -221,26 +221,11 @@ func register(registry *extension.Registry, host extension.Host, runner subagent
 	c := &coordinator{host: host, runner: runner, git: git}
 	tool := extension.Tool{Source: Source, UpdateMode: "replace", Definition: model.ToolDefinition{
 		Name:        ToolName,
-		Description: "Run a small, opt-in lead-and-helper workflow using existing isolated Notch subagents. Use only when the user asks for coordinated helpers. The lead owns scope, decisions, synthesis, and integration. Assign optional designer, implementer, QA, and reviewer roles, and set per-helper model, thinking, turn, cost, timeout, and output limits so bounded routine work can use cheaper models while judgment stays with the lead. Initial helpers run independently and return concise JSON results with scoped checks and artifact references. Research and review are read-only by default. A change helper requires explicit user authorization, allow_write_tools=true, a separate existing Git worktree/branch, its expected base commit, and integration_owner=lead. This tool never creates, resets, merges, deletes, or cleans a worktree. Delegated usage is returned separately so parent and /goal budgets count it once; unknown child cost stays unknown.",
+		Description: "Run a small, opt-in lead-and-helper workflow using existing isolated Notch subagents. Use only when the user asks for coordinated helpers. The lead owns scope, decisions, synthesis, and integration. Assign optional designer, implementer, QA, and reviewer roles, and set per-helper model, thinking, turn, cost, timeout, and output limits so bounded routine work can use cheaper models while judgment stays with the lead. Initial helpers run independently and return concise JSON results with scoped checks and artifact references. Research and review are read-only by default. A change helper requires allow_write_tools=true, a separate existing Git worktree/branch, its expected base commit, and integration_owner=lead. This tool never creates, resets, merges, deletes, or cleans a worktree. Delegated usage is returned separately so parent and /goal budgets count it once; unknown child cost stays unknown.",
 		InputSchema: teamSchema(),
 	}, Execute: c.execute}
-	_, err := registry.RegisterBatch(extension.Batch{
-		Tools:    []extension.Tool{tool},
-		Commands: []extension.Command{{Name: "team", Description: "Start an opt-in lead-and-helper workflow", Source: Source, Execute: c.command}},
-	})
+	_, err := registry.RegisterBatch(extension.Batch{Tools: []extension.Tool{tool}})
 	return err
-}
-
-func (c *coordinator) command(_ context.Context, args string) (string, error) {
-	objective := strings.TrimSpace(args)
-	if objective == "" {
-		return "Usage: /team OBJECTIVE. Use helpers only for narrow independent work; the lead owns integration.", nil
-	}
-	prompt := "Use the opt-in coordinated-helper workflow for this objective: " + objective + "\nFirst decide whether helpers will improve the result within comparable total limits. Keep one lead. Assign only narrow independent research/review tasks, plus at most separable writer tasks that the user explicitly authorizes in existing isolated worktrees. State scoped acceptance checks. Use coordinate_helpers, verify artifacts yourself, and integrate explicitly. If a team would add overhead, say so and continue as one agent."
-	if err := c.host.FollowUp(prompt); err != nil {
-		return "", err
-	}
-	return "Team workflow queued. The lead will keep scope and integration ownership.", nil
 }
 
 func teamSchema() map[string]any {
@@ -268,7 +253,7 @@ func teamSchema() map[string]any {
 		"max_output_chars":     map[string]any{"type": "integer", "minimum": 1000, "maximum": 50000},
 		"max_turns":            map[string]any{"type": "integer", "minimum": 1, "description": "Default maximum model turns per helper"},
 		"max_cost_usd":         map[string]any{"type": "number", "exclusiveMinimum": 0, "description": "Default maximum estimated cost in USD per helper"},
-		"allow_write_tools":    map[string]any{"type": "boolean", "description": "True only after explicit user authorization for delegated writes"},
+		"allow_write_tools":    map[string]any{"type": "boolean", "description": "True authorizes change helpers in this invocation to use tools outside the read-only default"},
 		"integration_owner":    str("Must be lead when any change helper is used"),
 	}, "required": []string{"tasks"}}
 }
@@ -414,7 +399,7 @@ func normalizeAndValidate(input *Input, leadRoot, leadCommon, leadBranch, leadHe
 			continue
 		}
 		if !input.AllowWriteTools {
-			return nil, errors.New("change helpers require explicit authorization via allow_write_tools=true")
+			return nil, errors.New("change helpers require allow_write_tools=true")
 		}
 		if strings.ToLower(strings.TrimSpace(input.IntegrationOwner)) != "lead" {
 			return nil, errors.New("change helpers require integration_owner=lead")

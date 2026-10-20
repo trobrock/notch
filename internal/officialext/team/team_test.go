@@ -21,7 +21,6 @@ type fakeHost struct {
 	answer   string
 	inputErr error
 	asked    chan string
-	followup string
 }
 
 func (h *fakeHost) CWD() string { return h.cwd }
@@ -44,7 +43,7 @@ func (h *fakeHost) Input(ctx context.Context, prompt, _ string) (string, error) 
 }
 func (*fakeHost) Select(context.Context, string, []string) (string, error)         { return "", nil }
 func (*fakeHost) Notify(string, string)                                            {}
-func (h *fakeHost) FollowUp(value string) error                                    { h.followup = value; return nil }
+func (*fakeHost) FollowUp(string) error                                            { return nil }
 func (*fakeHost) Handoff(string, bool) error                                       { return nil }
 func (*fakeHost) SetActiveTools([]string) error                                    { return nil }
 func (*fakeHost) SwitchModel(context.Context, string, string) (string, int, error) { return "", 0, nil }
@@ -397,7 +396,7 @@ func TestFailedWriterStillRunsPostRunAudit(t *testing.T) {
 	}
 }
 
-func TestWriteAuthorizationAndTeamCommand(t *testing.T) {
+func TestWriteAuthorizationAndNoTeamCommand(t *testing.T) {
 	runner := &scriptedRunner{outputs: map[string][]subagent.Result{}}
 	host := &fakeHost{cwd: "/lead"}
 	git := &fakeGit{states: map[string][]gitSnapshot{"/lead": {{root: "/lead", branch: "main", head: "base"}}}}
@@ -405,20 +404,15 @@ func TestWriteAuthorizationAndTeamCommand(t *testing.T) {
 	_ = register(registry, host, runner, git)
 	tool, _ := registry.Tool(ToolName)
 	_, err := tool.Execute(context.Background(), json.RawMessage(`{"tasks":[{"id":"w","kind":"change","prompt":"write","cwd":"/writer","tools":"edit","expected_base":"base","acceptance_checks":["test"]}]}`), nil)
-	if err == nil || !strings.Contains(err.Error(), "explicit authorization") {
+	if err == nil || !strings.Contains(err.Error(), "allow_write_tools=true") {
 		t.Fatalf("error = %v", err)
 	}
 	_, err = tool.Execute(context.Background(), json.RawMessage(`{"max_output_chars":-1,"tasks":[{"id":"r","kind":"research","prompt":"read","acceptance_checks":["cite"]}]}`), nil)
 	if err == nil || !strings.Contains(err.Error(), "max_output_chars") {
 		t.Fatalf("max output error = %v", err)
 	}
-	command, ok := registry.Command("team")
-	if !ok {
-		t.Fatal("team command missing")
-	}
-	text, err := command.Execute(context.Background(), "ship a parser fix")
-	if err != nil || !strings.Contains(text, "queued") || !strings.Contains(host.followup, "ship a parser fix") {
-		t.Fatalf("command=%q followup=%q err=%v", text, host.followup, err)
+	if _, ok := registry.Command("team"); ok {
+		t.Fatal("obsolete team command is still registered")
 	}
 }
 

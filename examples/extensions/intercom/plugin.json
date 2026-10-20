@@ -1,5 +1,0 @@
-{
-  "name": "local-intercom",
-  "command": ["./notch-intercom"],
-  "enabled": true
-}

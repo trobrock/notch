@@ -1,10 +1,6 @@
 # Coordinated helpers
 
-Coordinated helpers are an opt-in lead-and-helper workflow. Start one with:
-
-```text
-/team OBJECTIVE
-```
+Coordinated helpers are an opt-in lead-and-helper tool used by the `software-team` skill when independent work is worth parallelizing. The lead calls `coordinate_helpers`; users and Developerly handoffs normally provide only the objective and measurable outcomes.
 
 This is not a swarm. One lead owns the goal, decisions, final checks, and integration. The workflow reuses Notch's existing isolated subagent runner and usage accounting. It does not add a daemon, broker, or idle polling.
 
@@ -34,15 +30,14 @@ For user-facing work, use a strong designer before implementation and again agai
 
 Research and review helpers are read-only. Their default tools are `read,grep,find,ls`. A writer runs only when all of these are true:
 
-1. The user explicitly authorized delegated writes.
-2. The call sets `allow_write_tools=true` and `integration_owner=lead`.
-3. The writer has its own existing Git worktree and named branch.
-4. The worktree belongs to the lead repository, is clean, and is different from every other writer worktree and branch.
-5. `expected_base` exactly matches the lead commit when helpers start, and the writer branch starts at that exact commit.
+1. The call sets `allow_write_tools=true`, which authorizes write-capable tools for that invocation, and `integration_owner=lead`.
+2. The writer has its own existing Git worktree and named branch.
+3. The worktree belongs to the lead repository, is clean, and is different from every other writer worktree and branch.
+4. `expected_base` exactly matches the lead commit when helpers start, and the writer branch starts at that exact commit.
 
 A writer is told to make one scoped change and cite its resulting commit. After it finishes, Notch checks that its worktree and branch did not change identity, that the final tree is clean, and that the commit still descends from the expected base. It uses `git merge-tree` to look for conflicts with a lead branch that moved and between parallel writer branches, without touching any branch. These are pre-integration checks, not proof that changes work together. The tool never creates, resets, merges, deletes, or cleans a worktree. The lead inspects and integrates each cited commit explicitly. Dirty worktrees are rejected so unrelated user work is not put at risk.
 
-Write authorization uses the same trusted tool-call policy as `run_subagent`: the model may set `allow_write_tools=true` only after the user explicitly allows delegated writes. A worktree CWD is isolation for Git history and integration, not an operating-system filesystem sandbox. Authorized tools can technically address paths outside that directory. Use the narrowest tool list, do not authorize a writer for untrusted tasks, and inspect the lead worktree and cited commits before integration.
+`allow_write_tools=true` is the authorization for that helper invocation; no second grant is required. A worktree CWD is isolation for Git history and integration, not an operating-system filesystem sandbox. Write-capable tools can technically address paths outside that directory. Use the narrowest tool list and inspect the lead worktree and cited commits before integration.
 
 ## Clarifications and cancellation
 
@@ -80,7 +75,7 @@ Use the same concrete task and comparable total limits for all four runs:
 1. **One agent:** ask one agent to research, change, review, and test.
 2. **`/goal` alone:** run the same objective and checks with a bounded step count.
 3. **Ordinary subagents:** let the lead call `run_subagent` or `explore_codebase` without the team contract.
-4. **`/team`:** assign two independent read-only research/review tasks. If the change is separable, prepare one clean writer worktree and explicitly authorize that one writer. Keep integration with the lead.
+4. **Software delivery skill:** let the lead decide whether independent research, review, or a separable writer will improve the result. When useful, it calls `coordinate_helpers`. A change helper uses `allow_write_tools=true` in a clean writer worktree. Keep integration with the lead.
 
 For each run record:
 
@@ -95,8 +90,8 @@ A useful repository pilot is: have one helper trace request cancellation, a seco
 
 Teams help when independent investigation is the slow part and the reports change the lead's decision. They do not help when the edit is small, tasks depend on each other, the lead must answer many questions, or integration/review erases the parallel time saved. Keep the feature off in those cases.
 
-The first live walkthrough should be done with the user because authorization, intervention count, and perceived usefulness cannot be established by automated tests alone. Record those measurements before claiming that teams are better for a class of work.
+A live walkthrough is still useful for measuring intervention count and perceived usefulness before claiming that teams are better for a class of work.
 
 ## Reusable role contracts
 
-Helper `role` values use the global reusable role resolver shared with `run_subagent` and `explore_codebase`. `developer` is canonical and `implementer` remains an alias. Global custom roles are accepted, but they do not bypass helper kind validation, read-only defaults, write approval, tool limits, or worktree checks. See [reusable specialist roles](roles.md).
+Helper `role` values use the global reusable role resolver shared with `run_subagent` and `explore_codebase`. `developer` is canonical and `implementer` remains an alias. Global custom roles are accepted, but they do not bypass helper kind validation, read-only defaults, the `allow_write_tools` gate, tool limits, or worktree checks. See [reusable specialist roles](roles.md).
