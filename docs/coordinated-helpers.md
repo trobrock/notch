@@ -95,3 +95,9 @@ A live walkthrough is still useful for measuring intervention count and perceive
 ## Reusable role contracts
 
 Helper `role` values use the global reusable role resolver shared with `run_subagent` and `explore_codebase`. `developer` is canonical and `implementer` remains an alias. Global custom roles are accepted, but they do not bypass helper kind validation, read-only defaults, the `allow_write_tools` gate, tool limits, or worktree checks. See [reusable specialist roles](roles.md).
+
+## Progress-first limits
+
+By default, helpers have no model-turn, total-runtime, or cost cap. Do not supply tiny caps simply because the tool offers them. `timeout_seconds` is an optional total-runtime cap (0 means none; up to 86400 seconds). `max_turns` and `max_cost_usd` are opt-in caps. Explicit caps are still enforced, including remaining turn/cost allowances across a clarification. Each helper stops after 30 minutes without provider or tool events, independently of its total-runtime setting. Parent cancellation still stops active helpers.
+
+Use progress checkpoints and lead judgment to avoid repeated failed approaches and duplicate work. Inactivity is not semantic stall detection: a helper emitting events can still churn. Review its evidence before continuing or retrying. Interrupted writers are not automatically retried.

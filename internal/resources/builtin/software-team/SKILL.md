@@ -79,7 +79,9 @@ If blocked, explain exactly what is missing. Do not pause the goal yourself and 
 
 ## Budgets and stopping
 
-Give every helper finite turn, timeout, output, and cost estimates when pricing is known. Start routine research, implementation, and QA with low bounds. Escalate only when evidence shows the first attempt was insufficient.
+Do not impose small turn, total-runtime, or cost caps by default. Helpers may continue while making useful progress; the runner stops a helper after 30 minutes without provider or tool events. Use explicit caps when the user requests them or the task has a real deadline. Keep reports concise, but allow enough work to finish and verify the task.
+
+Prefer soft progress checkpoints over restarting a productive helper. Reconsider repeated failed approaches, duplicate work, or reviews that find no new evidence. Increase model capability when evidence shows it is needed, not merely because an arbitrary turn count was reached. Report known usage and costs without treating them as mandatory ceilings.
 
 Human cancellation has priority. Do not retry an interrupted write unless the user asks. Stop duplicate research and repeated review passes.
 

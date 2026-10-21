@@ -58,3 +58,15 @@ func TestRoleDefaultsValidate(t *testing.T) {
 		t.Fatalf("err=%v", err)
 	}
 }
+
+func TestStarterRolesDoNotCapProductiveWork(t *testing.T) {
+	for name := range starterRoles {
+		role, err := ResolveRole(Config{}, nil, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if role.MaxTurns != 0 || role.TimeoutSeconds != 0 || role.MaxCostUSD != 0 {
+			t.Fatalf("%s imposes a default hard cap: %#v", name, role)
+		}
+	}
+}

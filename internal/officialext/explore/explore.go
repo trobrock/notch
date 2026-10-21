@@ -199,7 +199,7 @@ func run(ctx context.Context, runner subagent.Runner, input Input, update func(s
 				}
 				result, err := runner.Run(ctx, subagent.Input{
 					Prompt: "Explore task: " + task.Task, Role: roleName, Model: modelName, CWD: cwd,
-					Tools: "read,grep,find,ls", Thinking: subagent.DefaultThinking, TimeoutSeconds: 300,
+					Tools: "read,grep,find,ls", Thinking: subagent.DefaultThinking, TimeoutSeconds: 0,
 					MaxOutputChars: 8000, SystemPrompt: systemPrompt(), ModelExplicit: strings.TrimSpace(modelName) != "",
 				}, taskUpdate)
 				if err != nil {

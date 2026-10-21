@@ -31,27 +31,27 @@ type RoleResolution struct {
 var starterRoles = map[string]RoleConfig{
 	"lead": {
 		Instructions: "Own scope, decisions, integration, and completion evidence. Delegate only bounded work and verify important claims.",
-		Thinking:     "high", TimeoutSeconds: 600, MaxOutputChars: 16000, MaxTurns: 12,
+		Thinking:     "high", MaxOutputChars: 16000,
 	},
 	"researcher": {
 		Instructions: "Investigate the scoped question read-only. Cite exact files and distinguish verified facts from hypotheses.",
-		Thinking:     "low", TimeoutSeconds: 300, MaxOutputChars: 12000, MaxTurns: 8,
+		Thinking:     "low", MaxOutputChars: 12000,
 	},
 	"designer": {
 		Instructions: "Design the smallest coherent solution. State tradeoffs, boundaries, risks, and clear acceptance checks. Do not implement unless the task asks for it and the invocation enables write-capable tools.",
-		Thinking:     "high", TimeoutSeconds: 300, MaxOutputChars: 12000, MaxTurns: 8,
+		Thinking:     "high", MaxOutputChars: 12000,
 	},
 	"developer": {
 		Instructions: "When the invocation enables write-capable tools, implement only the scoped task, preserve unrelated changes, add focused tests, and report exact files and checks. Otherwise provide read-only implementation guidance.",
-		Thinking:     "medium", TimeoutSeconds: 600, MaxOutputChars: 16000, MaxTurns: 12,
+		Thinking:     "medium", MaxOutputChars: 16000,
 	},
 	"qa": {
 		Instructions: "Test the scoped behavior against its acceptance checks. Report commands, evidence, regressions, and remaining uncertainty. Do not fix issues unless the task asks for fixes and the invocation enables write-capable tools.",
-		Thinking:     "medium", TimeoutSeconds: 300, MaxOutputChars: 12000, MaxTurns: 8,
+		Thinking:     "medium", MaxOutputChars: 12000,
 	},
 	"reviewer": {
 		Instructions: "Review independently for correctness, security, regressions, and missing tests. Lead with actionable findings and cite exact locations.",
-		Thinking:     "high", TimeoutSeconds: 300, MaxOutputChars: 12000, MaxTurns: 8,
+		Thinking:     "high", MaxOutputChars: 12000,
 	},
 }
 
@@ -123,8 +123,8 @@ func ResolveRole(cfg Config, routing *RoutingSnapshot, requested string) (RoleRe
 	if role.Thinking != "" && !validProfileThinking(role.Thinking) {
 		return RoleResolution{}, fmt.Errorf("role %q: invalid thinking %q", requested, role.Thinking)
 	}
-	if role.TimeoutSeconds < 0 || role.TimeoutSeconds > 3600 || role.MaxOutputChars < 0 || role.MaxOutputChars > 50000 || (role.MaxOutputChars > 0 && role.MaxOutputChars < 1000) || role.MaxTurns < 0 || role.MaxCostUSD < 0 || math.IsNaN(role.MaxCostUSD) || math.IsInf(role.MaxCostUSD, 0) {
-		return RoleResolution{}, fmt.Errorf("role %q: bounded defaults are invalid (timeout <= 3600, output 1000..50000 when set, and other limits finite and non-negative)", requested)
+	if role.TimeoutSeconds < 0 || role.TimeoutSeconds > 86400 || role.MaxOutputChars < 0 || role.MaxOutputChars > 50000 || (role.MaxOutputChars > 0 && role.MaxOutputChars < 1000) || role.MaxTurns < 0 || role.MaxCostUSD < 0 || math.IsNaN(role.MaxCostUSD) || math.IsInf(role.MaxCostUSD, 0) {
+		return RoleResolution{}, fmt.Errorf("role %q: bounded defaults are invalid (timeout <= 86400, output 1000..50000 when set, and other limits finite and non-negative)", requested)
 	}
 	resolved := RoleResolution{Name: name, RequestedName: requested, Source: source, Instructions: role.Instructions, Model: role.Model, Thinking: role.Thinking, TimeoutSeconds: role.TimeoutSeconds, MaxOutputChars: role.MaxOutputChars, MaxTurns: role.MaxTurns, MaxCostUSD: role.MaxCostUSD, ModelProvenance: "role default"}
 	if routing != nil {

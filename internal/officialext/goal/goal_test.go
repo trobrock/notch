@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -210,7 +211,7 @@ func TestStartGoalToolValidatesInput(t *testing.T) {
 	}{
 		{name: "missing objective", raw: `{"checks":["done"],"max_steps":8}`, want: "objective"},
 		{name: "empty check", raw: `{"objective":"work","checks":[""],"max_steps":8}`, want: "cannot be empty"},
-		{name: "too many steps", raw: `{"objective":"work","checks":["done"],"max_steps":51}`, want: "max steps"},
+		{name: "too many steps", raw: `{"objective":"work","checks":["done"],"max_steps":1000001}`, want: "max steps"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -258,17 +259,18 @@ func TestGoalNoProgressAndStepLimits(t *testing.T) {
 	t.Run("repeated no progress", func(t *testing.T) {
 		host := newTestHost("no-progress")
 		r := setup(t, host)
-		runCommand(t, r, "start do work --check check result --max-steps 5")
-		first, err := r.RunHooks(context.Background(), "agent_end", nil)
-		if err != nil || first["follow_up"] == nil {
-			t.Fatalf("first end = %#v, %v", first, err)
-		}
-		second, err := r.RunHooks(context.Background(), "agent_end", nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if second["follow_up"] != nil || latest(t, host).Reason != "stopped after repeated no progress" {
-			t.Fatalf("second end = %#v, state = %#v", second, latest(t, host))
+		runCommand(t, r, "start do work --check check result --max-steps 10")
+		for cycle := 1; cycle <= noProgressLimit; cycle++ {
+			end, err := r.RunHooks(context.Background(), "agent_end", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cycle < noProgressLimit && end["follow_up"] == nil {
+				t.Fatalf("cycle %d stopped too early: %#v", cycle, end)
+			}
+			if cycle == noProgressLimit && (end["follow_up"] != nil || latest(t, host).Reason != "stopped after repeated no progress") {
+				t.Fatalf("cycle %d end = %#v, state = %#v", cycle, end, latest(t, host))
+			}
 		}
 	})
 
@@ -532,5 +534,80 @@ func TestDelayedSessionChangeDoesNotUndoExplicitResume(t *testing.T) {
 	}
 	if got := latest(t, host); got.Status != "active" {
 		t.Fatalf("delayed session hook overwrote resume: %#v", got)
+	}
+}
+
+func TestDefaultGoalContinuesWhileProgressing(t *testing.T) {
+	host := newTestHost("productive")
+	r := setup(t, host)
+	runCommand(t, r, "start substantial work --check verified")
+	progress, _ := r.Tool("report_goal_progress")
+	for cycle := 0; cycle < 60; cycle++ {
+		for turn := 0; turn < turnsPerStep+1; turn++ {
+			before, err := r.RunHooks(context.Background(), "before_agent_start", map[string]any{"system_prompt": "base"})
+			if err != nil || before["stop"] == true {
+				t.Fatalf("cycle %d turn %d stopped: %#v, %v", cycle, turn, before, err)
+			}
+		}
+		raw := json.RawMessage(fmt.Sprintf(`{"summary":"step %d","evidence":"verified change %d"}`, cycle, cycle))
+		result, err := progress.Execute(context.Background(), raw, nil)
+		if err != nil || result.IsError {
+			t.Fatalf("progress = %#v, %v", result, err)
+		}
+		end, err := r.RunHooks(context.Background(), "agent_end", nil)
+		if err != nil || end["follow_up"] == nil {
+			t.Fatalf("cycle %d end = %#v, %v", cycle, end, err)
+		}
+	}
+	if got := latest(t, host); got.MaxSteps != 0 || got.Status != "active" || got.Steps != 60 {
+		t.Fatalf("productive goal = %#v", got)
+	}
+}
+
+func TestResumeClearsStallCount(t *testing.T) {
+	host := newTestHost("stalled")
+	r := setup(t, host)
+	runCommand(t, r, "start work --check verified")
+	for cycle := 0; cycle < noProgressLimit; cycle++ {
+		if _, err := r.RunHooks(context.Background(), "agent_end", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := latest(t, host); got.Status != "paused" {
+		t.Fatalf("stalled goal = %#v", got)
+	}
+	runCommand(t, r, "resume")
+	if got := latest(t, host); got.Status != "active" || got.NoProgress != 0 {
+		t.Fatalf("resumed goal = %#v", got)
+	}
+}
+
+func TestDefaultGoalRestoreAndResumeKeepsUnlimitedLimits(t *testing.T) {
+	host := newTestHost("unlimited-restore")
+	r := setup(t, host)
+	runCommand(t, r, "start work --check verified")
+	host.followUps = nil
+	r = setup(t, host)
+	if got := latest(t, host); got.Status != "paused" || got.MaxSteps != 0 || len(host.followUps) != 0 {
+		t.Fatalf("restored default goal = %#v", got)
+	}
+	runCommand(t, r, "resume")
+	before, err := r.RunHooks(context.Background(), "before_agent_start", map[string]any{"system_prompt": "base"})
+	if err != nil || before["stop"] == true || latest(t, host).Status != "active" {
+		t.Fatalf("resumed default goal = %#v, %v", before, err)
+	}
+}
+
+func TestExplicitGoalLimitRemainsExhaustedAfterRestore(t *testing.T) {
+	host := newTestHost("legacy-limit")
+	r := setup(t, host)
+	runCommand(t, r, "start bounded work --check verified --max-steps 1")
+	if _, err := r.RunHooks(context.Background(), "agent_end", nil); err != nil {
+		t.Fatal(err)
+	}
+	r = setup(t, host)
+	command, _ := r.Command("goal")
+	if _, err := command.Execute(context.Background(), "resume"); err == nil || !strings.Contains(err.Error(), "step limit") {
+		t.Fatalf("stored explicit limit was lost: %v", err)
 	}
 }

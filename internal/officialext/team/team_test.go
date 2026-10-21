@@ -468,3 +468,77 @@ func TestRoleDefaultBudgetCarriesAcrossClarification(t *testing.T) {
 		t.Fatalf("remaining role budget: turns=%d cost=%f", base.inputs[1].MaxTurns, base.inputs[1].MaxCostUSD)
 	}
 }
+
+func TestTaskExplicitZeroDisablesBatchAndRoleCaps(t *testing.T) {
+	base := &scriptedRunner{outputs: map[string][]subagent.Result{"uncapped": {{Output: complete("done")}}}}
+	host := &fakeHost{cwd: "/lead"}
+	roles := config.Config{Roles: map[string]config.RoleConfig{"auditor": {Instructions: "Audit.", TimeoutSeconds: 30, MaxTurns: 2, MaxCostUSD: 0.5}}}
+	runner := subagent.NewRoleRunner(base, host, roles, nil, "openai")
+	git := &fakeGit{states: map[string][]gitSnapshot{"/lead": {{root: "/lead", branch: "main", head: "base"}}}}
+	registry := extension.NewRegistry()
+	if err := register(registry, host, runner, git); err != nil {
+		t.Fatal(err)
+	}
+	tool, _ := registry.Tool(ToolName)
+	raw := json.RawMessage(`{"tasks":[{"id":"audit","kind":"research","role":"auditor","prompt":"uncapped","acceptance_checks":["done"],"timeout_seconds":0,"max_turns":0,"max_cost_usd":0}],"timeout_seconds":60,"max_turns":4,"max_cost_usd":1}`)
+	result, err := tool.Execute(context.Background(), raw, nil)
+	if err != nil || result.IsError || len(base.inputs) != 1 {
+		t.Fatalf("execute = %#v, %v; inputs=%#v", result, err, base.inputs)
+	}
+	got := base.inputs[0]
+	if got.TimeoutSeconds != 0 || got.MaxTurns != 0 || got.MaxCostUSD != 0 || !got.TimeoutExplicit || !got.MaxTurnsExplicit || !got.MaxCostExplicit {
+		t.Fatalf("explicit unlimited limits = %#v", got)
+	}
+}
+
+func TestTaskLimitPresenceMatchesJSONFieldNames(t *testing.T) {
+	var input Input
+	if err := json.Unmarshal([]byte(`{"TASKS":[{"id":"audit","kind":"research","prompt":"audit","TIMEOUT_SECONDS":0,"MAX_TURNS":0,"MAX_COST_USD":0}]}`), &input); err != nil {
+		t.Fatal(err)
+	}
+	if len(input.Tasks) != 1 || !input.Tasks[0].timeoutExplicit || !input.Tasks[0].maxTurnsExplicit || !input.Tasks[0].maxCostExplicit {
+		t.Fatalf("explicit zero flags lost: %#v", input.Tasks)
+	}
+	if err := json.Unmarshal([]byte(`{"tasks":[{"unknown":true}]}`), &input); err == nil {
+		t.Fatal("unknown task fields must still fail")
+	}
+}
+
+func TestFailedClarificationContinuationCannotComplete(t *testing.T) {
+	runner := &scriptedRunner{outputs: map[string][]subagent.Result{"research": {
+		{Output: `{"status":"clarification","question":"Which case?"}`},
+		{Output: complete("done"), ExitCode: 2, Stderr: "explicit limit reached"},
+	}}}
+	host := &fakeHost{cwd: "/lead", answer: "the first"}
+	git := &fakeGit{states: map[string][]gitSnapshot{"/lead": {{root: "/lead", branch: "main", head: "base"}}}}
+	registry := extension.NewRegistry()
+	if err := register(registry, host, runner, git); err != nil {
+		t.Fatal(err)
+	}
+	tool, _ := registry.Tool(ToolName)
+	result, err := tool.Execute(context.Background(), json.RawMessage(`{"tasks":[{"id":"a","kind":"research","prompt":"research","acceptance_checks":["done"]}]}`), nil)
+	if err != nil || !result.IsError || !strings.Contains(result.Content, "continuation failed with exit 2") {
+		t.Fatalf("failed continuation = %#v, %v", result, err)
+	}
+}
+
+func TestBatchExplicitZeroDisablesRoleCaps(t *testing.T) {
+	base := &scriptedRunner{outputs: map[string][]subagent.Result{"uncapped": {{Output: complete("done")}}}}
+	host := &fakeHost{cwd: "/lead"}
+	roles := config.Config{Roles: map[string]config.RoleConfig{"auditor": {Instructions: "Audit.", TimeoutSeconds: 30, MaxTurns: 2, MaxCostUSD: 0.5}}}
+	runner := subagent.NewRoleRunner(base, host, roles, nil, "openai")
+	git := &fakeGit{states: map[string][]gitSnapshot{"/lead": {{root: "/lead", branch: "main", head: "base"}}}}
+	registry := extension.NewRegistry()
+	if err := register(registry, host, runner, git); err != nil {
+		t.Fatal(err)
+	}
+	tool, _ := registry.Tool(ToolName)
+	result, err := tool.Execute(context.Background(), json.RawMessage(`{"tasks":[{"id":"audit","kind":"research","role":"auditor","prompt":"uncapped","acceptance_checks":["done"]}],"timeout_seconds":0,"max_turns":0,"max_cost_usd":0}`), nil)
+	if err != nil || result.IsError || len(base.inputs) != 1 {
+		t.Fatalf("execute = %#v, %v", result, err)
+	}
+	got := base.inputs[0]
+	if got.TimeoutSeconds != 0 || got.MaxTurns != 0 || got.MaxCostUSD != 0 {
+		t.Fatalf("batch zero did not override role: %#v", got)
+	}
+}

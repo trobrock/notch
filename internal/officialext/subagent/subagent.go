@@ -30,13 +30,16 @@ const (
 	ToolName              = "run_subagent"
 	DefaultThinking       = "low"
 	defaultTools          = "read,grep,find,ls"
-	defaultTimeoutSeconds = 300
+	defaultTimeoutSeconds = 0
 	defaultMaxOutputChars = 12000
 	maxOutputChars        = 50000
-	maxTimeoutSeconds     = 3600
+	maxTimeoutSeconds     = 86400
+	defaultIdleTimeout    = 30 * time.Minute
 	maxEventLine          = 16 << 20
 	defaultHeartbeat      = 10 * time.Second
 )
+
+var errIdleTimeout = errors.New("subagent inactivity timeout")
 
 var readOnlyTools = map[string]bool{"read": true, "grep": true, "find": true, "ls": true}
 
@@ -224,6 +227,7 @@ type processRunner struct {
 	executable       string
 	defaultCWD       string
 	heartbeatPeriod  time.Duration
+	idleTimeout      time.Duration
 	settingSources   string
 	defaultProvider  string
 	defaultModel     string
@@ -313,12 +317,15 @@ func RegisterWithRunner(registry *extension.Registry, runner Runner) error {
 				return extension.ToolResult{}, err
 			}
 			result, err := runner.Run(ctx, input, update)
-			if err != nil {
+			if err != nil && result.Output == "" && result.Usage.WallMS == 0 {
 				return extension.ToolResult{}, err
 			}
 			content := result.Output
+			if err != nil {
+				content = err.Error() + "\n\n" + content
+			}
 			if result.ExitCode != 0 {
-				content = fmt.Sprintf("Subagent failed with exit %d.\n\n%s", result.ExitCode, result.Output)
+				content = fmt.Sprintf("Subagent failed with exit %d.\n\n%s", result.ExitCode, content)
 			}
 			delegated := delegatedUsage(result.Usage)
 			details := map[string]any{
@@ -327,7 +334,7 @@ func RegisterWithRunner(registry *extension.Registry, runner Runner) error {
 				"usageLine":       fmt.Sprintf("subagent usage: %s, %d turns, %d tool calls, in %d, out %d, %d ms", result.Usage.Model, result.Usage.Turns, result.Usage.ToolCalls, result.Usage.Input, result.Usage.Output, result.Usage.WallMS),
 				"delegated_usage": delegated,
 			}
-			return extension.ToolResult{Content: content, IsError: result.ExitCode != 0, Details: details}, nil
+			return extension.ToolResult{Content: content, IsError: err != nil || result.ExitCode != 0, Details: details}, nil
 		},
 	}
 	if err := registry.RegisterTool(tool); err != nil {
@@ -346,10 +353,10 @@ func schema() map[string]any {
 			"cwd":             map[string]any{"type": "string", "description": "Working directory. Defaults to the parent working directory."},
 			"tools":           map[string]any{"type": "string", "description": "Comma-separated tool allowlist. Defaults to read,grep,find,ls. bash is NOT read-only, even for inspection commands. Any other tool requires allowWriteTools=true, which authorizes write-capable tools for this invocation."},
 			"allowWriteTools": map[string]any{"type": "boolean", "description": "Permit tools outside read,grep,find,ls (including bash) for this helper invocation. Never enable it merely to run read-only shell commands."},
-			"timeoutSeconds":  map[string]any{"type": "integer", "minimum": 1, "maximum": maxTimeoutSeconds},
+			"timeoutSeconds":  map[string]any{"type": "integer", "minimum": 0, "maximum": maxTimeoutSeconds, "description": "Optional total runtime cap in seconds; 0 (default) allows continued progress. Helpers stop after 30 minutes without provider or tool events."},
 			"maxOutputChars":  map[string]any{"type": "integer", "minimum": 1000, "maximum": maxOutputChars},
-			"maxTurns":        map[string]any{"type": "integer", "minimum": 1, "description": "Maximum model turns for this subagent."},
-			"maxCostUSD":      map[string]any{"type": "number", "exclusiveMinimum": 0, "description": "Maximum cumulative estimated cost in USD for this subagent."},
+			"maxTurns":        map[string]any{"type": "integer", "minimum": 0, "description": "Optional maximum model turns; 0 (default) is unlimited. Do not set a small cap for substantial work."},
+			"maxCostUSD":      map[string]any{"type": "number", "minimum": 0, "description": "Optional cumulative estimated cost cap; 0 (default) is unlimited."},
 			"systemPrompt":    map[string]any{"type": "string", "description": "Additional system instructions for the subagent."},
 			"thinking":        map[string]any{"type": "string", "enum": []string{"off", "minimal", "low", "medium", "high", "xhigh"}},
 		},
@@ -382,8 +389,8 @@ func decodeInput(raw json.RawMessage) (Input, error) {
 	if input.TimeoutSeconds == 0 {
 		input.TimeoutSeconds = defaultTimeoutSeconds
 	}
-	if input.TimeoutSeconds < 1 || input.TimeoutSeconds > maxTimeoutSeconds {
-		return input, fmt.Errorf("timeoutSeconds must be between 1 and %d", maxTimeoutSeconds)
+	if input.TimeoutSeconds < 0 || input.TimeoutSeconds > maxTimeoutSeconds {
+		return input, fmt.Errorf("timeoutSeconds must be between 0 and %d", maxTimeoutSeconds)
 	}
 	if input.MaxOutputChars == 0 {
 		input.MaxOutputChars = defaultMaxOutputChars
@@ -514,9 +521,15 @@ func (r *processRunner) Run(ctx context.Context, input Input, update func(string
 	}
 
 	start := time.Now()
-	runCtx, cancel := context.WithTimeout(ctx, time.Duration(input.TimeoutSeconds)*time.Second)
-	defer cancel()
+	runCtx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	var totalTimer *time.Timer
+	if input.TimeoutSeconds > 0 {
+		totalTimer = time.AfterFunc(time.Duration(input.TimeoutSeconds)*time.Second, func() { cancel(context.DeadlineExceeded) })
+		defer totalTimer.Stop()
+	}
 	cmd := exec.Command(r.executable, args...)
+	cmd.WaitDelay = 2 * time.Second
 	cmd.Dir = cwd
 	cmd.Env = childEnvironment(os.Environ())
 	cmd.Stdin = strings.NewReader(input.Prompt)
@@ -531,11 +544,27 @@ func (r *processRunner) Run(ctx context.Context, input Input, update func(string
 		return Result{}, fmt.Errorf("start subagent: %w", err)
 	}
 
+	// This timer exists only while a child is active. Stream activity extends
+	// the run without imposing a deadline on productive work.
+	idleTimeout := r.idleTimeout
+	if idleTimeout <= 0 {
+		idleTimeout = defaultIdleTimeout
+	}
+	idleTimer := time.AfterFunc(idleTimeout, func() { cancel(errIdleTimeout) })
+	defer idleTimer.Stop()
+
 	parsedCh := make(chan parsedEvents, 1)
 	progressCh := make(chan childProgress, 1)
 	go func() {
+		var lastProgress childProgress
 		parsedCh <- parseEvents(stdout, input.MaxOutputChars, func(progress childProgress) {
-			publishLatestProgress(progressCh, progress)
+			idleTimer.Reset(idleTimeout)
+			// Streaming text keeps a helper alive without flooding the TUI
+			// with identical progress updates on every token.
+			if progress != lastProgress {
+				publishLatestProgress(progressCh, progress)
+				lastProgress = progress
+			}
 		})
 	}()
 	heartbeatPeriod := r.heartbeatPeriod
@@ -547,6 +576,26 @@ func (r *processRunner) Run(ctx context.Context, input Input, update func(string
 	var progress childProgress
 	streamDone := false
 	terminated := false
+	var forceTimer *time.Timer
+	stopChild := func() {
+		if terminated {
+			return
+		}
+		terminated = true
+		terminateProcessGroup(cmd)
+		// Allow brief graceful cleanup, then kill the group and release the
+		// scanner even if a descendant escaped the group but kept stdout.
+		forceTimer = time.AfterFunc(2*time.Second, func() {
+			forceKillProcessGroup(cmd)
+			_ = stdout.Close()
+		})
+	}
+	defer func() {
+		if forceTimer != nil {
+			forceTimer.Stop()
+			forceKillProcessGroup(cmd)
+		}
+	}()
 	for !streamDone {
 		select {
 		case parsed = <-parsedCh:
@@ -557,8 +606,7 @@ func (r *processRunner) Run(ctx context.Context, input Input, update func(string
 				update(formatChildProgress(progress, time.Since(start)))
 			}
 		case <-runCtx.Done():
-			terminateProcessGroup(cmd)
-			terminated = true
+			stopChild()
 			parsed = <-parsedCh
 			streamDone = true
 		case <-heartbeat.C:
@@ -578,9 +626,7 @@ func (r *processRunner) Run(ctx context.Context, input Input, update func(string
 	select {
 	case waitErr = <-waitCh:
 	case <-runCtx.Done():
-		if !terminated {
-			terminateProcessGroup(cmd)
-		}
+		stopChild()
 		waitErr = <-waitCh
 	}
 	exitCode := 0
@@ -593,7 +639,7 @@ func (r *processRunner) Run(ctx context.Context, input Input, update func(string
 		}
 	}
 	wallMS := time.Since(start).Milliseconds()
-	timedOut := errors.Is(runCtx.Err(), context.DeadlineExceeded)
+	timedOut := errors.Is(context.Cause(runCtx), context.DeadlineExceeded) || errors.Is(context.Cause(runCtx), errIdleTimeout)
 	canceled := errors.Is(runCtx.Err(), context.Canceled) && errors.Is(ctx.Err(), context.Canceled)
 	output := parsed.output
 	stderrText := trimOutput(stderr.String(), input.MaxOutputChars)
@@ -623,7 +669,11 @@ func (r *processRunner) Run(ctx context.Context, input Input, update func(string
 	}
 	if timedOut {
 		exitCode = 124
-		output = fmt.Sprintf("Subagent timed out after %d seconds (%s).\n\n%s", input.TimeoutSeconds, formatChildActivity(parsed.progress()), output)
+		if errors.Is(context.Cause(runCtx), errIdleTimeout) {
+			output = fmt.Sprintf("Subagent stopped after %s without provider or tool events (%s).\n\n%s", idleTimeout, formatChildActivity(parsed.progress()), output)
+		} else {
+			output = fmt.Sprintf("Subagent timed out after %d seconds (%s).\n\n%s", input.TimeoutSeconds, formatChildActivity(parsed.progress()), output)
+		}
 	}
 	result := Result{Output: output, Stderr: stderrText, ExitCode: exitCode, TimedOut: timedOut,
 		Usage: Usage{
@@ -782,9 +832,13 @@ func parseEvents(reader io.Reader, limit int, onProgress func(childProgress)) pa
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 64*1024), maxEventLine)
 	var parsed parsedEvents
+	var partial []rune
+	partialTotal := 0
+	partialActive := false
 	for scanner.Scan() {
 		var event struct {
 			Type     string         `json:"type"`
+			Text     string         `json:"text"`
 			ToolName string         `json:"tool_name"`
 			Message  *model.Message `json:"message"`
 			Usage    *struct {
@@ -799,6 +853,29 @@ func parseEvents(reader io.Reader, limit int, onProgress func(childProgress)) pa
 		if json.Unmarshal(scanner.Bytes(), &event) != nil {
 			continue
 		}
+		if event.Type == "turn_start" {
+			partial = nil
+			partialTotal = 0
+			partialActive = false
+		}
+		if event.Type == "text_delta" {
+			partialActive = true
+			runes := []rune(event.Text)
+			partialTotal += len(runes)
+			partial = append(partial, runes...)
+			if len(partial) > limit {
+				head := limit * 65 / 100
+				tail := limit - head
+				copy(partial[head:limit], partial[len(partial)-tail:])
+				partial = partial[:limit]
+			}
+		}
+		switch event.Type {
+		case "turn_start", "text_delta", "thinking_delta", "tool_update", "tool_end", "provider_retry":
+			if onProgress != nil {
+				onProgress(parsed.progress())
+			}
+		}
 		if event.Type == "tool_start" {
 			parsed.toolCalls++
 			parsed.lastTool = strings.TrimSpace(event.ToolName)
@@ -807,6 +884,11 @@ func parseEvents(reader io.Reader, limit int, onProgress func(childProgress)) pa
 			}
 		}
 		if event.Type == "turn_end" {
+			// Keep the streamed text as a fallback if no final message arrives.
+			if partialActive {
+				parsed.output = renderPartialOutput(partial, partialTotal, limit)
+				partialActive = false
+			}
 			parsed.turns++
 			if event.Usage != nil {
 				parsed.input += event.Usage.InputTokens
@@ -829,8 +911,21 @@ func parseEvents(reader io.Reader, limit int, onProgress func(childProgress)) pa
 			}
 		}
 	}
+	if partialActive {
+		parsed.output = renderPartialOutput(partial, partialTotal, limit)
+	}
 	parsed.err = scanner.Err()
 	return parsed
+}
+
+// Streaming text is kept raw until the stream ends so spaces, indentation,
+// and rune counts survive a canceled or truncated turn.
+func renderPartialOutput(runes []rune, total, limit int) string {
+	if total <= limit {
+		return strings.TrimSpace(string(runes))
+	}
+	head := limit * 65 / 100
+	return strings.TrimSpace(string(runes[:head])) + "\n\n[run_subagent output truncated: " + strconv.Itoa(total) + " chars total]\n\n" + strings.TrimSpace(string(runes[head:]))
 }
 
 func messageText(message model.Message) string {

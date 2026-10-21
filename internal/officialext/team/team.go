@@ -30,8 +30,8 @@ const (
 	Source          = "official:team"
 	ToolName        = "coordinate_helpers"
 	maxTasks        = 4
-	defaultTimeout  = 300
-	maxTimeout      = 900
+	defaultTimeout  = 0
+	maxTimeout      = 86400
 	maxClarifyWait  = 300
 	defaultMaxChars = 12000
 )
@@ -53,6 +53,37 @@ type Task struct {
 	MaxOutputChars   int      `json:"max_output_chars,omitempty"`
 	MaxTurns         int      `json:"max_turns,omitempty"`
 	MaxCostUSD       float64  `json:"max_cost_usd,omitempty"`
+	timeoutExplicit  bool
+	maxTurnsExplicit bool
+	maxCostExplicit  bool
+}
+
+// UnmarshalJSON preserves explicit zeros while retaining strict field checking.
+// Decode flags with case-insensitive keys, just like encoding/json field names.
+func (t *Task) UnmarshalJSON(data []byte) error {
+	type wire Task
+	var decoded wire
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return err
+	}
+	*t = Task(decoded)
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	for key := range fields {
+		switch strings.ToLower(key) {
+		case "timeout_seconds":
+			t.timeoutExplicit = true
+		case "max_turns":
+			t.maxTurnsExplicit = true
+		case "max_cost_usd":
+			t.maxCostExplicit = true
+		}
+	}
+	return nil
 }
 
 type Input struct {
@@ -221,7 +252,7 @@ func register(registry *extension.Registry, host extension.Host, runner subagent
 	c := &coordinator{host: host, runner: runner, git: git}
 	tool := extension.Tool{Source: Source, UpdateMode: "replace", Definition: model.ToolDefinition{
 		Name:        ToolName,
-		Description: "Run a small, opt-in lead-and-helper workflow using existing isolated Notch subagents. Use only when the user asks for coordinated helpers. The lead owns scope, decisions, synthesis, and integration. Assign optional designer, implementer, QA, and reviewer roles, and set per-helper model, thinking, turn, cost, timeout, and output limits so bounded routine work can use cheaper models while judgment stays with the lead. Initial helpers run independently and return concise JSON results with scoped checks and artifact references. Research and review are read-only by default. A change helper requires allow_write_tools=true, a separate existing Git worktree/branch, its expected base commit, and integration_owner=lead. This tool never creates, resets, merges, deletes, or cleans a worktree. Delegated usage is returned separately so parent and /goal budgets count it once; unknown child cost stays unknown.",
+		Description: "Run a small, opt-in lead-and-helper workflow using existing isolated Notch subagents. Use only when the user asks for coordinated helpers. The lead owns scope, decisions, synthesis, and integration. Assign optional designer, implementer, QA, and reviewer roles, and choose per-helper models and thinking suited to the work. Turn, cost, and total-runtime caps are optional; do not impose small caps on productive work. Keep reports concise and judgment with the lead. Initial helpers run independently and return concise JSON results with scoped checks and artifact references. Research and review are read-only by default. A change helper requires allow_write_tools=true, a separate existing Git worktree/branch, its expected base commit, and integration_owner=lead. This tool never creates, resets, merges, deletes, or cleans a worktree. Delegated usage is returned separately so parent and /goal budgets count it once; unknown child cost stays unknown.",
 		InputSchema: teamSchema(),
 	}, Execute: c.execute}
 	_, err := registry.RegisterBatch(extension.Batch{Tools: []extension.Tool{tool}})
@@ -240,19 +271,19 @@ func teamSchema() map[string]any {
 		"expected_base":    str("Exact lead commit used to create this writer worktree; required for change"),
 		"model":            str("Per-helper model override; use a cheaper model for bounded routine work and reserve stronger models for judgment-heavy roles"),
 		"thinking":         map[string]any{"type": "string", "enum": []string{"off", "minimal", "low", "medium", "high", "xhigh"}},
-		"timeout_seconds":  map[string]any{"type": "integer", "minimum": 1, "maximum": maxTimeout},
+		"timeout_seconds":  map[string]any{"type": "integer", "minimum": 0, "maximum": maxTimeout, "description": "Optional total runtime cap; 0 (default) is unlimited while active. Helpers stop after 30 minutes without provider or tool events."},
 		"max_output_chars": map[string]any{"type": "integer", "minimum": 1000, "maximum": 50000},
-		"max_turns":        map[string]any{"type": "integer", "minimum": 1},
-		"max_cost_usd":     map[string]any{"type": "number", "exclusiveMinimum": 0},
+		"max_turns":        map[string]any{"type": "integer", "minimum": 0},
+		"max_cost_usd":     map[string]any{"type": "number", "minimum": 0},
 	}, "required": []string{"id", "kind", "prompt", "acceptance_checks"}}
 	return map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
 		"tasks": map[string]any{"type": "array", "items": task, "minItems": 1, "maxItems": maxTasks},
 		"model": str("Optional helper model; unqualified keeps the parent provider"), "thinking": str("Helper thinking level"),
-		"timeout_seconds":      map[string]any{"type": "integer", "minimum": 1, "maximum": maxTimeout},
+		"timeout_seconds":      map[string]any{"type": "integer", "minimum": 0, "maximum": maxTimeout, "description": "Optional total runtime cap; 0 (default) is unlimited while active. Helpers stop after 30 minutes without provider or tool events."},
 		"clarify_wait_seconds": map[string]any{"type": "integer", "minimum": 1, "maximum": maxClarifyWait},
 		"max_output_chars":     map[string]any{"type": "integer", "minimum": 1000, "maximum": 50000},
-		"max_turns":            map[string]any{"type": "integer", "minimum": 1, "description": "Default maximum model turns per helper"},
-		"max_cost_usd":         map[string]any{"type": "number", "exclusiveMinimum": 0, "description": "Default maximum estimated cost in USD per helper"},
+		"max_turns":            map[string]any{"type": "integer", "minimum": 0, "description": "Optional maximum model turns per helper; 0 (default) is unlimited"},
+		"max_cost_usd":         map[string]any{"type": "number", "minimum": 0, "description": "Default maximum estimated cost in USD per helper"},
 		"allow_write_tools":    map[string]any{"type": "boolean", "description": "True authorizes change helpers in this invocation to use tools outside the read-only default"},
 		"integration_owner":    str("Must be lead when any change helper is used"),
 	}, "required": []string{"tasks"}}
@@ -347,7 +378,7 @@ func normalizeAndValidate(input *Input, leadRoot, leadCommon, leadBranch, leadHe
 	if input.MaxCostUSD < 0 || math.IsNaN(input.MaxCostUSD) || math.IsInf(input.MaxCostUSD, 0) {
 		return nil, errors.New("max_cost_usd must be a finite non-negative number")
 	}
-	if input.TimeoutSeconds < 1 || input.TimeoutSeconds > maxTimeout || input.ClarifyWaitSeconds < 1 || input.ClarifyWaitSeconds > maxClarifyWait {
+	if input.TimeoutSeconds < 0 || input.TimeoutSeconds > maxTimeout || input.ClarifyWaitSeconds < 1 || input.ClarifyWaitSeconds > maxClarifyWait {
 		return nil, errors.New("helper timeout is outside the allowed range")
 	}
 	seen, roots, branches := map[string]bool{}, map[string]bool{}, map[string]bool{}
@@ -371,7 +402,7 @@ func normalizeAndValidate(input *Input, leadRoot, leadCommon, leadBranch, leadHe
 			return nil, fmt.Errorf("reviewer task %s must have kind review", t.ID)
 		}
 		if t.TimeoutSeconds < 0 || t.TimeoutSeconds > maxTimeout {
-			return nil, fmt.Errorf("task %s timeout_seconds must be between 1 and %d when set", t.ID, maxTimeout)
+			return nil, fmt.Errorf("task %s timeout_seconds must be between 0 and %d when set", t.ID, maxTimeout)
 		}
 		if t.MaxOutputChars < 0 || (t.MaxOutputChars > 0 && t.MaxOutputChars < 1000) || t.MaxOutputChars > 50000 {
 			return nil, fmt.Errorf("task %s max_output_chars must be between 1000 and 50000 when set", t.ID)
@@ -468,7 +499,7 @@ func (c *coordinator) runTask(ctx context.Context, input Input, task Task, isola
 		thinking = task.Thinking
 	}
 	timeoutSeconds := input.TimeoutSeconds
-	if task.TimeoutSeconds > 0 {
+	if task.TimeoutSeconds > 0 || task.timeoutExplicit {
 		timeoutSeconds = task.TimeoutSeconds
 	}
 	maxOutputChars := input.MaxOutputChars
@@ -476,15 +507,15 @@ func (c *coordinator) runTask(ctx context.Context, input Input, task Task, isola
 		maxOutputChars = task.MaxOutputChars
 	}
 	maxTurns := input.MaxTurns
-	if task.MaxTurns > 0 {
+	if task.MaxTurns > 0 || task.maxTurnsExplicit {
 		maxTurns = task.MaxTurns
 	}
 	maxCostUSD := input.MaxCostUSD
-	if task.MaxCostUSD > 0 {
+	if task.MaxCostUSD > 0 || task.maxCostExplicit {
 		maxCostUSD = task.MaxCostUSD
 	}
 	child := subagent.Input{Prompt: helperPrompt(task, "", ""), Role: task.Role, Model: modelName, CWD: task.CWD, Tools: task.Tools, AllowWriteTools: task.Kind == "change" && input.AllowWriteTools, TimeoutSeconds: timeoutSeconds, MaxOutputChars: maxOutputChars, MaxTurns: maxTurns, MaxCostUSD: maxCostUSD, Thinking: thinking,
-		ModelExplicit: task.Model != "" || input.modelExplicit, ThinkingExplicit: task.Thinking != "" || input.thinkingExplicit, TimeoutExplicit: task.TimeoutSeconds > 0 || input.timeoutExplicit, MaxOutputExplicit: task.MaxOutputChars > 0 || input.maxOutputExplicit, MaxTurnsExplicit: task.MaxTurns > 0 || input.maxTurnsExplicit, MaxCostExplicit: task.MaxCostUSD > 0 || input.maxCostExplicit,
+		ModelExplicit: task.Model != "" || input.modelExplicit, ThinkingExplicit: task.Thinking != "" || input.thinkingExplicit, TimeoutExplicit: task.TimeoutSeconds > 0 || task.timeoutExplicit || input.timeoutExplicit, MaxOutputExplicit: task.MaxOutputChars > 0 || input.maxOutputExplicit, MaxTurnsExplicit: task.MaxTurns > 0 || task.maxTurnsExplicit || input.maxTurnsExplicit, MaxCostExplicit: task.MaxCostUSD > 0 || task.maxCostExplicit || input.maxCostExplicit,
 		TimeoutLimit: maxTimeout, MaxOutputLimit: 50000}
 	run, err := c.runner.Run(ctx, child, prefixedUpdate(update, task.ID))
 	result.ResolvedRole = run.Role
@@ -541,6 +572,10 @@ func (c *coordinator) runTask(ctx context.Context, input Input, task Task, isola
 		result.ExitCode, result.Output = run2.ExitCode, run2.Output
 		if runErr != nil {
 			result.Error = runErr.Error()
+			return result
+		}
+		if run2.ExitCode != 0 {
+			result.Error = fmt.Sprintf("clarification continuation failed with exit %d: %s", run2.ExitCode, strings.TrimSpace(run2.Stderr))
 			return result
 		}
 		env, err = parseEnvelope(run2.Output)
