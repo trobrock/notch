@@ -36,6 +36,7 @@ func TestParserKeys(t *testing.T) {
 		{"alt-rxvt", "\x1b[3D\x1b[3C", []KeyEvent{{Key: KeyAltLeft}, {Key: KeyAltRight}}},
 		{"shift-enter", "\x1b[13;2u\x1b[27;2;13~", []KeyEvent{{Key: KeyShiftEnter}, {Key: KeyShiftEnter}}},
 		{"kitty-printable", "\x1b[120;1u\x1b[106:74;2u\x1b[97;2u\x1b[47:63;2;63u\x1b[106:74;2:3u", []KeyEvent{{Text: "x"}, {Text: "J"}, {Text: "A"}, {Text: "?"}}},
+		{"tmux-csi-u-controls", "\x1b[13u\x1b[13;1u\x1b[10;1u\x1b[9;1u\x1b[127;1u\x1b[27;1u", []KeyEvent{{Key: KeyEnter}, {Key: KeyEnter}, {Key: KeyNewline}, {Key: KeyTab}, {Key: KeyBackspace}, {Key: KeyEscape}}},
 		{"shift-tab", "\x1b[Z\x1b[9;2u\x1b[27;2;9~", []KeyEvent{{Key: KeyShiftTab}, {Key: KeyShiftTab}, {Key: KeyShiftTab}}},
 		{"kitty-controls", "\x1b[100;5u\x1b[99;5u\x1b[106;5u\x1b[121;5u\x1b[97;5:3u", []KeyEvent{{Key: KeyCtrlD}, {Key: KeyCtrlC}, {Key: KeyNewline}, {Key: KeyCtrlY}}},
 		{"modify-other-controls", "\x1b[27;5;100~\x1b[27;5;99~", []KeyEvent{{Key: KeyCtrlD}, {Key: KeyCtrlC}}},

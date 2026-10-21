@@ -490,6 +490,20 @@ func enhancedCodeEvent(code, modifier int, text string) KeyEvent {
 	if shift && code == 9 {
 		return KeyEvent{Key: KeyShiftTab}
 	}
+	if !ctrl && !alt {
+		switch code {
+		case 13:
+			return KeyEvent{Key: KeyEnter}
+		case 10:
+			return KeyEvent{Key: KeyNewline}
+		case 9:
+			return KeyEvent{Key: KeyTab}
+		case 8, 127:
+			return KeyEvent{Key: KeyBackspace}
+		case 27:
+			return KeyEvent{Key: KeyEscape}
+		}
+	}
 	if !ctrl {
 		if alt {
 			return KeyEvent{}
