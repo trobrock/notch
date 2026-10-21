@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -54,7 +55,7 @@ func TestRunSubagentDefaultsAndReturnsDetails(t *testing.T) {
 	if result.Content != "report" || result.IsError || result.Details["exitCode"] != 0 {
 		t.Fatalf("result = %#v", result)
 	}
-	if runner.input.Prompt != "inspect this" || runner.input.Tools != "find,grep,ls,read" || runner.input.Thinking != "low" || runner.input.TimeoutSeconds != 300 || runner.input.MaxOutputChars != 12000 {
+	if runner.input.Prompt != "inspect this" || runner.input.Tools != "find,grep,ls,read" || runner.input.Thinking != "low" || runner.input.TimeoutSeconds != 0 || runner.input.MaxOutputChars != 12000 {
 		t.Fatalf("input = %#v", runner.input)
 	}
 	delegatedValue, ok := result.Details["delegated_usage"].(delegation.Usage)
@@ -91,7 +92,7 @@ func TestRunSubagentMarksFailedExitAsToolError(t *testing.T) {
 func TestRunSubagentToolSafetyAndValidation(t *testing.T) {
 	for _, raw := range []string{
 		`{}`, `{"prompt":" "}`, `{"prompt":"x","tools":"read,bash"}`,
-		`{"prompt":"x","tools":"read,,grep"}`, `{"prompt":"x","timeoutSeconds":3601}`,
+		`{"prompt":"x","tools":"read,,grep"}`, `{"prompt":"x","timeoutSeconds":86401}`,
 		`{"prompt":"x","maxOutputChars":999}`, `{"prompt":"x","thinking":"extreme"}`,
 		`{"prompt":"x","maxTurns":-1}`, `{"prompt":"x","maxCostUSD":-1}`,
 		`{"prompt":"x","unknown":true}`,
@@ -503,5 +504,138 @@ func TestRunSubagentAcceptsGlobalCustomRole(t *testing.T) {
 	role, ok := result.Details["role"].(*config.RoleResolution)
 	if !ok || role.Name != "auditor" || base.input.Thinking != "high" {
 		t.Fatalf("role=%#v input=%#v", result.Details["role"], base.input)
+	}
+}
+
+func TestProcessRunnerDefaultAllowsActiveWorkPastIdleWindow(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script test")
+	}
+	path := filepath.Join(t.TempDir(), "active.sh")
+	script := `#!/bin/sh
+printf '{"type":"turn_start"}\n'
+i=0
+while [ "$i" -lt 12 ]; do
+  printf '{"type":"thinking_delta","text":"working"}\n'
+  sleep 0.1
+  i=$((i+1))
+done
+printf '{"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}\n'
+`
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runner := &processRunner{executable: path, defaultCWD: t.TempDir(), idleTimeout: time.Second}
+	result, err := runner.Run(context.Background(), Input{Prompt: "work", MaxOutputChars: 2000}, nil)
+	if err != nil || result.ExitCode != 0 || result.TimedOut || result.Output != "done" {
+		t.Fatalf("active child = %#v, %v", result, err)
+	}
+}
+
+func TestProcessRunnerStopsSilentChildAndPreservesPartialOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script test")
+	}
+	path := filepath.Join(t.TempDir(), "silent.sh")
+	script := "#!/bin/sh\nprintf '{\"type\":\"text_delta\",\"text\":\"partial findings\"}\\n'\nsleep 30\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runner := &processRunner{executable: path, defaultCWD: t.TempDir(), idleTimeout: 500 * time.Millisecond}
+	result, err := runner.Run(context.Background(), Input{Prompt: "work", MaxOutputChars: 2000}, nil)
+	if err != nil || !result.TimedOut || result.ExitCode != 124 || !strings.Contains(result.Output, "without provider or tool events") || !strings.Contains(result.Output, "partial findings") {
+		t.Fatalf("silent child = %#v, %v", result, err)
+	}
+}
+
+func TestProcessRunnerDefaultStillHonorsCancellation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script test")
+	}
+	path := filepath.Join(t.TempDir(), "cancel.sh")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nsleep 30\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	timer := time.AfterFunc(100*time.Millisecond, cancel)
+	defer timer.Stop()
+	defer cancel()
+	runner := &processRunner{executable: path, defaultCWD: t.TempDir()}
+	result, err := runner.Run(ctx, Input{Prompt: "work", MaxOutputChars: 2000}, nil)
+	if !errors.Is(err, context.Canceled) || result.ExitCode == 0 || result.TimedOut {
+		t.Fatalf("cancelled child = %#v, %v", result, err)
+	}
+}
+
+func TestPartialStreamPreservesWhitespaceAndUnicode(t *testing.T) {
+	var stream strings.Builder
+	for _, text := range []string{"hello ", "世界", "\n", "  indented", "\n"} {
+		line, _ := json.Marshal(map[string]string{"type": "text_delta", "text": text})
+		stream.Write(line)
+		stream.WriteByte('\n')
+	}
+	parsed := parseEvents(strings.NewReader(stream.String()), 1000, nil)
+	if parsed.output != "hello 世界\n  indented" {
+		t.Fatalf("partial text = %q", parsed.output)
+	}
+}
+
+func TestPartialStreamTruncatesOnceWithAccurateRuneCount(t *testing.T) {
+	var stream strings.Builder
+	for i := 0; i < 100; i++ {
+		line, _ := json.Marshal(map[string]string{"type": "text_delta", "text": strings.Repeat("界", 30)})
+		stream.Write(line)
+		stream.WriteByte('\n')
+	}
+	parsed := parseEvents(strings.NewReader(stream.String()), 1000, nil)
+	want := strings.Repeat("界", 650) + "\n\n[run_subagent output truncated: 3000 chars total]\n\n" + strings.Repeat("界", 350)
+	if parsed.output != want {
+		t.Fatalf("unexpected partial truncation: %q", parsed.output)
+	}
+}
+
+func TestRunSubagentCancellationPreservesPublicResult(t *testing.T) {
+	registry := extension.NewRegistry()
+	runner := &fakeRunner{result: Result{Output: "partial findings", ExitCode: -1, Usage: Usage{Turns: 1, Input: 7, Output: 3, WallMS: 1}}, err: context.Canceled}
+	if err := RegisterWithRunner(registry, runner); err != nil {
+		t.Fatal(err)
+	}
+	tool, _ := registry.Tool(ToolName)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result, err := tool.Execute(ctx, json.RawMessage(`{"prompt":"work"}`), nil)
+	if err != nil || !result.IsError || !strings.Contains(result.Content, "partial findings") || !strings.Contains(result.Content, "context canceled") {
+		t.Fatalf("cancel result = %#v, %v", result, err)
+	}
+	usage, ok := result.Details["delegated_usage"].(delegation.Usage)
+	if !ok || usage.Turns != 1 || usage.InputTokens != 7 || usage.Calls != 1 {
+		t.Fatalf("usage lost: %#v", result.Details)
+	}
+}
+
+func TestProcessRunnerStopsTermResistantChild(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix process-group test")
+	}
+	for _, closeStdout := range []bool{false, true} {
+		t.Run(fmt.Sprint(closeStdout), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "resistant.sh")
+			script := "#!/bin/sh\ntrap '' TERM\nprintf '{\"type\":\"text_delta\",\"text\":\"partial findings\"}\\n'\n"
+			if closeStdout {
+				script += "exec 1>&-\n"
+			}
+			script += "while :; do sleep 30; done\n"
+			if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			runner := &processRunner{executable: path, defaultCWD: t.TempDir(), idleTimeout: 100 * time.Millisecond}
+			ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+			defer cancel()
+			start := time.Now()
+			result, err := runner.Run(ctx, Input{Prompt: "work", MaxOutputChars: 2000}, nil)
+			if err != nil || !result.TimedOut || result.ExitCode != 124 || time.Since(start) >= 5*time.Second || !strings.Contains(result.Output, "partial findings") {
+				t.Fatalf("resistant child = %#v, %v after %s", result, err, time.Since(start))
+			}
+		})
 	}
 }

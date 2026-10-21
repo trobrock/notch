@@ -1,6 +1,6 @@
 # Reusable specialist roles
 
-Notch can apply one reusable role contract to the existing delegation tools. A role adds task instructions and bounded defaults. It does **not** grant tools, shell or network access, write-capable tools, credentials, or a worktree.
+Notch can apply one reusable role contract to the existing delegation tools. A role adds task instructions and run defaults. It does **not** grant tools, shell or network access, write-capable tools, credentials, or a worktree.
 
 Built-in roles are `lead`, `researcher`, `designer`, `developer`, `qa`, and `reviewer`. `implementer` is a supported alias for `developer`, so older team calls keep working.
 
@@ -14,10 +14,10 @@ Roles and profile role mappings are global-only. Put them in the user config, no
     "auditor": {
       "instructions": "Check the requested policy and cite exact evidence.",
       "thinking": "high",
-      "timeout_seconds": 300,
+      "timeout_seconds": 0,
       "max_output_chars": 12000,
-      "max_turns": 8,
-      "max_cost_usd": 0.75
+      "max_turns": 0,
+      "max_cost_usd": 0
     }
   },
   "profiles": {
@@ -85,3 +85,9 @@ A changed global role definition applies to the next delegation. It does not res
 ## Bounded research and review walkthrough
 
 A repository walkthrough used one four-task read-only research batch, followed by independent read-only review. Initial review attempts hit 4-turn and 8-turn limits with no report. A narrowed 12-turn review completed and found four candidate issues. Parent verification rejected one as a known pre-existing authorization contract and one because agent-side explore defaults already cover it; it confirmed and fixed stale-provider validation and incomplete effective provenance. Two post-fix reviews then hit their 8-turn and 12-turn limits without a report. A final focused one-task review returned no findings, but direct parent verification still found and fixed two missed defects: explicit explore models lacked override provenance, and role-default turn/cost budgets could reset after a team clarification. In total the walkthrough used seven review attempts: five limit failures, one useful findings report, and one clean-but-incomplete report. Helpers made no writes. Exact token/cost totals were not available from the captured tool output, so cost is recorded as unknown rather than estimated. The result shows why bounded specialists should be compared with a strong single-agent baseline: extra helpers can find defects, but retries, missed defects, and unverified findings add time and rework.
+
+## Progress-first limits
+
+Starter roles do not impose model-turn, total-runtime, or cost caps. Zero means no cap. Omitted limits use the tool/role defaults; explicit per-call zero disables a configured role cap. Custom roles may still set limits for a real deadline or a user-requested budget.
+
+Helpers stop after 30 minutes without provider or tool events. Streaming output and tool events reset this inactivity timer; the runner's own heartbeat does not. This is not proof of useful progress: the lead must still stop duplicate work and repeated failed approaches. A quiet tool running longer than 30 minutes can be stopped, even if it is working. Output-size bounds remain in place.

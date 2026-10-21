@@ -6,3 +6,5 @@ import "os/exec"
 
 func setProcessGroup(*exec.Cmd)      {}
 func killProcessGroup(cmd *exec.Cmd) { _ = cmd.Process.Kill() }
+
+func forceKillProcessGroup(cmd *exec.Cmd) { _ = cmd.Process.Kill() }

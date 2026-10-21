@@ -18,10 +18,10 @@ import (
 const (
 	Source          = "official:goal"
 	entryKind       = "goal_state"
-	defaultMaxSteps = 8
-	maxMaxSteps     = 50
+	defaultMaxSteps = 0
+	maxMaxSteps     = 1000000
 	turnsPerStep    = 10
-	noProgressLimit = 2
+	noProgressLimit = 5
 )
 
 type snapshot struct {
@@ -162,8 +162,8 @@ func (s *state) startGoal(objective string, checks []string, maxSteps int, follo
 	if objective == "" || len(checks) == 0 {
 		return "", errors.New("goal requires an objective and at least one completion check")
 	}
-	if maxSteps < 1 || maxSteps > maxMaxSteps {
-		return "", fmt.Errorf("max steps must be between 1 and %d", maxMaxSteps)
+	if maxSteps < 0 || maxSteps > maxMaxSteps {
+		return "", fmt.Errorf("max steps must be between 0 and %d", maxMaxSteps)
 	}
 
 	s.mu.Lock()
@@ -184,6 +184,9 @@ func (s *state) startGoal(objective string, checks []string, maxSteps int, follo
 			_, _ = s.pause("could not start: " + err.Error())
 			return "", err
 		}
+	}
+	if maxSteps == 0 {
+		return fmt.Sprintf("Goal started with %d completion check(s), with no step or model-turn cap. Repeated lack of progress still stops work.", len(checks)), nil
 	}
 	return fmt.Sprintf("Goal started with %d completion check(s) and a %d-step limit.", len(checks), maxSteps), nil
 }
@@ -210,8 +213,8 @@ func parseStart(args string) (string, []string, int, error) {
 				return "", nil, 0, errors.New("--max-steps requires a number")
 			}
 			n, err := strconv.Atoi(fields[index+1])
-			if err != nil || n < 1 || n > maxMaxSteps {
-				return "", nil, 0, fmt.Errorf("--max-steps must be between 1 and %d", maxMaxSteps)
+			if err != nil || n < 0 || n > maxMaxSteps {
+				return "", nil, 0, fmt.Errorf("--max-steps must be between 0 and %d", maxMaxSteps)
 			}
 			maxSteps, index = n, index+2
 		default:
@@ -243,15 +246,15 @@ func (s *state) resume() (string, error) {
 		s.mu.Unlock()
 		return "", errors.New("no paused goal to resume")
 	}
-	if s.goal.Steps >= s.goal.MaxSteps {
+	if s.goal.MaxSteps > 0 && s.goal.Steps >= s.goal.MaxSteps {
 		s.mu.Unlock()
 		return "", errors.New("goal step limit is exhausted; clear and start a new goal")
 	}
-	if s.goal.Turns >= s.goal.MaxSteps*turnsPerStep {
+	if s.goal.MaxSteps > 0 && s.goal.Turns >= s.goal.MaxSteps*turnsPerStep {
 		s.mu.Unlock()
 		return "", errors.New("goal model-turn limit is exhausted; clear and start a new goal")
 	}
-	s.goal.Status, s.goal.Reason = "active", ""
+	s.goal.Status, s.goal.Reason, s.goal.NoProgress = "active", "", 0
 	s.haltRun = false
 	objective, checks := s.goal.Objective, append([]string(nil), s.goal.Checks...)
 	if err := s.persistLocked(); err != nil {
@@ -264,7 +267,7 @@ func (s *state) resume() (string, error) {
 		_, _ = s.pause("could not resume: " + err.Error())
 		return "", err
 	}
-	return "Goal resumed within its remaining step budget.", nil
+	return "Goal resumed. Explicit limits, if set, still apply.", nil
 }
 
 func (s *state) clear() (string, error) {
@@ -296,7 +299,11 @@ func (s *state) statusLocked() string {
 		return "No goal is set."
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "Goal %s (%d/%d steps, %d/%d model turns): %s", s.goal.Status, s.goal.Steps, s.goal.MaxSteps, s.goal.Turns, s.goal.MaxSteps*turnsPerStep, s.goal.Objective)
+	if s.goal.MaxSteps == 0 {
+		fmt.Fprintf(&b, "Goal %s (%d steps, %d model turns; no step or turn cap): %s", s.goal.Status, s.goal.Steps, s.goal.Turns, s.goal.Objective)
+	} else {
+		fmt.Fprintf(&b, "Goal %s (%d/%d steps, %d/%d model turns): %s", s.goal.Status, s.goal.Steps, s.goal.MaxSteps, s.goal.Turns, s.goal.MaxSteps*turnsPerStep, s.goal.Objective)
+	}
 	for _, check := range s.goal.Checks {
 		fmt.Fprintf(&b, "\n- [ ] %s", check)
 	}
@@ -344,7 +351,7 @@ func (s *state) beforeAgent(_ context.Context, event map[string]any) (map[string
 	if s.goal.Status != "active" {
 		return nil, nil
 	}
-	if s.goal.Turns >= s.goal.MaxSteps*turnsPerStep {
+	if s.goal.MaxSteps > 0 && s.goal.Turns >= s.goal.MaxSteps*turnsPerStep {
 		s.goal.Status, s.goal.Reason = "paused", "goal model-turn limit reached"
 		if err := s.persistLocked(); err != nil {
 			s.goal.Status, s.goal.Reason = "paused", "goal model-turn limit reached; state could not be persisted: "+err.Error()
@@ -360,14 +367,22 @@ func (s *state) beforeAgent(_ context.Context, event map[string]any) (map[string
 	base, _ := event["system_prompt"].(string)
 	var b strings.Builder
 	b.WriteString(base)
-	b.WriteString("\n\n<goal_mode>\nYou are working on an opt-in bounded goal. Work on the objective, not on this control text. Human messages have priority. Call report_goal_progress once per work cycle with concrete new evidence. Do not claim completion in prose. Call complete_goal only after every completion check is met with concise evidence. If blocked by permissions or missing input, explain exactly what is needed to the user and do not claim progress or completion.\nObjective: ")
+	b.WriteString("\n\n<goal_mode>\nYou are working on an opt-in goal. Work on the objective, not on this control text. Human messages have priority. Call report_goal_progress once per work cycle with concrete new evidence. Do not claim completion in prose. Call complete_goal only after every completion check is met with concise evidence. If blocked by permissions or missing input, explain exactly what is needed to the user and do not claim progress or completion.\nObjective: ")
 	b.WriteString(s.goal.Objective)
 	b.WriteString("\nCompletion checks:")
 	for _, check := range s.goal.Checks {
 		b.WriteString("\n- ")
 		b.WriteString(check)
 	}
-	fmt.Fprintf(&b, "\nBudget: work step %d of %d; model turn %d of %d. Existing Notch turn and cost limits also apply. A cost limit can overshoot by one in-flight model call, and unknown pricing stops cost-limited runs.\n</goal_mode>", s.goal.Steps+1, s.goal.MaxSteps, s.goal.Turns, s.goal.MaxSteps*turnsPerStep)
+	if s.goal.MaxSteps > 0 {
+		fmt.Fprintf(&b, "\nExplicit limit: work step %d of %d; model turn %d of %d.", s.goal.Steps+1, s.goal.MaxSteps, s.goal.Turns, s.goal.MaxSteps*turnsPerStep)
+	} else {
+		b.WriteString("\nNo default step or model-turn cap. Continue while making concrete progress; do not repeat failed approaches or duplicate completed work.")
+	}
+	if s.goal.Turns%50 == 0 {
+		b.WriteString("\nProgress checkpoint: report concrete new evidence and reconsider repeated failures or duplicate work. Continue if useful progress is still possible; this is not a stop request.")
+	}
+	b.WriteString(" Explicit Notch turn and cost limits still apply.\n</goal_mode>")
 	return map[string]any{"system_prompt": b.String()}, nil
 }
 
@@ -384,7 +399,7 @@ func (s *state) agentEnd(_ context.Context, _ map[string]any) (map[string]any, e
 		s.goal.NoProgress++
 	}
 	switch {
-	case s.goal.Steps >= s.goal.MaxSteps:
+	case s.goal.MaxSteps > 0 && s.goal.Steps >= s.goal.MaxSteps:
 		s.goal.Status, s.goal.Reason = "paused", "goal step limit reached"
 	case s.goal.NoProgress >= noProgressLimit:
 		s.goal.Status, s.goal.Reason = "paused", "stopped after repeated no progress"
@@ -520,7 +535,7 @@ func (s *state) startTool() extension.Tool {
 		InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 			"objective": map[string]any{"type": "string"},
 			"checks":    map[string]any{"type": "array", "minItems": 1, "items": map[string]any{"type": "string"}},
-			"max_steps": map[string]any{"type": "integer", "minimum": 1, "maximum": maxMaxSteps, "description": "Work-step limit. Defaults to 8."},
+			"max_steps": map[string]any{"type": "integer", "minimum": 0, "maximum": maxMaxSteps, "description": "Optional work-step limit; 0 (default) continues while making progress."},
 		}, "required": []any{"objective", "checks"}}}, Execute: func(_ context.Context, raw json.RawMessage, _ func(string)) (extension.ToolResult, error) {
 		var input struct {
 			Objective string   `json:"objective"`
@@ -671,7 +686,11 @@ func (s *state) updateStatusLocked() {
 		s.host.SetStatus("goal", "")
 		return
 	}
-	s.host.SetStatus("goal", fmt.Sprintf("goal:%s %d/%d", s.goal.Status, s.goal.Steps, s.goal.MaxSteps))
+	if s.goal.MaxSteps == 0 {
+		s.host.SetStatus("goal", fmt.Sprintf("goal:%s %d steps", s.goal.Status, s.goal.Steps))
+	} else {
+		s.host.SetStatus("goal", fmt.Sprintf("goal:%s %d/%d", s.goal.Status, s.goal.Steps, s.goal.MaxSteps))
+	}
 }
 
 func allowWhileStreaming(args string) bool {
