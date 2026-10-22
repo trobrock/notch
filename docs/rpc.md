@@ -25,6 +25,25 @@ Diagnostics and startup failures go to stderr so stdout remains machine-readable
 
 ## Commands
 
+### `extension_command`
+
+Run a registered slash command as a user control action, without a model turn:
+
+```json
+{"id":"ic-on","type":"extension_command","name":"intercom","args":"on"}
+{"id":"ic-on","type":"response","command":"extension_command","success":true,"data":{"content":"Intercom is on."}}
+```
+
+Commands run asynchronously so interactive commands can receive `input_response`
+and other RPC commands remain usable. Responses may arrive out of order; match
+by `id`. Only one extension command executes at a time; another command is
+rejected while it runs. Commands that forbid streaming also block prompts and
+hold idle wakeups until they finish. `abort` and EOF cancel commands. Closing or
+cancelling a live RPC stream also interrupts closable input such as stdin/pipes.
+The command's normal streaming policy applies.
+This is not a model tool and does not bypass a command's own permission checks.
+See [Intercom](intercom.md) for local messaging setup and idle wakeups.
+
 ### `get_state`, `get_status`, or `status`
 
 `get_state` is the Pi-compatible spelling. The aliases return the same data with their own command name.

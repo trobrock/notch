@@ -10,6 +10,7 @@ import (
 	"github.com/trobrock/notch/internal/officialext/askuser"
 	"github.com/trobrock/notch/internal/officialext/explore"
 	"github.com/trobrock/notch/internal/officialext/goal"
+	"github.com/trobrock/notch/internal/officialext/intercom"
 	"github.com/trobrock/notch/internal/officialext/modelswitch"
 	"github.com/trobrock/notch/internal/officialext/monitor"
 	"github.com/trobrock/notch/internal/officialext/plan"
@@ -62,6 +63,7 @@ func registerWithRoleConfig(registry *extension.Registry, host extension.Host, s
 		func() error { return askuser.Register(registry, host) },
 		func() error { return explore.RegisterWithRunner(registry, exploreRunner) },
 		func() error { return goal.Register(registry, host) },
+		func() error { return intercom.Register(registry, host) },
 		func() error { return monitor.Register(registry, host) },
 		func() error { return modelswitch.Register(registry, host) },
 		func() error { return plan.Register(registry, host) },
