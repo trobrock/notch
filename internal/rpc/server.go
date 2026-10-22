@@ -52,22 +52,29 @@ type Server struct {
 	in  io.Reader
 	out io.Writer
 
-	writeMu        sync.Mutex
-	mu             sync.Mutex
-	runner         *agent.Agent
-	registry       *extension.Registry
-	catalog        *resources.Catalog
-	session        *session.Session
-	state          StateConfig
-	active         bool
-	pending        []string
-	compacting     bool
-	cancel         context.CancelFunc
-	closed         bool
-	inputNamespace string
-	nextInputID    uint64
-	inputs         map[string]*pendingInput
-	wg             sync.WaitGroup
+	writeMu          sync.Mutex
+	mu               sync.Mutex
+	runner           *agent.Agent
+	registry         *extension.Registry
+	catalog          *resources.Catalog
+	session          *session.Session
+	state            StateConfig
+	active           bool
+	settling         bool
+	commandActive    bool
+	commandExclusive bool
+	commandCancel    context.CancelFunc
+	asyncErr         error
+	pending          []string
+	compacting       bool
+	cancel           context.CancelFunc
+	closed           bool
+	runCtx           context.Context
+	runCancel        context.CancelFunc
+	inputNamespace   string
+	nextInputID      uint64
+	inputs           map[string]*pendingInput
+	wg               sync.WaitGroup
 }
 
 type pendingInput struct {
@@ -220,17 +227,29 @@ func (s *Server) followUpFor(expectedSessionID, message string) error {
 	}
 	s.mu.Lock()
 	runner, active := s.runner, s.active
-	if runner == nil {
+	if runner == nil || s.closed {
 		s.mu.Unlock()
-		return errors.New("RPC server is not configured")
+		return errors.New("RPC server is not configured or has closed")
 	}
 	if expectedSessionID != "" && (s.session == nil || s.session.Header.ID != expectedSessionID) {
 		s.mu.Unlock()
 		return errors.New("active session changed before extension follow-up was delivered")
 	}
-	if !active {
+	if s.settling || s.commandExclusive || (!active && len(s.pending) != 0) {
+		s.pending = append(s.pending, message)
+		s.startPendingLocked()
 		s.mu.Unlock()
-		return errors.New("extension follow-up requires an active RPC prompt")
+		return nil
+	}
+	if !active {
+		if s.runCtx == nil || s.runCtx.Err() != nil {
+			s.mu.Unlock()
+			return errors.New("RPC server is not running")
+		}
+		_, release := s.startPromptLocked(s.runCtx, message)
+		s.mu.Unlock()
+		close(release)
+		return nil
 	}
 	_, err := runner.FollowUp(message)
 	if errors.Is(err, agent.ErrNotProcessing) {
@@ -318,6 +337,8 @@ func (s *Server) SetPanel(key, title string, lines []string) {
 type command struct {
 	ID                json.RawMessage   `json:"id,omitempty"`
 	Type              string            `json:"type"`
+	Name              string            `json:"name,omitempty"`
+	Args              string            `json:"args,omitempty"`
 	Message           string            `json:"message,omitempty"`
 	StreamingBehavior string            `json:"streamingBehavior,omitempty"`
 	Images            []json.RawMessage `json:"images,omitempty"`
@@ -338,20 +359,39 @@ type response struct {
 // Run processes LF-delimited commands until EOF or a framing error. Prompt
 // work runs asynchronously so state, steering, follow-up, and abort commands
 // remain responsive while the provider or a tool is active.
-func (s *Server) Run(ctx context.Context) error {
+func (s *Server) Run(ctx context.Context) (runErr error) {
 	s.mu.Lock()
 	configured := s.runner != nil && s.registry != nil
+	if configured {
+		s.runCtx, s.runCancel = context.WithCancel(ctx)
+	}
 	s.mu.Unlock()
 	if !configured {
 		return errors.New("RPC server is not configured")
 	}
+	// A live RPC stream owns an interruptible input (stdin or a pipe). Do not
+	// leave command goroutines alive after cancellation or a broken output.
+	stopInput := context.AfterFunc(s.runCtx, func() {
+		if closer, ok := s.in.(io.Closer); ok {
+			_ = closer.Close()
+		}
+	})
 	defer func() {
+		stopInput()
 		s.shutdown()
 		s.wg.Wait()
+		s.mu.Lock()
+		if s.asyncErr != nil {
+			runErr = s.asyncErr
+		}
+		s.mu.Unlock()
 	}()
 	reader := bufio.NewReaderSize(s.in, 64*1024)
 	for {
 		line, err := readRecord(reader)
+		if s.runCtx.Err() != nil {
+			return s.runCtx.Err()
+		}
 		if errors.Is(err, io.EOF) {
 			return nil
 		}
@@ -380,6 +420,8 @@ func (s *Server) handle(ctx context.Context, request command) error {
 		return s.success(request, s.getState())
 	case "get_tools":
 		return s.success(request, s.getTools())
+	case "extension_command":
+		return s.handleExtensionCommand(ctx, request)
 	case "prompt":
 		return s.handlePrompt(ctx, request)
 	case "steer":
@@ -390,8 +432,11 @@ func (s *Server) handle(ctx context.Context, request command) error {
 		return s.handleInputResponse(request)
 	case "abort":
 		s.mu.Lock()
-		cancel := s.cancel
+		cancel, commandCancel := s.cancel, s.commandCancel
 		s.mu.Unlock()
+		if commandCancel != nil {
+			commandCancel()
+		}
 		if cancel != nil {
 			cancel()
 		}
@@ -402,6 +447,62 @@ func (s *Server) handle(ctx context.Context, request command) error {
 	default:
 		return s.failure(request.ID, request.Type, fmt.Errorf("unknown command %q", request.Type))
 	}
+}
+
+// Extension commands are user control messages, never model tool calls. This
+// permits opt-in workflows in headless hosts without a workflow-specific API.
+func (s *Server) handleExtensionCommand(ctx context.Context, request command) error {
+	s.mu.Lock()
+	registry := s.registry
+	s.mu.Unlock()
+	if registry == nil {
+		return s.failure(request.ID, request.Type, errors.New("RPC server is unavailable"))
+	}
+	registered, ok := registry.Command(request.Name)
+	if !ok {
+		return s.failure(request.ID, request.Type, fmt.Errorf("unknown extension command %q", request.Name))
+	}
+	allowed := registered.AllowWhileStreaming || (registered.AllowWhileStreamingArgs != nil && registered.AllowWhileStreamingArgs(request.Args))
+	s.mu.Lock()
+	if s.closed || s.runCtx == nil {
+		s.mu.Unlock()
+		return s.failure(request.ID, request.Type, errors.New("RPC server is not running"))
+	}
+	if s.active && !allowed {
+		s.mu.Unlock()
+		return s.failure(request.ID, request.Type, errors.New("extension command is unavailable while streaming"))
+	}
+	if s.commandActive {
+		s.mu.Unlock()
+		return s.failure(request.ID, request.Type, errors.New("another extension command is running"))
+	}
+	commandCtx, cancel := context.WithCancel(s.runCtx)
+	s.commandActive, s.commandExclusive, s.commandCancel = true, !allowed, cancel
+	s.wg.Add(1)
+	s.mu.Unlock()
+	// Reserve commands before launching so prompts cannot bypass their streaming
+	// policy. Input responses and state queries still run on the reader loop.
+	go func() {
+		defer s.wg.Done()
+		defer cancel()
+		content, err := registered.Execute(commandCtx, request.Args)
+		s.mu.Lock()
+		s.commandActive, s.commandExclusive, s.commandCancel = false, false, nil
+		s.mu.Unlock()
+		var writeErr error
+		if err != nil {
+			writeErr = s.failure(request.ID, request.Type, err)
+		} else {
+			writeErr = s.success(request, map[string]any{"content": content})
+		}
+		if writeErr != nil {
+			s.failAsync(writeErr)
+		}
+		s.mu.Lock()
+		s.startPendingLocked()
+		s.mu.Unlock()
+	}()
+	return nil
 }
 
 func (s *Server) handleInputResponse(request command) error {
@@ -457,6 +558,13 @@ func (s *Server) handlePrompt(ctx context.Context, request command) error {
 	}
 
 	s.mu.Lock()
+	if s.commandExclusive {
+		s.mu.Unlock()
+		return s.failure(request.ID, "prompt", errors.New("an exclusive extension command is running"))
+	}
+	// Work accepted during an exclusive command must not be overtaken in the
+	// brief gap between command completion and its asynchronous response.
+	s.startPendingLocked()
 	if s.active {
 		s.mu.Unlock()
 		if request.StreamingBehavior == "" {
@@ -464,32 +572,54 @@ func (s *Server) handlePrompt(ctx context.Context, request command) error {
 		}
 		return s.queue(request, request.StreamingBehavior)
 	}
+	if s.closed {
+		s.mu.Unlock()
+		return s.failure(request.ID, "prompt", errors.New("RPC server has closed"))
+	}
+	started, release := s.startPromptLocked(ctx, message)
+	s.mu.Unlock()
+	select {
+	case <-started:
+		err := s.success(request, nil)
+		close(release)
+		return err
+	case <-ctx.Done():
+		close(release)
+		return ctx.Err()
+	}
+}
+
+// startPromptLocked reserves the idle runner before unlocking. Idle extension
+// wakeups use the same run lifecycle as an RPC prompt, without a fake response.
+func (s *Server) startPromptLocked(ctx context.Context, message string) (<-chan struct{}, chan struct{}) {
 	promptCtx, cancel := context.WithCancel(ctx)
 	s.active, s.cancel = true, cancel
 	runner, state := s.runner, s.state
-	s.mu.Unlock()
-
 	started, release := make(chan struct{}), make(chan struct{})
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
+		defer cancel()
 		adapter := newEventAdapter(s, state)
 		prompt := message
+		var first sync.Once
 		for {
 			err := runner.PromptWithStart(promptCtx, prompt, adapter.Handle, func() {
-				if prompt == message {
-					close(started)
-					<-release
-					adapter.Start()
-				}
+				first.Do(func() { close(started); <-release; adapter.Start() })
 			})
 			adapter.Finish(err)
-			if err != nil {
-				break
-			}
 			s.mu.Lock()
-			if len(s.pending) == 0 {
+			if err != nil {
+				s.pending = nil
+			}
+			if len(s.pending) == 0 || err != nil || s.closed {
+				s.settling = true
+				s.mu.Unlock()
+				adapter.Settled()
+				s.mu.Lock()
+				s.settling = false
 				s.active, s.compacting, s.cancel = false, false, nil
+				s.startPendingLocked()
 				s.mu.Unlock()
 				break
 			}
@@ -498,23 +628,20 @@ func (s *Server) handlePrompt(ctx context.Context, request command) error {
 			adapter = newEventAdapter(s, state)
 			adapter.Start()
 		}
-		s.mu.Lock()
-		s.active, s.compacting, s.cancel = false, false, nil
-		s.mu.Unlock()
-		adapter.Settled()
 	}()
-	select {
-	case <-started:
-		if err := s.success(request, nil); err != nil {
-			close(release)
-			return err
-		}
-		close(release)
-		return nil
-	case <-ctx.Done():
-		close(release)
-		return ctx.Err()
+	return started, release
+}
+
+// Start accepted wakeups only after exclusive user work or terminal events
+// finish. A fresh context also keeps a late wake from inheriting an abort.
+func (s *Server) startPendingLocked() {
+	if s.closed || s.active || s.commandExclusive || s.runCtx == nil || s.runCtx.Err() != nil || len(s.pending) == 0 {
+		return
 	}
+	prompt := s.pending[0]
+	s.pending = s.pending[1:]
+	_, release := s.startPromptLocked(s.runCtx, prompt)
+	close(release)
 }
 
 func (s *Server) queue(request command, behavior string) error {
@@ -565,7 +692,7 @@ func (s *Server) expand(message string) (string, error) {
 func (s *Server) getState() map[string]any {
 	s.mu.Lock()
 	runner, registry, state := s.runner, s.registry, s.state
-	active, compacting := s.active, s.compacting
+	active, compacting := s.active && !s.settling, s.compacting
 	s.mu.Unlock()
 	_, steering, followUps := runner.QueueStatus()
 	tools := make([]string, 0)
@@ -628,6 +755,17 @@ func (s *Server) write(value any) error {
 	return encoder.Encode(value)
 }
 
+func (s *Server) failAsync(err error) {
+	s.mu.Lock()
+	if s.asyncErr == nil {
+		s.asyncErr = err
+	}
+	if s.runCancel != nil {
+		s.runCancel()
+	}
+	s.mu.Unlock()
+}
+
 func (s *Server) setCompacting(value bool) {
 	s.mu.Lock()
 	s.compacting = value
@@ -650,8 +788,14 @@ func (s *Server) cancelInputs(err error) {
 func (s *Server) shutdown() {
 	s.mu.Lock()
 	s.closed = true
-	cancel := s.cancel
+	if s.runCancel != nil {
+		s.runCancel()
+	}
+	cancel, commandCancel := s.cancel, s.commandCancel
 	s.mu.Unlock()
+	if commandCancel != nil {
+		commandCancel()
+	}
 	if cancel != nil {
 		cancel()
 	}

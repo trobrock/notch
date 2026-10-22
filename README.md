@@ -17,6 +17,7 @@ Notch is an MVP, not a drop-in reimplementation of [Pi](https://github.com/badlo
 - Pi-style fullscreen TUI with searchable provider/model selection, themed Markdown, tool cards, streamed thinking summaries or a fallback thinking indicator, and a multiline composer, plus a line-oriented fallback for pipes
 - Streaming interactive and one-shot operation, including JSONL events and a Pi-compatible RPC subset
 - Durable JSONL sessions, `--continue`, `/new`, and persisted conversation compaction
+- Built-in opt-in [Intercom](docs/intercom.md) for durable local session messages, bounded wakeups, and replies
 - Embedded self-configuration and extension-authoring skills, plus Markdown skills and prompt templates
 - In-process Lua extensions
 - Executable, line-delimited JSON-RPC 2.0 plugins in any language
