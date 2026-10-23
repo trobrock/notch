@@ -12,6 +12,7 @@ Roles and profile role mappings are global-only. Put them in the user config, no
 {
   "roles": {
     "auditor": {
+      "when_to_use": "Use for policy, compliance, or security-control checks.",
       "instructions": "Check the requested policy and cite exact evidence.",
       "thinking": "high",
       "timeout_seconds": 0,
@@ -45,7 +46,9 @@ Roles and profile role mappings are global-only. Put them in the user config, no
 }
 ```
 
-Use model IDs returned by `list_models`. Notch validates a role-selected model before dispatch. It fails if the model is unavailable or its provider is outside the active profile. It never searches another provider as a fallback. Model capability and price change over time, so choose a currently available inexpensive model for bounded routine work and escalate only when evidence shows it is needed.
+Use model IDs returned by `list_models`. The optional `when_to_use` text is shown in delegation tool descriptions so the parent model can choose a custom role for the right task. Keep it short and describe the kind of task, not the steps to perform; put task behavior in `instructions`.
+
+Notch validates a role-selected model before dispatch. It fails if the model is unavailable or its provider is outside the active profile. It never searches another provider as a fallback. Model capability and price change over time, so choose a currently available inexpensive model for bounded routine work and escalate only when evidence shows it is needed.
 
 ## Use roles
 

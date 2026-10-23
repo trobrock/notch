@@ -253,19 +253,23 @@ func register(registry *extension.Registry, host extension.Host, runner subagent
 	tool := extension.Tool{Source: Source, UpdateMode: "replace", Definition: model.ToolDefinition{
 		Name:        ToolName,
 		Description: "Run a small, opt-in lead-and-helper workflow using existing isolated Notch subagents. Use only when the user asks for coordinated helpers. The lead owns scope, decisions, synthesis, and integration. Assign optional designer, implementer, QA, and reviewer roles, and choose per-helper models and thinking suited to the work. Turn, cost, and total-runtime caps are optional; do not impose small caps on productive work. Keep reports concise and judgment with the lead. Initial helpers run independently and return concise JSON results with scoped checks and artifact references. Research and review are read-only by default. A change helper requires allow_write_tools=true, a separate existing Git worktree/branch, its expected base commit, and integration_owner=lead. This tool never creates, resets, merges, deletes, or cleans a worktree. Delegated usage is returned separately so parent and /goal budgets count it once; unknown child cost stays unknown.",
-		InputSchema: teamSchema(),
+		InputSchema: teamSchema(subagent.RoleDescription(runner, "Optional reusable specialist role. Built-ins include designer, developer (implementer alias), qa, and reviewer; global custom roles are accepted.")),
 	}, Execute: c.execute}
 	_, err := registry.RegisterBatch(extension.Batch{Tools: []extension.Tool{tool}})
 	return err
 }
 
-func teamSchema() map[string]any {
+func teamSchema(roleDescriptions ...string) map[string]any {
+	roleDescription := "Optional reusable specialist role. Built-ins include designer, developer (implementer alias), qa, and reviewer; global custom roles are accepted."
+	if len(roleDescriptions) > 0 && strings.TrimSpace(roleDescriptions[0]) != "" {
+		roleDescription = roleDescriptions[0]
+	}
 	str := func(description string) map[string]any {
 		return map[string]any{"type": "string", "description": description}
 	}
 	task := map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
 		"id": str("Short unique helper ID"), "kind": map[string]any{"type": "string", "enum": []string{"research", "review", "change"}},
-		"role":   map[string]any{"type": "string", "description": "Optional reusable specialist role. Built-ins include designer, developer (implementer alias), qa, and reviewer; global custom roles are accepted."},
+		"role":   map[string]any{"type": "string", "description": roleDescription},
 		"prompt": str("One narrow task; do not include another helper's result"), "cwd": str("Working directory; required for a change helper"),
 		"tools": str("Comma-separated tools; defaults to read,grep,find,ls"), "acceptance_checks": map[string]any{"type": "array", "items": str("One check this helper owns"), "minItems": 1},
 		"expected_base":    str("Exact lead commit used to create this writer worktree; required for change"),
