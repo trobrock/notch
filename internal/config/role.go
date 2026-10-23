@@ -17,6 +17,7 @@ type RoleResolution struct {
 	RequestedName   string  `json:"requested_name,omitempty"`
 	Source          string  `json:"source"`
 	Instructions    string  `json:"instructions"`
+	WhenToUse       string  `json:"when_to_use,omitempty"`
 	Model           string  `json:"model"`
 	Thinking        string  `json:"thinking"`
 	TimeoutSeconds  int     `json:"timeout_seconds,omitempty"`
@@ -126,7 +127,7 @@ func ResolveRole(cfg Config, routing *RoutingSnapshot, requested string) (RoleRe
 	if role.TimeoutSeconds < 0 || role.TimeoutSeconds > 86400 || role.MaxOutputChars < 0 || role.MaxOutputChars > 50000 || (role.MaxOutputChars > 0 && role.MaxOutputChars < 1000) || role.MaxTurns < 0 || role.MaxCostUSD < 0 || math.IsNaN(role.MaxCostUSD) || math.IsInf(role.MaxCostUSD, 0) {
 		return RoleResolution{}, fmt.Errorf("role %q: bounded defaults are invalid (timeout <= 86400, output 1000..50000 when set, and other limits finite and non-negative)", requested)
 	}
-	resolved := RoleResolution{Name: name, RequestedName: requested, Source: source, Instructions: role.Instructions, Model: role.Model, Thinking: role.Thinking, TimeoutSeconds: role.TimeoutSeconds, MaxOutputChars: role.MaxOutputChars, MaxTurns: role.MaxTurns, MaxCostUSD: role.MaxCostUSD, ModelProvenance: "role default"}
+	resolved := RoleResolution{Name: name, RequestedName: requested, Source: source, Instructions: role.Instructions, WhenToUse: strings.TrimSpace(role.WhenToUse), Model: role.Model, Thinking: role.Thinking, TimeoutSeconds: role.TimeoutSeconds, MaxOutputChars: role.MaxOutputChars, MaxTurns: role.MaxTurns, MaxCostUSD: role.MaxCostUSD, ModelProvenance: "role default"}
 	if routing != nil {
 		resolved.Profile = routing.Profile
 		if mapped := strings.TrimSpace(routing.RoleModels[name]); mapped != "" {

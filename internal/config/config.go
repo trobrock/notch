@@ -82,6 +82,7 @@ type ProfileConfig struct {
 // defaults. Roles never grant tools or other authority.
 type RoleConfig struct {
 	Instructions   string  `json:"instructions"`
+	WhenToUse      string  `json:"when_to_use,omitempty"`
 	Model          string  `json:"model,omitempty"`
 	Thinking       string  `json:"thinking,omitempty"`
 	TimeoutSeconds int     `json:"timeout_seconds,omitempty"`

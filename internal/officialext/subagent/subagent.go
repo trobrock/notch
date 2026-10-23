@@ -92,6 +92,21 @@ type Runner interface {
 	Run(context.Context, Input, func(string)) (Result, error)
 }
 
+type roleUsageDescriber interface {
+	RoleUsageDescription() string
+}
+
+// RoleDescription adds configured "when to use" guidance to a role field's
+// tool description. This lets the parent model choose custom roles by purpose.
+func RoleDescription(runner Runner, base string) string {
+	if describer, ok := runner.(roleUsageDescriber); ok {
+		if guidance := strings.TrimSpace(describer.RoleUsageDescription()); guidance != "" {
+			return strings.TrimSpace(base) + " Configured role guidance: " + guidance
+		}
+	}
+	return base
+}
+
 type roleRunner struct {
 	base            Runner
 	host            extension.Host
@@ -107,6 +122,21 @@ func NewRoleRunner(base Runner, host extension.Host, cfg config.Config, routing 
 		return base
 	}
 	return &roleRunner{base: base, host: host, cfg: cfg, routing: routing, defaultProvider: provider}
+}
+
+func (r *roleRunner) RoleUsageDescription() string {
+	names := make([]string, 0, len(r.cfg.Roles))
+	for name, role := range r.cfg.Roles {
+		if strings.TrimSpace(role.WhenToUse) != "" {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	guidance := make([]string, 0, len(names))
+	for _, name := range names {
+		guidance = append(guidance, fmt.Sprintf("%s — %s", name, strings.TrimSpace(r.cfg.Roles[name].WhenToUse)))
+	}
+	return strings.Join(guidance, "; ")
 }
 
 func (r *roleRunner) Run(ctx context.Context, input Input, update func(string)) (Result, error) {
@@ -309,7 +339,7 @@ func RegisterWithRunner(registry *extension.Registry, runner Runner) error {
 		Definition: model.ToolDefinition{
 			Name:        ToolName,
 			Description: "Spawn a focused Notch subagent in an isolated process. Defaults to read-only tools; enable write-capable tools only when the user explicitly wants delegated implementation. Omit model to use the current parent provider/model. An unqualified model stays on the current provider. Use a provider-qualified model only when the user explicitly requested that provider (or explicitly configured it for delegation); if a requested model is unavailable on the current provider and no other provider was named, ask before using another provider.",
-			InputSchema: schema(),
+			InputSchema: schema(RoleDescription(runner, "Reusable specialist role. Built-ins: lead, researcher, designer, developer (implementer alias), qa, reviewer. Global custom roles are also accepted.")),
 		},
 		Execute: func(ctx context.Context, raw json.RawMessage, update func(string)) (extension.ToolResult, error) {
 			input, err := decodeInput(raw)
@@ -343,12 +373,16 @@ func RegisterWithRunner(registry *extension.Registry, runner Runner) error {
 	return nil
 }
 
-func schema() map[string]any {
+func schema(roleDescriptions ...string) map[string]any {
+	roleDescription := "Reusable specialist role. Built-ins: lead, researcher, designer, developer (implementer alias), qa, reviewer. Global custom roles are also accepted."
+	if len(roleDescriptions) > 0 && strings.TrimSpace(roleDescriptions[0]) != "" {
+		roleDescription = roleDescriptions[0]
+	}
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"prompt":          map[string]any{"type": "string", "minLength": 1, "description": "Self-contained task or question for the subagent."},
-			"role":            map[string]any{"type": "string", "description": "Reusable specialist role. Built-ins: lead, researcher, designer, developer (implementer alias), qa, reviewer. Global custom roles are also accepted."},
+			"role":            map[string]any{"type": "string", "description": roleDescription},
 			"model":           map[string]any{"type": "string", "description": "Model ID, optionally provider/model. Omit to use the current parent provider/model. An unqualified ID stays on the current provider; qualify it only for a user-requested or explicitly configured provider change."},
 			"cwd":             map[string]any{"type": "string", "description": "Working directory. Defaults to the parent working directory."},
 			"tools":           map[string]any{"type": "string", "description": "Comma-separated tool allowlist. Defaults to read,grep,find,ls. bash is NOT read-only, even for inspection commands. Any other tool requires allowWriteTools=true, which authorizes write-capable tools for this invocation."},

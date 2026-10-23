@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
+	"github.com/trobrock/notch/internal/config"
 	"github.com/trobrock/notch/internal/extension"
 )
 
@@ -47,6 +49,30 @@ func TestRegisterKeepsOfficialExtensionsSegmented(t *testing.T) {
 		}
 		if tool.Source == "" {
 			t.Fatalf("%s source is empty", name)
+		}
+	}
+}
+
+func TestCustomRoleWhenToUseAppearsInDelegationSchemas(t *testing.T) {
+	registry := extension.NewRegistry()
+	cfg := config.Config{Roles: map[string]config.RoleConfig{
+		"auditor": {Instructions: "Check policy.", WhenToUse: "Use for policy and compliance checks."},
+	}}
+	if err := RegisterWithRoleConfig(registry, &testHost{}, "user,project", "", "", "", nil, cfg, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"run_subagent", "explore_codebase", "coordinate_helpers"} {
+		tool, ok := registry.Tool(name)
+		if !ok {
+			t.Fatalf("%s not registered", name)
+		}
+		encoded, err := json.Marshal(tool.Definition.InputSchema)
+		if err != nil {
+			t.Fatal(err)
+		}
+		description := string(encoded)
+		if !strings.Contains(description, "auditor") || !strings.Contains(description, "Use for policy and compliance checks.") {
+			t.Fatalf("%s schema does not describe the custom role: %s", name, description)
 		}
 	}
 }

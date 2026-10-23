@@ -6,7 +6,7 @@ import (
 )
 
 func TestRoleResolutionUsesProfileMappingAndAlias(t *testing.T) {
-	cfg := Config{Roles: map[string]RoleConfig{"auditor": {Instructions: "Check policy.", Model: "base-audit", Thinking: "low"}}}
+	cfg := Config{Roles: map[string]RoleConfig{"auditor": {Instructions: "Check policy.", WhenToUse: "Use for compliance reviews.", Model: "base-audit", Thinking: "low"}}}
 	personal := &RoutingSnapshot{Profile: "personal", Provider: "openai", AllowedProviders: []string{"openai"}, RoleModels: map[string]string{"reviewer": "review-mini"}}
 	work := &RoutingSnapshot{Profile: "work", Provider: "openai", AllowedProviders: []string{"openai"}, RoleModels: map[string]string{"reviewer": "review-full"}}
 	a, err := ResolveRole(cfg, personal, "reviewer")
@@ -25,7 +25,7 @@ func TestRoleResolutionUsesProfileMappingAndAlias(t *testing.T) {
 		t.Fatalf("alias=%#v err=%v", developer, err)
 	}
 	custom, err := ResolveRole(cfg, nil, "auditor")
-	if err != nil || custom.Source != "user config" || custom.Instructions != "Check policy." {
+	if err != nil || custom.Source != "user config" || custom.Instructions != "Check policy." || custom.WhenToUse != "Use for compliance reviews." {
 		t.Fatalf("custom=%#v err=%v", custom, err)
 	}
 }
