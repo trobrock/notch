@@ -50,7 +50,7 @@ func TestDurableDedupeReloadAndCollisionChecks(t *testing.T) {
 	raw, _ := json.Marshal(entry)
 	seen, inbox := loadInbox([]json.RawMessage{raw})
 	s := newService()
-	s.project, s.sessionID, s.host = "project", "receiver-session", &fakeHost{}
+	s.project, s.sessionID, s.host, s.enabled = "project", "receiver-session", &fakeHost{}, true
 	s.seen, s.inbox = seen, inbox
 
 	duplicate := message{Version: protocolVersion, Type: "deliver", ID: "same", Project: "project", ToSession: "receiver-session", FromSession: "sender-a", Wake: true, AutomatedWake: true, Body: "original"}

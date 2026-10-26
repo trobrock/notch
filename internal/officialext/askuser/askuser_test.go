@@ -150,3 +150,56 @@ func TestOfficialToolSchemaIsStrict(t *testing.T) {
 		t.Fatalf("option schema = %#v", items)
 	}
 }
+
+type structuredTestHost struct {
+	testHost
+	question    extension.Question
+	answer      extension.QuestionAnswer
+	questionErr error
+}
+
+func (h *structuredTestHost) Question(_ context.Context, q extension.Question) (extension.QuestionAnswer, error) {
+	h.question = q
+	return h.answer, h.questionErr
+}
+func TestAskUserUsesOneStructuredQuestionWithoutSyntheticChoice(t *testing.T) {
+	host := &structuredTestHost{answer: extension.QuestionAnswer{Value: "Only ten minutes", WasCustom: true}}
+	tool := registeredTool(t, host)
+	result, err := tool.Execute(context.Background(), json.RawMessage(`{"question":"Continue?","options":[{"label":"Continue","description":"Bounded diagnosis"}],"allowCustomResponse":true,"placeholder":"Your limits"}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(host.question.Options) != 1 || host.question.Options[0].Description != "Bounded diagnosis" || !host.question.AllowCustomResponse || len(host.prompts) != 0 {
+		t.Fatal("structured question fell back to synthetic select/input")
+	}
+	details := result.Details
+	if details["answer"] != "Only ten minutes" || details["wasCustom"] != true {
+		t.Fatalf("lost typed answer: %+v", details)
+	}
+}
+func TestUnsupportedStructuredHostUsesExistingSelectInputFallback(t *testing.T) {
+	host := &structuredTestHost{questionErr: extension.ErrStructuredQuestionUnsupported}
+	host.selected = "Continue — Bounded diagnosis"
+	tool := registeredTool(t, host)
+	result, err := tool.Execute(context.Background(), json.RawMessage(`{"question":"Continue?","options":[{"label":"Continue","description":"Bounded diagnosis"}]}`), nil)
+	if err != nil || len(host.prompts) != 1 || result.Content != "User answered: Continue" {
+		t.Fatalf("legacy fallback failed: %v", err)
+	}
+}
+
+func TestNativeSelectDisambiguatesRenderedChoiceAndCustomRowCollisions(t *testing.T) {
+	for _, selected := range []string{"[2] A — B", "[3] Type a custom response", "Type a custom response"} {
+		t.Run(selected, func(t *testing.T) {
+			host := &testHost{selected: selected, input: "Actual custom text"}
+			tool := registeredTool(t, host)
+			result, err := tool.Execute(context.Background(), json.RawMessage(`{"question":"Choose","options":[{"label":"A","description":"B"},{"label":"A — B"},{"label":"Type a custom response"}],"allowCustomResponse":true}`), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			expected := map[string]string{"[2] A — B": "A — B", "[3] Type a custom response": "Type a custom response", "Type a custom response": "Actual custom text"}[selected]
+			if result.Details["answer"] != expected || result.Details["wasCustom"] != (selected == "Type a custom response") {
+				t.Fatalf("choice confused with UI action: %+v", result.Details)
+			}
+		})
+	}
+}

@@ -52,12 +52,12 @@ func newAskUserQuestion(host extension.Host) extension.Tool {
 				"properties": map[string]any{
 					"question": map[string]any{"type": "string", "minLength": 1, "description": "The question to ask the user."},
 					"options": map[string]any{
-						"type": "array", "description": "Suggested answers. Omit or leave empty for free-form input.",
+						"type": "array", "maxItems": 100, "description": "Suggested answers. Omit or leave empty for free-form input.",
 						"items": map[string]any{
 							"type": "object",
 							"properties": map[string]any{
-								"label":       map[string]any{"type": "string", "minLength": 1, "description": "Short answer label shown to the user."},
-								"description": map[string]any{"type": "string", "description": "Optional detail shown next to the label."},
+								"label":       map[string]any{"type": "string", "minLength": 1, "maxLength": 8000, "description": "Short answer label shown to the user."},
+								"description": map[string]any{"type": "string", "maxLength": 16000, "description": "Optional detail shown next to the label."},
 							},
 							"required": []string{"label"}, "additionalProperties": false,
 						},
@@ -94,10 +94,18 @@ func decodeQuestionArgs(raw json.RawMessage) (askUserQuestionArgs, error) {
 	if strings.TrimSpace(args.Question) == "" {
 		return args, errors.New("question must not be empty")
 	}
+	if len(args.Options) > 100 {
+		return args, errors.New("question supports at most 100 choices")
+	}
+	seen := map[string]bool{}
 	for i, option := range args.Options {
-		if strings.TrimSpace(option.Label) == "" {
-			return args, fmt.Errorf("option %d label must not be empty", i+1)
+		if strings.TrimSpace(option.Label) == "" || seen[option.Label] || len(option.Label) > 8000 || len(option.Description) > 16000 {
+			return args, fmt.Errorf("option %d label must be nonempty and unique", i+1)
 		}
+		seen[option.Label] = true
+	}
+	if len(args.Options) == 0 && args.AllowCustomResponse != nil && !*args.AllowCustomResponse {
+		return args, errors.New("question has no allowed answers")
 	}
 	return args, nil
 }
@@ -114,15 +122,26 @@ func askUser(ctx context.Context, host extension.Host, args askUserQuestionArgs)
 		allowCustom = *args.AllowCustomResponse
 	}
 
-	answer, wasCustom, err := chooseAnswer(ctx, host, args, displays, allowCustom)
+	answer, wasCustom, structured, err := chooseAnswer(ctx, host, args, displays, allowCustom)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, io.EOF) {
 			return canceledResult(args.Question, labels, wasCustom), nil
 		}
 		return extension.ToolResult{}, err
 	}
+	if len(answer) > 8000 {
+		return extension.ToolResult{}, errors.New("answer exceeds 8000 bytes; please use a shorter response")
+	}
+	prefix := "User answered: "
+	if structured {
+		if wasCustom {
+			prefix = "User typed a custom answer: "
+		} else {
+			prefix = "User selected an option: "
+		}
+	}
 	return extension.ToolResult{
-		Content: "User answered: " + answer,
+		Content: prefix + answer,
 		Details: map[string]any{
 			"question": args.Question, "options": labels, "answer": answer,
 			"wasCustom": wasCustom, "cancelled": false,
@@ -140,30 +159,56 @@ func canceledResult(question string, labels []string, wasCustom bool) extension.
 	}
 }
 
-func chooseAnswer(ctx context.Context, host extension.Host, args askUserQuestionArgs, displays []string, allowCustom bool) (string, bool, error) {
+func chooseAnswer(ctx context.Context, host extension.Host, args askUserQuestionArgs, displays []string, allowCustom bool) (string, bool, bool, error) {
+	if structured, ok := host.(extension.QuestionHost); ok {
+		options := make([]extension.QuestionOption, len(args.Options))
+		for i, option := range args.Options {
+			options[i] = extension.QuestionOption{Label: option.Label, Description: option.Description}
+		}
+		response, err := structured.Question(ctx, extension.Question{Prompt: args.Question, Options: options, AllowCustomResponse: allowCustom, Placeholder: args.Placeholder})
+		if !errors.Is(err, extension.ErrStructuredQuestionUnsupported) {
+			return response.Value, response.WasCustom, true, err
+		}
+	}
 	if len(args.Options) == 0 {
 		answer, err := host.Input(ctx, args.Question, args.Placeholder)
-		return answer, true, err
+		return answer, true, false, err
 	}
 
+	// Host.Select returns display text, not an index. Disambiguate collisions,
+	// including a real option with the same text as the custom-entry UI row.
+	seen := map[string]bool{}
+	collision := false
+	for _, display := range displays {
+		if seen[display] || allowCustom && display == "Type a custom response" {
+			collision = true
+		}
+		seen[display] = true
+	}
+	if collision {
+		displays = append([]string(nil), displays...)
+		for i := range displays {
+			displays[i] = fmt.Sprintf("[%d] %s", i+1, displays[i])
+		}
+	}
 	choices := append([]string(nil), displays...)
 	if allowCustom {
 		choices = append(choices, "Type a custom response")
 	}
 	selected, err := host.Select(ctx, args.Question, choices)
 	if err != nil {
-		return "", false, err
+		return "", false, false, err
 	}
 	for i, display := range displays {
 		if selected == display {
-			return args.Options[i].Label, false, nil
+			return args.Options[i].Label, false, false, nil
 		}
 	}
 	if !allowCustom || selected != choices[len(choices)-1] {
-		return "", false, fmt.Errorf("UI returned unknown selection %q", selected)
+		return "", false, false, fmt.Errorf("UI returned unknown selection %q", selected)
 	}
 	answer, err := host.Input(ctx, args.Question, args.Placeholder)
-	return answer, true, err
+	return answer, true, false, err
 }
 
 func optionDisplay(option questionOption, _ int) string {

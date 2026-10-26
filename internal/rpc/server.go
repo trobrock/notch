@@ -48,9 +48,10 @@ type StateConfig struct {
 // Server is both an extension Host and a JSONL RPC server. Construct it before
 // loading extensions, then call Configure once the agent and registry exist.
 type Server struct {
-	cwd string
-	in  io.Reader
-	out io.Writer
+	structuredQuestions bool
+	cwd                 string
+	in                  io.Reader
+	out                 io.Writer
 
 	writeMu          sync.Mutex
 	mu               sync.Mutex
@@ -78,15 +79,17 @@ type Server struct {
 }
 
 type pendingInput struct {
-	ctx     context.Context
-	kind    string
-	options []string
-	reply   chan inputResponse
+	question *extension.Question
+	ctx      context.Context
+	kind     string
+	options  []string
+	reply    chan inputResponse
 }
 
 type inputResponse struct {
-	value string
-	err   error
+	wasCustom bool
+	value     string
+	err       error
 }
 
 func New(in io.Reader, out io.Writer, cwd string) *Server {
@@ -132,21 +135,25 @@ func (s *Server) Select(ctx context.Context, prompt string, options []string) (s
 }
 
 func (s *Server) requestInput(ctx context.Context, kind, prompt, placeholder string, options []string) (string, error) {
+	response, err := s.requestInteractiveInput(ctx, kind, prompt, placeholder, options, nil)
+	return response.value, err
+}
+func (s *Server) requestInteractiveInput(ctx context.Context, kind, prompt, placeholder string, options []string, question *extension.Question) (inputResponse, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	s.mu.Lock()
 	if s.runner == nil || s.registry == nil {
 		s.mu.Unlock()
-		return "", errors.New("interactive extension input is unavailable before the RPC server is configured")
+		return inputResponse{}, errors.New("interactive extension input is unavailable before the RPC server is configured")
 	}
 	if s.closed {
 		s.mu.Unlock()
-		return "", errors.New("interactive extension input is unavailable after the RPC server closed")
+		return inputResponse{}, errors.New("interactive extension input is unavailable after the RPC server closed")
 	}
 	if err := ctx.Err(); err != nil {
 		s.mu.Unlock()
-		return "", err
+		return inputResponse{}, err
 	}
 
 	s.nextInputID++
@@ -155,7 +162,7 @@ func (s *Server) requestInput(ctx context.Context, kind, prompt, placeholder str
 		s.inputs = make(map[string]*pendingInput)
 	}
 	pending := &pendingInput{
-		ctx: ctx, kind: kind, options: append([]string(nil), options...),
+		question: question, ctx: ctx, kind: kind, options: append([]string(nil), options...),
 		reply: make(chan inputResponse, 1),
 	}
 	s.inputs[requestID] = pending
@@ -178,16 +185,20 @@ func (s *Server) requestInput(ctx context.Context, kind, prompt, placeholder str
 	if len(options) != 0 {
 		event["options"] = options
 	}
+	if question != nil {
+		event["options"] = question.Options
+		event["allowCustomResponse"] = question.AllowCustomResponse
+	}
 	if sessionID != "" {
 		event["sessionId"] = sessionID
 	}
 	if err := s.write(event); err != nil {
 		s.removeInput(requestID, pending)
-		return "", err
+		return inputResponse{}, err
 	}
 
 	response := <-pending.reply
-	return response.value, response.err
+	return response, response.err
 }
 
 func (s *Server) removeInput(requestID string, pending *pendingInput) bool {
@@ -335,6 +346,8 @@ func (s *Server) SetPanel(key, title string, lines []string) {
 }
 
 type command struct {
+	Capabilities      []string          `json:"capabilities,omitempty"`
+	WasCustom         *bool             `json:"wasCustom,omitempty"`
 	ID                json.RawMessage   `json:"id,omitempty"`
 	Type              string            `json:"type"`
 	Name              string            `json:"name,omitempty"`
@@ -416,6 +429,8 @@ func (s *Server) Run(ctx context.Context) (runErr error) {
 func (s *Server) handle(ctx context.Context, request command) error {
 	request.Type = strings.TrimSpace(request.Type)
 	switch request.Type {
+	case "set_capabilities":
+		return s.setCapabilities(request)
 	case "get_state", "get_status", "status":
 		return s.success(request, s.getState())
 	case "get_tools":
@@ -522,6 +537,10 @@ func (s *Server) handleInputResponse(request command) error {
 		pending.reply <- inputResponse{err: err}
 		return s.failure(request.ID, request.Type, fmt.Errorf("input request %q is not pending", request.RequestID))
 	}
+	if err := validateStructuredAnswer(pending, request); err != nil {
+		s.mu.Unlock()
+		return s.failure(request.ID, request.Type, err)
+	}
 	if pending.kind == "select" && !request.Cancelled && !containsString(pending.options, request.Value) {
 		s.mu.Unlock()
 		return s.failure(request.ID, request.Type, fmt.Errorf("input response value is not one of the pending options"))
@@ -529,6 +548,9 @@ func (s *Server) handleInputResponse(request command) error {
 	delete(s.inputs, request.RequestID)
 	s.mu.Unlock()
 	response := inputResponse{value: request.Value}
+	if request.WasCustom != nil {
+		response.wasCustom = *request.WasCustom
+	}
 	if request.Cancelled {
 		response.err = context.Canceled
 	}
@@ -708,7 +730,8 @@ func (s *Server) getState() map[string]any {
 		"cost": map[string]float64{"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
 	}
 	data := map[string]any{
-		"model": model, "thinkingLevel": runner.ThinkingLevel(), "isStreaming": active,
+		"capabilities": []string{structuredQuestionsCapability},
+		"model":        model, "thinkingLevel": runner.ThinkingLevel(), "isStreaming": active,
 		"isCompacting": compacting, "steeringMode": "one-at-a-time", "followUpMode": "one-at-a-time",
 		"autoCompactionEnabled": state.AutoCompactionEnabled, "messageCount": runner.MessageCount(),
 		"pendingMessageCount": len(steering) + len(followUps), "tools": tools,

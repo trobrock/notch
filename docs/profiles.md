@@ -64,11 +64,11 @@ Profiles do not isolate operating-system accounts, files, processes, networks, o
 
 New profile sessions store the profile name, effective non-secret route, allowlist, credential reference name, and a hash of the profile definition. Secret values are never stored there.
 
-- `--continue`, bare `--resume`, and fullscreen `/resume` show or select only sessions for the active profile.
-- Explicitly resuming another profile's session fails before provider creation.
-- Legacy sessions remain readable only without `--profile`; they are never assigned a profile automatically.
-- If a profile definition or effective route changed, resume stops and asks for review. Inspect with `--show-effective-settings`, then pass `--acknowledge-profile-change` only if the change is intended.
-- A removed profile cannot be selected, so its session cannot silently migrate to another profile.
+- `--continue` selects the latest session for the current working directory, regardless of its saved profile.
+- Bare `--resume` lists recent sessions for the current directory. Fullscreen `/resume` lists saved sessions. Neither filters by profile.
+- Any session, including an older unprofiled session or one whose profile was removed, can resume with the current provider, model, and profile settings.
+- Saved routing metadata describes how the session began. It does not lock the session to those settings, and resuming does not rewrite it.
+- `--acknowledge-profile-change` is accepted for compatibility but is no longer needed and has no effect.
 
 ## Smoke walkthrough
 
@@ -76,10 +76,10 @@ New profile sessions store the profile name, effective non-secret route, allowli
 2. Run `notch --profile personal --show-effective-settings`. Check the profile, provider, model, and allowlist.
 3. Run `notch --profile work --show-effective-settings` and check that the route differs as expected.
 4. Start a short saved session under each profile.
-5. Run `notch --profile personal --continue`; it must select only the personal session.
-6. Try an explicit work session with `--profile personal --resume WORK_SESSION_ID`; it must fail before a provider request.
+5. Run `notch --profile personal --continue`; it must select the latest session in the current directory, regardless of its saved profile.
+6. Try an explicit work session with `--profile personal --resume WORK_SESSION_ID`; it must keep the conversation and use the current personal settings.
 7. Ask a helper to use a forbidden provider; the delegation tool must reject it before starting the child.
 
 ## Specialist model mappings
 
-A global profile may map reusable specialist roles to models with `role_models`. The mapping is part of the profile definition hash, so changing it requires explicit acknowledgement when resuming a saved session. The mapped provider must remain inside `allowed_providers`, and Notch does not fall back across providers. See [reusable specialist roles](roles.md).
+A global profile may map reusable specialist roles to models with `role_models`. The mapping is part of the profile definition hash stored with new sessions. Resumed sessions use the current mapping without requiring acknowledgement. The mapped provider must remain inside `allowed_providers`, and Notch does not fall back across providers. See [reusable specialist roles](roles.md).

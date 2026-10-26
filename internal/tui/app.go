@@ -47,24 +47,23 @@ type ModelPreset struct {
 
 // AppConfig describes the terminal and the labels shown in the status line.
 type AppConfig struct {
-	MouseCapture             *bool
-	CWD                      string
-	Provider                 string
-	Model                    string
-	Session                  string
-	SessionDir               string
-	Theme                    Theme
-	ThemeName                string
-	Themes                   *ThemeCatalog
-	ThinkingLevel            string
-	Presets                  map[string]ModelPreset
-	InitialPrompt            string
-	GitBranch                string
-	Profile                  string
-	Routing                  *config.RoutingSnapshot
-	AcknowledgeProfileChange bool
-	In                       *os.File
-	Out                      *os.File
+	MouseCapture  *bool
+	CWD           string
+	Provider      string
+	Model         string
+	Session       string
+	SessionDir    string
+	Theme         Theme
+	ThemeName     string
+	Themes        *ThemeCatalog
+	ThinkingLevel string
+	Presets       map[string]ModelPreset
+	InitialPrompt string
+	GitBranch     string
+	Profile       string
+	Routing       *config.RoutingSnapshot
+	In            *os.File
+	Out           *os.File
 }
 
 // App is the fullscreen, event-driven terminal host. It is safe to pass an App
@@ -2067,13 +2066,6 @@ func (a *App) startResume(runCtx context.Context) {
 		choices := make([]string, 0, len(infos))
 		byLabel := make(map[string]session.Info, len(infos))
 		for _, info := range infos {
-			activeProfile := ""
-			if a.cfg.Routing != nil {
-				activeProfile = a.cfg.Routing.Profile
-			}
-			if !strings.EqualFold(strings.TrimSpace(info.Header.Profile), activeProfile) {
-				continue
-			}
 			if current != nil && filepath.Clean(info.Path) == filepath.Clean(current.Path()) {
 				continue
 			}
@@ -2096,13 +2088,6 @@ func (a *App) startResume(runCtx context.Context) {
 			return
 		}
 		loaded, err := session.Load(info.Path)
-		if err == nil {
-			err = session.ValidateRouting(loaded.Header, a.cfg.Routing, a.cfg.AcknowledgeProfileChange)
-			if err != nil {
-				_ = loaded.Close()
-				loaded = nil
-			}
-		}
 		a.post(runCtx, appEvent{resumeDone: &resumeResult{session: loaded, err: err}}, false)
 	}()
 }
@@ -3188,7 +3173,7 @@ func (a *App) handleModalKey(key KeyEvent) (changed, exit bool) {
 		return a.pageTranscript(-1), false
 	}
 	if key.Key == KeyCtrlC || key.Key == KeyEscape {
-		if a.state.cancel != nil {
+		if key.Key == KeyCtrlC && a.state.cancel != nil {
 			a.state.cancel()
 		}
 		a.resolveHostRequest(request, "", context.Canceled)

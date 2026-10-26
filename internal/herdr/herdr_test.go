@@ -204,3 +204,27 @@ func TestResumeArgsRejectUnsafeAndPrintValues(t *testing.T) {
 		t.Fatalf("rpc resume args = %#v", got)
 	}
 }
+
+type structuredHost struct {
+	extension.Host
+	question extension.Question
+}
+
+func (h *structuredHost) Question(_ context.Context, q extension.Question) (extension.QuestionAnswer, error) {
+	h.question = q
+	return extension.QuestionAnswer{Value: "Only ten minutes", WasCustom: true}, nil
+}
+func TestReportingHostPreservesStructuredQuestionInterface(t *testing.T) {
+	reporter, _ := testReporter(t)
+	base := &structuredHost{}
+	wrapped := WrapHost(base, reporter)
+	structured, ok := wrapped.(extension.QuestionHost)
+	if !ok {
+		t.Fatal("wrapper lost optional structured questions")
+	}
+	q := extension.Question{Prompt: "Continue?", Options: []extension.QuestionOption{{Label: "Continue", Description: "Bounded diagnosis"}}, AllowCustomResponse: true}
+	response, err := structured.Question(context.Background(), q)
+	if err != nil || response.Value != "Only ten minutes" || !response.WasCustom || !reflect.DeepEqual(base.question, q) {
+		t.Fatal("wrapper flattened or dropped structured question")
+	}
+}

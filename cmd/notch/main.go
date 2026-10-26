@@ -133,7 +133,7 @@ func newRootFlagSet(opts *options) *flag.FlagSet {
 	flags.StringVar(&opts.profile, "profile", "", "global routing profile name")
 	flags.StringVar(&opts.routingSnapshot, "routing-snapshot", "", "inherited non-secret routing snapshot (child processes)")
 	flags.BoolVar(&opts.showEffectiveSettings, "show-effective-settings", false, "print resolved non-secret settings as JSON and exit")
-	flags.BoolVar(&opts.acknowledgeProfileChange, "acknowledge-profile-change", false, "allow resume after the selected profile definition changed")
+	flags.BoolVar(&opts.acknowledgeProfileChange, "acknowledge-profile-change", false, "deprecated; session resume always uses current settings")
 	flags.StringVar(&opts.modelName, "model", "", "model ID")
 	flags.StringVar(&opts.modelName, "m", "", "model ID (shorthand)")
 	flags.StringVar(&opts.thinking, "thinking", "", "reasoning effort: off, minimal, low, medium, high, or xhigh")
@@ -455,14 +455,7 @@ func run(args []string) error {
 			return listErr
 		}
 		recent := make([]session.Info, 0, 5)
-		activeProfile := ""
-		if activeRouting != nil {
-			activeProfile = activeRouting.Profile
-		}
 		for _, info := range infos {
-			if !strings.EqualFold(strings.TrimSpace(info.Header.Profile), activeProfile) {
-				continue
-			}
 			if info.MessageCount > 0 && filepath.Clean(info.Header.CWD) == filepath.Clean(cwd) {
 				recent = append(recent, info)
 				if len(recent) == 5 {
@@ -520,7 +513,7 @@ func run(args []string) error {
 					return activeRouting.Profile
 				}
 				return ""
-			}(), Routing: activeRouting, AcknowledgeProfileChange: opts.acknowledgeProfileChange, In: os.Stdin, Out: os.Stdout,
+			}(), Routing: activeRouting, In: os.Stdin, Out: os.Stdout,
 		})
 		extensionHost = fullscreen
 		for _, warning := range themeWarnings {
@@ -672,11 +665,7 @@ func run(args []string) error {
 				store, err = session.Load(path)
 			}
 		} else if opts.continueSession {
-			profileName := ""
-			if activeRouting != nil {
-				profileName = activeRouting.Profile
-			}
-			store, err = session.LatestForCWDProfile(cfg.SessionDir, cwd, profileName)
+			store, err = session.LatestForCWD(cfg.SessionDir, cwd)
 		} else {
 			if activeRouting != nil {
 				err = validateProfileModelCache(modelsRegistry, cfg)
@@ -685,9 +674,6 @@ func run(args []string) error {
 			if err == nil {
 				store, err = session.NewWithRouting(cfg.SessionDir, cwd, cfg.Provider, cfg.Model, activeRouting)
 			}
-		}
-		if err == nil && (opts.resumeSpecified || opts.continueSession) {
-			err = session.ValidateRouting(store.Header, activeRouting, opts.acknowledgeProfileChange)
 		}
 		if err != nil {
 			if store != nil {

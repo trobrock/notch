@@ -303,7 +303,7 @@ func TestUncorrelatedRepliesDoNotWake(t *testing.T) {
 	}
 }
 
-func TestAutomatedWakeIsBoundedAndRequestReplyIsTracked(t *testing.T) {
+func TestAutomatedWakesHaveNoLifetimeLimitAndRequestReplyIsTracked(t *testing.T) {
 	root := testRoot(t)
 	senderHost, receiverHost := &fakeHost{}, &fakeHost{}
 	sender := startTestService(t, root, "project", "sender-session", "sender", true, senderHost)
@@ -330,7 +330,7 @@ func TestAutomatedWakeIsBoundedAndRequestReplyIsTracked(t *testing.T) {
 		t.Fatalf("duplicate reply error = %v", err)
 	}
 
-	for i := 1; i < maxAutomatedWakes+2; i++ {
+	for i := 1; i < 20; i++ {
 		msg := delivery(fmt.Sprintf("automated-%d", i), "")
 		msg.AutomatedWake = true
 		result, exchangeErr := exchange(context.Background(), receiver.endpoint, msg)
@@ -340,38 +340,34 @@ func TestAutomatedWakeIsBoundedAndRequestReplyIsTracked(t *testing.T) {
 	}
 	receiverHost.mu.Lock()
 	defer receiverHost.mu.Unlock()
-	if len(receiverHost.followUps) != maxAutomatedWakes {
-		t.Fatalf("automated wakeups = %d, want %d", len(receiverHost.followUps), maxAutomatedWakes)
+	if len(receiverHost.followUps) != 20 {
+		t.Fatalf("automated wakeups = %d, want %d", len(receiverHost.followUps), 20)
 	}
 }
 
-func TestOldWakeCompletionDoesNotChangeNewSessionReservation(t *testing.T) {
+func TestOldWakeCompletionDoesNotChangeNewSessionInbox(t *testing.T) {
 	release := make(chan struct{})
 	started := make(chan struct{})
 	host := &fakeHost{appendWait: release, appendStarted: started}
 	s := newService()
-	s.host, s.project, s.sessionID, s.wake, s.generation = host, "project", "receiver-session", true, 1
-	msg := delivery("old-generation", "")
-	msg.AutomatedWake = true
+	s.host, s.project, s.sessionID, s.wake, s.enabled, s.generation = host, "project", "receiver-session", true, true, 1
 	done := make(chan response, 1)
-	go func() { done <- s.receive(context.Background(), msg) }()
+	go func() { done <- s.receive(context.Background(), delivery("old-generation", "")) }()
 	<-started
 	s.mu.Lock()
 	s.generation = 2
 	s.sessionID = "new-session"
-	s.autoWakeReservations = 1
-	s.autoWakes = 0
 	s.mu.Unlock()
 	close(release)
 	<-done
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.autoWakeReservations != 1 || s.autoWakes != 0 {
-		t.Fatalf("new generation wake state = reservations %d, wakes %d", s.autoWakeReservations, s.autoWakes)
+	if len(s.inbox) != 0 || len(s.seen) != 0 {
+		t.Fatalf("old delivery changed new session: inbox=%v seen=%v", s.inbox, s.seen)
 	}
 }
 
-func TestFailedPersistenceDoesNotConsumeAutomatedWakeBudget(t *testing.T) {
+func TestFailedPersistenceDoesNotPreventLaterWakes(t *testing.T) {
 	root := testRoot(t)
 	host := &fakeHost{appendErr: errors.New("disk full")}
 	receiver := startTestService(t, root, "project", "receiver-session", "receiver", true, host)
@@ -383,7 +379,7 @@ func TestFailedPersistenceDoesNotConsumeAutomatedWakeBudget(t *testing.T) {
 	host.mu.Lock()
 	host.appendErr = nil
 	host.mu.Unlock()
-	for i := 0; i < maxAutomatedWakes; i++ {
+	for i := 0; i < 20; i++ {
 		msg := delivery(fmt.Sprintf("accepted-%d", i), "")
 		msg.AutomatedWake = true
 		if result, err := exchange(context.Background(), receiver.endpoint, msg); err != nil || !result.Delivered {
@@ -392,8 +388,8 @@ func TestFailedPersistenceDoesNotConsumeAutomatedWakeBudget(t *testing.T) {
 	}
 	host.mu.Lock()
 	defer host.mu.Unlock()
-	if len(host.followUps) != maxAutomatedWakes {
-		t.Fatalf("wakeups = %d, want %d", len(host.followUps), maxAutomatedWakes)
+	if len(host.followUps) != 20 {
+		t.Fatalf("wakeups = %d, want %d", len(host.followUps), 20)
 	}
 }
 
@@ -481,15 +477,7 @@ func TestRequestStatusRequiresReplyFromRequestedPeer(t *testing.T) {
 	}
 }
 
-func TestDurableWakeCountAndOutboxHistory(t *testing.T) {
-	inbox := make([]inboundEntry, maxAutomatedWakes+3)
-	for i := range inbox {
-		inbox[i] = inboundEntry{Wake: true, AutomatedWake: true, WakeAccepted: true}
-	}
-	if got := countAutomatedWakeRequests(inbox); got != maxAutomatedWakes {
-		t.Fatalf("wake count = %d, want %d", got, maxAutomatedWakes)
-	}
-
+func TestOutboxHistory(t *testing.T) {
 	raw := make([]json.RawMessage, maxOutboundEntries+1)
 	for i := range raw {
 		data, _ := json.Marshal(outboundEntry{ID: fmt.Sprintf("request-%d", i)})

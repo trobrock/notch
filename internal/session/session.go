@@ -440,28 +440,16 @@ func sessionPreview(messages []model.Message) string {
 
 // Latest loads the most recently modified valid session JSONL file in dir.
 func Latest(dir string) (*Session, error) {
-	return latest(dir, "", "\x00")
-}
-
-// LatestForProfile loads the newest session for an exact profile identity.
-// An empty profile matches only legacy, unprofiled sessions.
-func LatestForProfile(dir, profile string) (*Session, error) {
-	return latest(dir, "", strings.ToLower(strings.TrimSpace(profile)))
+	return latest(dir, "")
 }
 
 // LatestForCWD loads the most recently modified valid session whose original
 // working directory matches cwd.
 func LatestForCWD(dir, cwd string) (*Session, error) {
-	return latest(dir, filepath.Clean(cwd), "\x00")
+	return latest(dir, filepath.Clean(cwd))
 }
 
-// LatestForCWDProfile filters continuation by both working directory and exact
-// profile identity. Legacy sessions only match an empty profile.
-func LatestForCWDProfile(dir, cwd, profile string) (*Session, error) {
-	return latest(dir, filepath.Clean(cwd), strings.ToLower(strings.TrimSpace(profile)))
-}
-
-func latest(dir, cwd, profile string) (*Session, error) {
+func latest(dir, cwd string) (*Session, error) {
 	infos, err := List(dir)
 	if err != nil {
 		return nil, err
@@ -472,9 +460,6 @@ func latest(dir, cwd, profile string) (*Session, error) {
 	var loadErr error
 	matchedCWD := false
 	for _, info := range infos {
-		if profile != "\x00" && strings.ToLower(strings.TrimSpace(info.Header.Profile)) != profile {
-			continue
-		}
 		if cwd != "" && filepath.Clean(info.Header.CWD) != cwd {
 			continue
 		}
@@ -994,36 +979,4 @@ func cloneMessages(messages []model.Message) []model.Message {
 		}
 	}
 	return cloned
-}
-
-// ValidateRouting rejects cross-profile resume before a provider request. A
-// changed profile definition requires an explicit acknowledgement.
-func ValidateRouting(header Header, active *config.RoutingSnapshot, acknowledgeChange bool) error {
-	activeName := ""
-	if active != nil {
-		activeName = strings.ToLower(strings.TrimSpace(active.Profile))
-	}
-	storedName := strings.ToLower(strings.TrimSpace(header.Profile))
-	if storedName != activeName {
-		if storedName == "" {
-			return fmt.Errorf("session %q is legacy and unprofiled; restart without --profile to resume it", header.ID)
-		}
-		if activeName == "" {
-			return fmt.Errorf("session %q belongs to profile %q; select --profile %s to resume it", header.ID, storedName, storedName)
-		}
-		return fmt.Errorf("session %q belongs to profile %q, not active profile %q", header.ID, storedName, activeName)
-	}
-	if active == nil {
-		return nil
-	}
-	if header.Routing == nil {
-		return fmt.Errorf("session %q has profile %q but no routing snapshot", header.ID, activeName)
-	}
-	changed := header.Routing.DefinitionHash != active.DefinitionHash ||
-		!strings.EqualFold(header.Routing.Provider, active.Provider) || header.Routing.Model != active.Model ||
-		header.Routing.ThinkingLevel != active.ThinkingLevel || header.Routing.CredentialRef != active.CredentialRef
-	if changed && !acknowledgeChange {
-		return fmt.Errorf("profile %q changed since session %q was created; inspect effective settings and pass --acknowledge-profile-change to resume", activeName, header.ID)
-	}
-	return nil
 }
