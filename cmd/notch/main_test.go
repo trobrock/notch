@@ -173,6 +173,7 @@ func TestAuthenticationCommandsIgnoreProjectConfig(t *testing.T) {
 }
 
 func TestInitIgnoresProjectInputsAndAppliesModelFlags(t *testing.T) {
+	t.Setenv("NOTCH_PROFILE", "")
 	cwd := t.TempDir()
 	oldCWD, err := os.Getwd()
 	if err != nil {
@@ -611,80 +612,136 @@ func TestRunModeClassifiesPrintFromArgumentOrStdin(t *testing.T) {
 	}
 }
 
-func TestRunRejectsCrossProfileResumeBeforeProviderCreation(t *testing.T) {
-	home, configHome, dataHome := t.TempDir(), t.TempDir(), t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", configHome)
-	t.Setenv("XDG_DATA_HOME", dataHome)
-	t.Setenv("ANTHROPIC_API_KEY", "")
-	configDir := filepath.Join(configHome, "notch")
-	if err := os.MkdirAll(configDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	body := `{"profiles":{"work":{"provider":"anthropic","model":"configured-work-model","allowed_providers":["anthropic"]}}}`
-	if err := os.WriteFile(filepath.Join(configDir, "config.json"), []byte(body), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := config.LoadGlobal(home)
-	if err != nil {
-		t.Fatal(err)
-	}
-	personal := config.RoutingSnapshot{Profile: "personal", Provider: "anthropic", Model: "configured-personal-model", ThinkingLevel: "medium", AllowedProviders: []string{"anthropic"}, DefinitionHash: "old-personal"}
-	store, err := session.NewWithRouting(cfg.SessionDir, t.TempDir(), personal.Provider, personal.Model, &personal)
-	if err != nil {
-		t.Fatal(err)
-	}
-	path := store.Path()
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	err = run([]string{"--setting-sources=user", "--profile=work", "--resume", path, "--no-tui", "--print"})
-	if err == nil || !strings.Contains(err.Error(), "belongs to profile") {
-		t.Fatalf("error = %v", err)
-	}
-	if strings.Contains(err.Error(), "ANTHROPIC_API_KEY") {
-		t.Fatalf("provider was created before resume rejection: %v", err)
-	}
-}
-
-func TestRunRequiresAcknowledgementForChangedProfileBeforeProviderCreation(t *testing.T) {
-	home, configHome, dataHome := t.TempDir(), t.TempDir(), t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", configHome)
-	t.Setenv("XDG_DATA_HOME", dataHome)
-	t.Setenv("ANTHROPIC_API_KEY", "")
-	configDir := filepath.Join(configHome, "notch")
-	if err := os.MkdirAll(configDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	body := `{"profiles":{"work":{"provider":"anthropic","model":"configured-work-model","allowed_providers":["anthropic"]}}}`
-	if err := os.WriteFile(filepath.Join(configDir, "config.json"), []byte(body), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := config.LoadGlobal(home)
-	if err != nil {
-		t.Fatal(err)
-	}
-	current, err := config.ResolveProfile(&cfg, "work")
-	if err != nil {
-		t.Fatal(err)
-	}
-	old := current
-	old.DefinitionHash = "old-definition"
-	store, err := session.NewWithRouting(cfg.SessionDir, t.TempDir(), old.Provider, old.Model, &old)
-	if err != nil {
-		t.Fatal(err)
-	}
-	path := store.Path()
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	err = run([]string{"--setting-sources=user", "--profile=work", "--resume", path, "--no-tui", "--print"})
-	if err == nil || !strings.Contains(err.Error(), "--acknowledge-profile-change") {
-		t.Fatalf("error = %v", err)
-	}
-	if strings.Contains(err.Error(), "ANTHROPIC_API_KEY") {
-		t.Fatalf("provider was created before resume rejection: %v", err)
+func TestRunResumeUsesCurrentSettings(t *testing.T) {
+	for _, mode := range []string{"--continue", "--resume"} {
+		for _, tc := range []struct {
+			name, storedProfile, activeProfile string
+		}{
+			{"legacy", "", "work"},
+			{"cross-profile", "personal", "work"},
+			{"changed-profile", "work", "work"},
+			{"without-profile", "personal", ""},
+		} {
+			t.Run(mode+"/"+tc.name, func(t *testing.T) {
+				home, configHome, dataHome := t.TempDir(), t.TempDir(), t.TempDir()
+				t.Setenv("HOME", home)
+				t.Setenv("XDG_CONFIG_HOME", configHome)
+				t.Setenv("XDG_DATA_HOME", dataHome)
+				t.Setenv("NOTCH_PROFILE", tc.activeProfile)
+				t.Setenv("NOTCH_PROVIDER", "")
+				t.Setenv("NOTCH_MODEL", "")
+				t.Setenv("NOTCH_EXPLORE_MODEL", "")
+				t.Setenv("NOTCH_THINKING_LEVEL", "off")
+				t.Setenv("ANTHROPIC_API_KEY", "test-key")
+				requests := make(chan map[string]any, 1)
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.Method == http.MethodGet && r.URL.Path == "/v1/models" {
+						w.Header().Set("Content-Type", "application/json")
+						io.WriteString(w, `{"data":[{"id":"claude-sonnet-4-6","type":"model","display_name":"Current model"}],"has_more":false}`)
+						return
+					}
+					var request map[string]any
+					if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+						t.Error(err)
+						w.WriteHeader(http.StatusBadRequest)
+						return
+					}
+					requests <- request
+					w.Header().Set("Content-Type", "text/event-stream")
+					for _, event := range []string{
+						`{"type":"message_start","message":{"usage":{"input_tokens":1}}}`,
+						`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":"resumed"}}`,
+						`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`,
+						`{"type":"message_stop"}`,
+					} {
+						io.WriteString(w, "data: "+event+"\n\n")
+					}
+				}))
+				defer server.Close()
+				configDir := filepath.Join(configHome, "notch")
+				if err := os.MkdirAll(configDir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				body, err := json.Marshal(map[string]any{
+					"provider": "anthropic", "model": "claude-sonnet-4-6", "base_url": server.URL,
+					"disable_pricing_refresh": true,
+					"profiles": map[string]any{"work": map[string]any{
+						"provider": "anthropic", "model": "claude-sonnet-4-6", "allowed_providers": []string{"anthropic"},
+					}},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(configDir, "config.json"), body, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				cfg, err := config.LoadGlobal(home)
+				if err != nil {
+					t.Fatal(err)
+				}
+				cwd, err := os.Getwd()
+				if err != nil {
+					t.Fatal(err)
+				}
+				var routing *config.RoutingSnapshot
+				if tc.storedProfile != "" {
+					routing = &config.RoutingSnapshot{Profile: tc.storedProfile, Provider: "openai", Model: "old-model", DefinitionHash: "old-definition"}
+				}
+				store, err := session.NewWithRouting(cfg.SessionDir, cwd, "openai", "old-model", routing)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := store.AppendMessage(model.TextMessage("user", "saved context")); err != nil {
+					t.Fatal(err)
+				}
+				if err := store.AppendMessage(model.TextMessage("assistant", "saved answer")); err != nil {
+					t.Fatal(err)
+				}
+				path := store.Path()
+				if err := store.Close(); err != nil {
+					t.Fatal(err)
+				}
+				before, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				args := []string{"--setting-sources=user", "--no-tui", "--print", "--no-tools", "--no-extensions", "--no-resources", mode}
+				if mode == "--resume" {
+					args = append(args, path)
+				}
+				args = append(args, "continue now")
+				if err := run(args); err != nil {
+					t.Fatal(err)
+				}
+				select {
+				case request := <-requests:
+					if request["model"] != "claude-sonnet-4-6" {
+						t.Errorf("requested model = %v", request["model"])
+					}
+					messages, _ := json.Marshal(request["messages"])
+					if !bytes.Contains(messages, []byte("saved context")) || !bytes.Contains(messages, []byte("continue now")) {
+						t.Errorf("request lost session context: %s", messages)
+					}
+				default:
+					t.Fatal("no request reached the current provider")
+				}
+				after, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.HasPrefix(after, before) || len(after) <= len(before) {
+					t.Fatal("resume did not append to the original session")
+				}
+				loaded, err := session.Load(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer loaded.Close()
+				if len(loaded.Messages) != 4 || loaded.Header.Profile != tc.storedProfile || loaded.Header.Provider != "openai" {
+					t.Fatalf("session history or original metadata changed: %+v", loaded.Header)
+				}
+			})
+		}
 	}
 }
 

@@ -20,6 +20,7 @@ import (
 type peerRecord struct {
 	Version   int       `json:"version"`
 	Project   string    `json:"project"`
+	Workspace string    `json:"workspace,omitempty"`
 	SessionID string    `json:"session_id"`
 	Name      string    `json:"name"`
 	Mode      string    `json:"mode,omitempty"`
@@ -30,20 +31,32 @@ type peerRecord struct {
 }
 
 func runtimeRoot(cwd string) (string, string, error) {
+	root, project, _, err := scopeRoot(cwd, "")
+	return root, project, err
+}
+
+func scopeRoot(cwd, collaboration string) (string, string, string, error) {
 	canonical, err := filepath.EvalSymlinks(cwd)
 	if err != nil {
 		canonical, err = filepath.Abs(cwd)
 	}
 	if err != nil {
-		return "", "", fmt.Errorf("resolve project directory: %w", err)
+		return "", "", "", fmt.Errorf("resolve project directory: %w", err)
 	}
 	// Repository identity is shared by linked Git worktrees. Separate clones
-	// stay separate; a future remote route must explicitly map project identity.
+	// stay separate unless they explicitly join the same collaboration.
 	info, err := workspace.Resolve(canonical)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
-	hash := sha256.Sum256([]byte(filepath.Clean(info.TrustKey)))
+	workspaceName := displayWorkspaceName(info.Root)
+	identity := filepath.Clean(info.TrustKey)
+	prefix := ""
+	if collaboration != "" {
+		identity = "collaboration\x00" + collaboration
+		prefix = "collaboration"
+	}
+	hash := sha256.Sum256([]byte(identity))
 	project := hex.EncodeToString(hash[:8])
 	base := os.Getenv("NOTCH_INTERCOM_DIR")
 	if base == "" {
@@ -52,14 +65,35 @@ func runtimeRoot(cwd string) (string, string, error) {
 		} else if cache, cacheErr := os.UserCacheDir(); cacheErr == nil {
 			base = filepath.Join(cache, "notch", "intercom")
 		} else {
-			return "", "", errors.New("cannot find a private directory for intercom")
+			return "", "", "", errors.New("cannot find a private directory for intercom")
 		}
 	}
 	if !filepath.IsAbs(base) {
-		return "", "", errors.New("NOTCH_INTERCOM_DIR must be absolute")
+		return "", "", "", errors.New("NOTCH_INTERCOM_DIR must be absolute")
 	}
-	root := filepath.Join(base, project)
-	return root, project, nil
+	if prefix != "" {
+		base = filepath.Join(base, prefix)
+	}
+	return filepath.Join(base, project), project, workspaceName, nil
+}
+
+func displayWorkspaceName(root string) string {
+	name := filepath.Base(filepath.Clean(root))
+	var out strings.Builder
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || strings.ContainsRune("._-", r) {
+			out.WriteRune(r)
+		} else {
+			out.WriteByte('-')
+		}
+		if out.Len() >= 32 {
+			break
+		}
+	}
+	if out.Len() == 0 {
+		return "workspace"
+	}
+	return out.String()
 }
 
 func ensurePrivateDirectory(path string) error {
@@ -123,7 +157,7 @@ func validateDirectoryAncestors(path string, links int) error {
 
 func (s *service) openEndpoint() error {
 	s.mu.Lock()
-	root, project, sessionID, name, mode := s.root, s.project, s.sessionID, s.name, s.mode
+	root, project, workspaceName, sessionID, name, mode := s.root, s.project, s.workspace, s.sessionID, s.name, s.mode
 	s.mu.Unlock()
 	stem := safeStem(sessionID)
 	if root == "" {
@@ -174,7 +208,7 @@ func (s *service) openEndpoint() error {
 		_ = os.Remove(endpoint)
 		return err
 	}
-	record := peerRecord{Version: protocolVersion, Project: project, SessionID: sessionID, Name: name, Mode: mode, Endpoint: endpoint, Token: token, PID: os.Getpid(), StartedAt: time.Now().UTC()}
+	record := peerRecord{Version: protocolVersion, Project: project, Workspace: workspaceName, SessionID: sessionID, Name: name, Mode: mode, Endpoint: endpoint, Token: token, PID: os.Getpid(), StartedAt: time.Now().UTC()}
 	if err := writeRecord(recordPath, record); err != nil {
 		_ = listener.Close()
 		_ = os.Remove(endpoint)
@@ -268,7 +302,7 @@ func (s *service) handleConn(ctx context.Context, conn net.Conn) {
 	var result response
 	if request.Type == "ping" {
 		s.mu.Lock()
-		matches := request.Project == s.project && request.ToSession == s.sessionID
+		matches := request.Project == s.project && request.ToSession == s.sessionID && s.enabled
 		s.mu.Unlock()
 		if !matches {
 			result = response{Version: protocolVersion, ID: request.ID, Error: "intercom endpoint identity mismatch"}

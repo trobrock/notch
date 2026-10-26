@@ -9,7 +9,7 @@ import (
 func TestWakeDoesNotCrossSessionChangeAfterPersistence(t *testing.T) {
 	host := &fakeHost{activeSession: "new-session"}
 	s := newService()
-	s.host, s.project, s.sessionID, s.wake = host, "project", "receiver-session", true
+	s.host, s.project, s.sessionID, s.wake, s.enabled = host, "project", "receiver-session", true, true
 	result := s.receive(context.Background(), delivery("session-race", ""))
 	if !result.Delivered || !strings.Contains(result.Warning, "session changed") {
 		t.Fatalf("delivery result = %#v", result)

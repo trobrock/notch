@@ -13,7 +13,7 @@ import (
 func TestInboundHistoryBudgetRejectsWithoutPersistence(t *testing.T) {
 	host := &fakeHost{}
 	s := newService()
-	s.host, s.project, s.sessionID = host, "project", "receiver-session"
+	s.host, s.project, s.sessionID, s.enabled = host, "project", "receiver-session", true
 	s.inbox = make([]inboundEntry, maxInboundEntries)
 	for i := range s.inbox {
 		s.inbox[i] = inboundEntry{ID: fmt.Sprintf("old-%d", i), FromSession: "sender"}

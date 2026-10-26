@@ -12,9 +12,7 @@ import (
 func (s *service) command(ctx context.Context, args string) (string, error) {
 	fields := strings.Fields(args)
 	if len(fields) == 0 || fields[0] == "status" {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		return fmt.Sprintf("Intercom %s as %s (%s), wake %s.", readyWord(s.listener != nil), s.name, s.sessionID, onOff(s.wake)), nil
+		return s.status(), nil
 	}
 	switch fields[0] {
 	case "on", "off":
@@ -56,6 +54,17 @@ func (s *service) command(ctx context.Context, args string) (string, error) {
 			return "", errors.New("usage: /intercom name NAME")
 		}
 		return s.setName(ctx, fields[1])
+	case "collaboration":
+		if len(fields) == 2 && fields[1] == "status" {
+			return s.status(), nil
+		}
+		if len(fields) == 2 && fields[1] == "leave" {
+			return s.setCollaboration(ctx, "")
+		}
+		if len(fields) == 3 && (fields[1] == "create" || fields[1] == "join") {
+			return s.setCollaboration(ctx, fields[2])
+		}
+		return "", errors.New("usage: /intercom collaboration create NAME|join NAME|leave|status")
 	case "send":
 		parts := strings.SplitN(strings.TrimSpace(strings.TrimPrefix(args, "send")), " ", 2)
 		if len(parts) != 2 {
@@ -71,7 +80,7 @@ func (s *service) command(ctx context.Context, args string) (string, error) {
 		result, err := s.resolveReply(ctx, parts[0], parts[1])
 		return formatDelivery(result), err
 	default:
-		return "", errors.New("usage: /intercom on|off|status|list|inbox|process REQUEST_ID|retry REQUEST_ID|request REQUEST_ID|wake on|off|name NAME|send TARGET MESSAGE|reply REQUEST_ID MESSAGE")
+		return "", errors.New("usage: /intercom on|off|status|list|inbox|process REQUEST_ID|retry REQUEST_ID|request REQUEST_ID|wake on|off|name NAME|collaboration create NAME|join NAME|leave|status|send TARGET MESSAGE|reply REQUEST_ID MESSAGE")
 	}
 }
 
@@ -92,22 +101,33 @@ func (s *service) formatInbox() string {
 		if label == "" {
 			label = shortID(item.FromSession)
 		}
+		if item.FromWorkspace != "" {
+			label = item.FromWorkspace + "/" + label
+		}
 		reply := ""
 		if item.ReplyTo != "" {
 			reply = " reply-to=" + item.ReplyTo
 		}
-		lines = append(lines, fmt.Sprintf("%s from=%s%s: %s", item.ID, label, reply, item.Body))
+		trust := " untrusted-project-message"
+		if item.Collaboration != "" {
+			trust = fmt.Sprintf(" trusted-collaboration=%q (member may request work including edits)", item.Collaboration)
+		}
+		lines = append(lines, fmt.Sprintf("%s from=%s%s%s: %s", item.ID, label, reply, trust, item.Body))
 	}
 	return strings.Join(lines, "\n")
 }
 
 func formatPeers(peers []peerRecord) string {
 	if len(peers) == 0 {
-		return "No other intercom sessions are available in this project."
+		return "No other intercom sessions are available in this scope."
 	}
 	lines := make([]string, 0, len(peers))
 	for _, peer := range peers {
-		lines = append(lines, fmt.Sprintf("%s\t%s\t%s", peer.Name, peer.SessionID, peer.Mode))
+		name := peer.Name
+		if peer.Workspace != "" {
+			name = peer.Workspace + "/" + name
+		}
+		lines = append(lines, fmt.Sprintf("%s\t%s\t%s", name, peer.SessionID, peer.Mode))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -124,6 +144,64 @@ func formatDelivery(result response) string {
 		text += " Warning: " + result.Warning
 	}
 	return text
+}
+
+func (s *service) configureTool(ctx context.Context, raw json.RawMessage, _ func(string)) (extension.ToolResult, error) {
+	var args struct {
+		Name          *string `json:"name"`
+		Collaboration *string `json:"collaboration"`
+		Enabled       *bool   `json:"enabled"`
+		Wake          *bool   `json:"wake"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return extension.ToolResult{}, err
+	}
+	if args.Name != nil && !validName(*args.Name) {
+		return extension.ToolResult{}, errors.New("name must be 1-32 letters, numbers, dots, dashes, or underscores")
+	}
+	if args.Collaboration != nil && *args.Collaboration != "" && !validName(*args.Collaboration) {
+		return extension.ToolResult{}, errors.New("collaboration must be 1-32 letters, numbers, dots, dashes, or underscores")
+	}
+	if args.Name == nil && args.Collaboration == nil && args.Enabled == nil && args.Wake == nil {
+		return extension.ToolResult{Content: s.status()}, nil
+	}
+
+	if args.Enabled != nil && !*args.Enabled {
+		if _, err := s.setEnabled(ctx, false); err != nil {
+			return extension.ToolResult{Content: err.Error(), IsError: true}, err
+		}
+	}
+	if args.Collaboration != nil {
+		s.mu.Lock()
+		currentCollaboration, currentlyEnabled := s.collaboration, s.enabled
+		s.mu.Unlock()
+		if *args.Collaboration != currentCollaboration {
+			if currentlyEnabled {
+				if _, err := s.setEnabled(ctx, false); err != nil {
+					return extension.ToolResult{Content: err.Error(), IsError: true}, err
+				}
+			}
+			if _, err := s.setCollaboration(ctx, *args.Collaboration); err != nil {
+				return extension.ToolResult{Content: err.Error(), IsError: true}, err
+			}
+		}
+	}
+	if args.Name != nil {
+		if _, err := s.setName(ctx, *args.Name); err != nil {
+			return extension.ToolResult{Content: err.Error(), IsError: true}, err
+		}
+	}
+	if args.Wake != nil {
+		if _, err := s.setWake(ctx, *args.Wake); err != nil {
+			return extension.ToolResult{Content: err.Error(), IsError: true}, err
+		}
+	}
+	if args.Enabled != nil && *args.Enabled {
+		if _, err := s.setEnabled(ctx, true); err != nil {
+			return extension.ToolResult{Content: err.Error(), IsError: true}, err
+		}
+	}
+	return extension.ToolResult{Content: s.status()}, nil
 }
 
 func (s *service) listTool(ctx context.Context, _ json.RawMessage, _ func(string)) (extension.ToolResult, error) {

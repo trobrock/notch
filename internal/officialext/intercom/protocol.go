@@ -22,7 +22,6 @@ const (
 	outboundKind       = "intercom_outbound"
 	configKind         = "intercom_config"
 	wakeKind           = "intercom_wake_attempt"
-	maxAutomatedWakes  = 8
 )
 
 // The versioned message envelope and receipt do not depend on local sockets.
@@ -36,6 +35,7 @@ type message struct {
 	ToSession     string    `json:"to_session,omitempty"`
 	FromSession   string    `json:"from_session,omitempty"`
 	FromName      string    `json:"from_name,omitempty"`
+	FromWorkspace string    `json:"from_workspace,omitempty"`
 	ReplyTo       string    `json:"reply_to,omitempty"`
 	Wake          bool      `json:"wake,omitempty"`
 	AutomatedWake bool      `json:"automated_wake,omitempty"`
@@ -99,8 +99,8 @@ func validateMessage(request message) error {
 	if request.FromSession == "" || len(request.FromSession) > 256 {
 		return errors.New("sender session is missing or too long")
 	}
-	if len(request.FromName) > 64 || len(request.ReplyTo) > 128 {
-		return errors.New("sender name or reply ID is too long")
+	if len(request.FromName) > 64 || len(request.FromWorkspace) > 64 || len(request.ReplyTo) > 128 {
+		return errors.New("sender name, workspace, or reply ID is too long")
 	}
 	if strings.TrimSpace(request.Body) == "" {
 		return errors.New("message body is empty")

@@ -28,22 +28,9 @@ func (s *service) process(ctx context.Context, id string) (string, error) {
 		s.mu.Unlock()
 		return "", errors.New("inbox request ID is missing or ambiguous")
 	}
-	if s.autoWakes+s.autoWakeReservations >= maxAutomatedWakes {
-		s.mu.Unlock()
-		return "", errors.New("intercom wake limit reached; read /intercom inbox and ask the agent directly")
-	}
-	s.autoWakeReservations++
-	host, sessionID, generation := s.host, s.sessionID, s.generation
+	host, sessionID := s.host, s.sessionID
 	s.mu.Unlock()
 	err := host.AppendSessionEntryFor(ctx, sessionID, wakeKind, map[string]any{"request_id": id, "at": time.Now().UTC()})
-	s.mu.Lock()
-	if s.generation == generation {
-		s.autoWakeReservations--
-		if err == nil {
-			s.autoWakes++
-		}
-	}
-	s.mu.Unlock()
 	if err != nil {
 		return "", err
 	}

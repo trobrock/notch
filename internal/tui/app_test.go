@@ -647,6 +647,66 @@ func TestPendingAnimatedActivityTracksToolsAndCompaction(t *testing.T) {
 	}
 }
 
+func TestStartResumeIgnoresProfile(t *testing.T) {
+	for _, activeProfile := range []string{"", "work"} {
+		for _, storedProfile := range []string{"", "personal", "work"} {
+			t.Run(activeProfile+"/"+storedProfile, func(t *testing.T) {
+				dir := t.TempDir()
+				var routing *config.RoutingSnapshot
+				if storedProfile != "" {
+					routing = &config.RoutingSnapshot{Profile: storedProfile, Provider: "old-provider", Model: "old-model", DefinitionHash: "old-definition"}
+				}
+				store, err := session.NewWithRouting(dir, "/saved", "old-provider", "old-model", routing)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := store.AppendMessage(model.TextMessage("user", "saved prompt")); err != nil {
+					t.Fatal(err)
+				}
+				if err := store.Close(); err != nil {
+					t.Fatal(err)
+				}
+				cfg := AppConfig{SessionDir: dir, Provider: "new-provider", Model: "new-model", Profile: activeProfile}
+				if activeProfile != "" {
+					cfg.Routing = &config.RoutingSnapshot{Profile: activeProfile, Provider: cfg.Provider, Model: cfg.Model, DefinitionHash: "new-definition"}
+				}
+				a := NewApp(cfg)
+				a.running = true
+				a.runDone = make(chan struct{})
+				defer close(a.runDone)
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				a.startResume(ctx)
+				select {
+				case event := <-a.events:
+					if event.request == nil || len(event.request.options) != 1 {
+						t.Fatalf("expected saved session in picker: %+v", event)
+					}
+					event.request.reply <- hostResponse{value: event.request.options[0]}
+				case <-ctx.Done():
+					t.Fatal("timed out waiting for session picker")
+				}
+				select {
+				case event := <-a.events:
+					if event.resumeDone == nil || event.resumeDone.err != nil || event.resumeDone.session == nil {
+						t.Fatalf("resume failed: %+v", event.resumeDone)
+					}
+					loaded := event.resumeDone.session
+					defer loaded.Close()
+					if loaded.Path() != store.Path() || len(loaded.Messages) != 1 {
+						t.Fatal("wrong session or lost history")
+					}
+					if a.cfg.Provider != "new-provider" || a.cfg.Model != "new-model" {
+						t.Fatal("resume changed current provider settings")
+					}
+				case <-ctx.Done():
+					t.Fatal("timed out waiting for resumed session")
+				}
+			})
+		}
+	}
+}
+
 func TestFinishResumeRestoresTranscriptAndHistory(t *testing.T) {
 	dir := t.TempDir()
 	old, err := session.New(dir, "/old", "p", "m")
@@ -1598,6 +1658,21 @@ func TestCommandFollowUpStartsAfterCommandFinishes(t *testing.T) {
 			}
 		case <-deadline:
 			t.Fatal("timed out waiting for prompt completion")
+		}
+	}
+}
+
+func TestQuestionEscapeCancelsOnlyQuestionButCtrlCCancelsRun(t *testing.T) {
+	for _, event := range []KeyEvent{{Key: KeyEscape}, {Key: KeyCtrlC}} {
+		a := NewApp(AppConfig{})
+		cancelled := false
+		a.state.cancel = func() { cancelled = true }
+		request := &hostRequest{kind: "select", ctx: context.Background(), prompt: "Continue?", options: []string{"Yes"}, reply: make(chan hostResponse, 1)}
+		a.enqueueHostRequest(request)
+		a.handleModalKey(event)
+		response := <-request.reply
+		if !errors.Is(response.err, context.Canceled) || cancelled != (event.Key == KeyCtrlC) {
+			t.Fatal("question cancellation unexpectedly aborted desk continuation")
 		}
 	}
 }

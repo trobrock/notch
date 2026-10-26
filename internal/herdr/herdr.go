@@ -387,3 +387,13 @@ func (h *reportingHost) FollowUpFor(sessionID, message string) error {
 	}
 	return h.Host.FollowUp(message)
 }
+
+func (h *reportingHost) Question(ctx context.Context, question extension.Question) (extension.QuestionAnswer, error) {
+	host, ok := h.Host.(extension.QuestionHost)
+	if !ok {
+		return extension.QuestionAnswer{}, extension.ErrStructuredQuestionUnsupported
+	}
+	h.reporter.beginBlock(question.Prompt)
+	defer h.reporter.endBlock()
+	return host.Question(ctx, question)
+}

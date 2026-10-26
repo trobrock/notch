@@ -180,7 +180,7 @@ func TestInboxPublishedBeforeIdleAgentWake(t *testing.T) {
 			t.Error("woken agent cannot find request in inbox")
 		}
 	}}
-	s.host, s.project, s.sessionID, s.wake = h, "project", "receiver-session", true
+	s.host, s.project, s.sessionID, s.wake, s.enabled = h, "project", "receiver-session", true, true
 	if result := s.receive(context.Background(), delivery("race", "")); !result.Delivered || !result.WakeQueued {
 		t.Fatalf("receipt = %#v", result)
 	}
@@ -200,7 +200,7 @@ func TestFullSizeEscapedMessageFitsWireBudget(t *testing.T) {
 	}
 }
 
-func TestProcessRecoveryConsumesDurableWakeBudget(t *testing.T) {
+func TestProcessRecoveryHasNoLifetimeWakeLimitAfterResume(t *testing.T) {
 	root, cwd := testRoot(t), t.TempDir()
 	t.Setenv("NOTCH_INTERCOM_DIR", root)
 	host := &fakeHost{configs: []savedConfig{{Enabled: true, Wake: true}}}
@@ -225,12 +225,13 @@ func TestProcessRecoveryConsumesDurableWakeBudget(t *testing.T) {
 	if _, err := s.startSession(context.Background(), host, event); err != nil {
 		t.Fatal(err)
 	}
-	if s.autoWakes != 1 {
-		t.Fatalf("recovered wake budget = %d", s.autoWakes)
+	for i := 0; i < 20; i++ {
+		if _, err := s.process(context.Background(), req.ID); err != nil {
+			t.Fatalf("process %d after resume: %v", i, err)
+		}
 	}
-	s.autoWakes = maxAutomatedWakes
-	if _, err := s.process(context.Background(), req.ID); err == nil {
-		t.Fatal("process bypassed wake limit")
+	if len(host.followUps) != 21 || len(host.wakeAttempts) != 21 {
+		t.Fatalf("recovery wakes=%d receipts=%d, want 21", len(host.followUps), len(host.wakeAttempts))
 	}
 }
 

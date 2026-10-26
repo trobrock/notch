@@ -126,6 +126,47 @@ Interactive extension input is exposed as an event instead of terminal UI. A cli
 
 For free-form input, `kind` is `input` and the event may include `placeholder`. A `select` response value must exactly match one of the emitted options. To cancel either kind, send `"cancelled":true`. A run ending before an answer makes that request stale. Request IDs belong to the running RPC process; reconnecting clients should use the durable session ID to decide whether an older displayed question is stale.
 
+### Structured questions (opt-in)
+
+`get_state` includes `data.capabilities: ["structured_questions_v1"]`. A client
+that understands structured questions must opt in while idle, before prompting:
+
+```json
+{"id":"questions","type":"set_capabilities","capabilities":["structured_questions_v1"]}
+```
+
+The successful response echoes enabled capabilities in `data.capabilities`.
+Unknown capabilities or changes during active work/input are rejected. Without
+opt-in, `ask_user_question` retains its Select/Input behavior, including the old
+two-step custom-entry flow. Generic Host.Input/Select calls are unchanged.
+
+With opt-in, one official question emits one request containing only real choices:
+
+```json
+{"type":"input_request","requestId":"input-PROCESS-1","kind":"question","prompt":"Continue diagnosis?","options":[{"label":"Continue","description":"Bounded local diagnosis"},{"label":"Stop","description":"Report the blocker"}],"allowCustomResponse":true,"placeholder":"Your limits"}
+{"id":"answer","type":"input_response","requestId":"input-PROCESS-1","value":"Only ten minutes","wasCustom":true}
+```
+
+For a choice, send its exact label with `wasCustom:false`; for typed text send
+`wasCustom:true`. The discriminator is required even when typed text equals a
+choice label. No synthetic "Type a custom response" option is emitted, and that
+text has no special protocol meaning. Labels must be unique; up to 100 options,
+8,000 bytes per label/answer and 16,000 bytes per description are supported.
+Custom answers are rejected when disallowed; blank answers and unknown choices
+are rejected without consuming the pending request. No choices plus
+`allowCustomResponse:true` is a structured free-form question.
+
+Cancel with `cancelled:true`, without nonempty `value` or `wasCustom`; the tool
+returns its normal cancelled result, not an invented answer. The cancellation
+only closes this question, not the whole task. Request identity/lifetime and
+session recovery rules are the same as legacy input. Esc cancels the question modal without aborting the whole desk turn, so a desk
+can forward cancellation; Ctrl-C still cancels the active run. Answers are bounded
+to stay below immediate tool-result context trimming rather than silently losing
+constraints from a long answer. The tool's result preserves
+selected/custom meaning in its text and details for a relaying desk. Hosts may
+implement the optional `extension.QuestionHost`; unsupported hosts use the
+existing Select/Input fallback, and the Herdr reporting wrapper preserves it.
+
 Dedicated queue commands are also accepted:
 
 ```json

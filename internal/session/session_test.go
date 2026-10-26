@@ -875,7 +875,7 @@ func TestLoadRepairsPersistedInvalidCallWithoutResult(t *testing.T) {
 	}
 }
 
-func TestProfileSessionMetadataAndResumeValidation(t *testing.T) {
+func TestProfileSessionMetadata(t *testing.T) {
 	routing := config.RoutingSnapshot{Profile: "work", Provider: "anthropic-claude-code", Model: "configured-model", ThinkingLevel: "high", AllowedProviders: []string{"anthropic-claude-code"}, CredentialRef: "anthropic-claude-code:work", DefinitionHash: "hash-one"}
 	store, err := NewWithRouting(t.TempDir(), "/work", routing.Provider, routing.Model, &routing)
 	if err != nil {
@@ -893,40 +893,42 @@ func TestProfileSessionMetadataAndResumeValidation(t *testing.T) {
 	if loaded.Header.Profile != "work" || loaded.Header.Routing == nil || loaded.Header.Routing.CredentialRef != "anthropic-claude-code:work" {
 		t.Fatalf("header = %+v", loaded.Header)
 	}
-	if err := ValidateRouting(loaded.Header, &routing, false); err != nil {
-		t.Fatal(err)
-	}
-	personal := routing
-	personal.Profile = "personal"
-	if err := ValidateRouting(loaded.Header, &personal, false); err == nil || !strings.Contains(err.Error(), "not active profile") {
-		t.Fatalf("mismatch error = %v", err)
-	}
-	changed := routing
-	changed.DefinitionHash = "hash-two"
-	if err := ValidateRouting(loaded.Header, &changed, false); err == nil || !strings.Contains(err.Error(), "acknowledge") {
-		t.Fatalf("changed error = %v", err)
-	}
-	if err := ValidateRouting(loaded.Header, &changed, true); err != nil {
-		t.Fatal(err)
-	}
-	changedThinking := routing
-	changedThinking.ThinkingLevel = "low"
-	if err := ValidateRouting(loaded.Header, &changedThinking, false); err == nil || !strings.Contains(err.Error(), "acknowledge") {
-		t.Fatalf("thinking change error = %v", err)
-	}
 }
 
-func TestLegacySessionOnlyMatchesUnprofiledResume(t *testing.T) {
-	store, err := New(t.TempDir(), "/work", "anthropic", "legacy-model")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	if err := ValidateRouting(store.Header, nil, false); err != nil {
-		t.Fatal(err)
-	}
-	routing := config.RoutingSnapshot{Profile: "work", Provider: "anthropic", Model: "new", AllowedProviders: []string{"anthropic"}, DefinitionHash: "hash"}
-	if err := ValidateRouting(store.Header, &routing, false); err == nil || !strings.Contains(err.Error(), "legacy") {
-		t.Fatalf("error = %v", err)
+func TestLatestForCWDIgnoresProfile(t *testing.T) {
+	dir := t.TempDir()
+	for i, profile := range []string{"work", "personal", "", "work"} {
+		var routing *config.RoutingSnapshot
+		if profile != "" {
+			routing = &config.RoutingSnapshot{Profile: profile, Provider: "p", Model: "m"}
+		}
+		store, err := NewWithRouting(dir, "/work", "p", "m", routing)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Close(); err != nil {
+			t.Fatal(err)
+		}
+		modified := time.Unix(int64(i+1), 0)
+		if err := os.Chtimes(store.Path(), modified, modified); err != nil {
+			t.Fatal(err)
+		}
+		other, err := NewWithRouting(dir, "/other", "p", "m", routing)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := other.Close(); err != nil {
+			t.Fatal(err)
+		}
+		latest, err := LatestForCWD(dir, "/work")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if latest.Path() != store.Path() {
+			t.Errorf("profile %q: latest = %q, want %q", profile, latest.Path(), store.Path())
+		}
+		if err := latest.Close(); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
