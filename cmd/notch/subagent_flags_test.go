@@ -15,6 +15,14 @@ func TestDelegationProviderPolicyRequiresConsentBeforeCrossProviderFallback(t *t
 	}
 }
 
+func TestDelegationProviderPolicyPrefersConfiguredSoftwareRoles(t *testing.T) {
+	for _, text := range []string{"actively consider", "configured specialist role", "set the matching role", "instead of leaving it blank"} {
+		if !strings.Contains(delegationProviderPolicy, text) {
+			t.Fatalf("delegation role policy missing %q: %q", text, delegationProviderPolicy)
+		}
+	}
+}
+
 func TestSystemPromptFileFlag(t *testing.T) {
 	// Parsing and provider startup are composed in run, so verify the mutually
 	// exclusive validation without requiring credentials.

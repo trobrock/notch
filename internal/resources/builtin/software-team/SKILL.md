@@ -1,6 +1,6 @@
 ---
 name: software-team
-description: Autonomously deliver a software objective with measurable outcomes, choosing direct work or bounded specialist helpers as useful.
+description: Use whenever the user asks Notch to implement, fix, change, test, or review software; choose direct work or configured specialist roles based on expected value.
 ---
 
 # Software delivery workflow
@@ -35,6 +35,8 @@ Choose direct work or specialist helpers based on expected value. Keep one lead 
 ## Choose tools intelligently
 
 Direct execution is the default for small, tightly coupled work. Do not create a team merely because roles exist.
+
+Before starting implementation, actively compare the task with the configured role guidance. For substantial, unfamiliar, or multi-part work, prefer one focused specialist when it can reduce risk or provide independent evidence. It is fine to stay direct when delegation would only repeat the lead's work. Whenever you delegate software work, set the matching `role`; do not leave it blank, because that skips the role's configured instructions and model.
 
 Use helpers when they reduce uncertainty or elapsed time:
 

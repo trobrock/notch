@@ -71,7 +71,7 @@ Commands:
 
 Run 'notch COMMAND --help' for command-specific help.`
 
-const delegationProviderPolicy = "When using subagents, stay on the currently selected provider by default. Use a different provider only when the user explicitly requests it or has explicitly configured a provider-qualified delegation model. If the user requests a model that is unavailable on the current provider without naming another provider, ask before trying another provider; never silently fall back across providers."
+const delegationProviderPolicy = "When using subagents, stay on the currently selected provider by default. Use a different provider only when the user explicitly requests it or has explicitly configured a provider-qualified delegation model. If the user requests a model that is unavailable on the current provider without naming another provider, ask before trying another provider; never silently fall back across providers. During software development, actively consider whether a configured specialist role would improve discovery, design, implementation, QA, or review. Delegate only when that added value exceeds the startup and integration cost. When delegating software work, set the matching role instead of leaving it blank so its configured instructions and model are applied."
 
 type options struct {
 	provider, modelName, thinking, profile, routingSnapshot, prompt, systemPrompt, systemPromptFile, delegationInstructionsFile, mcpConfig, resumeSession, mode, toolAllow, toolExclude string
@@ -366,6 +366,7 @@ func run(args []string) error {
 	}
 	if opts.mcpConfig != "" {
 		cfg.MCPConfig = opts.mcpConfig
+		cfg.ProjectMCPConfig = ""
 	}
 	if opts.systemPrompt != "" && opts.systemPromptFile != "" {
 		return errors.New("--system-prompt and --system-prompt-file cannot be combined")
@@ -571,29 +572,33 @@ func run(args []string) error {
 
 	var mcpRuntime *mcpRuntime
 	mcpPolicyReady := false
-	if cfg.MCPConfig != "" && !opts.noTools {
-		if _, statErr := os.Stat(cfg.MCPConfig); statErr == nil {
-			mcpCfg, loadErr := mcp.LoadConfig(cfg.MCPConfig)
-			if loadErr != nil {
-				extensionHost.Notify(loadErr.Error(), "warning")
-			} else {
-				oauthStore := mcpoauth.NewStore(cfg.MCPAuthFile)
-				authorizer := &mcpoauth.Authorizer{Store: oauthStore, Client: mcpoauth.NewClient()}
-				mcpRuntime = newMCPRuntime(mcpCfg, registry, oauthStore, authorizer, func() {
-					if mcpPolicyReady {
-						reapplyToolPolicy(registry, opts)
-					}
-				})
-				if fullscreen != nil {
-					if err := registry.RegisterCommand(mcpRuntime.command(mcpNoticeWriter{host: extensionHost}, extensionHost.Input)); err != nil {
-						return err
-					}
+	var mcpConfigPaths []string
+	for _, path := range cfg.MCPConfigPaths() {
+		if _, statErr := os.Stat(path); statErr == nil {
+			mcpConfigPaths = append(mcpConfigPaths, path)
+		}
+	}
+	if len(mcpConfigPaths) > 0 && !opts.noTools {
+		mcpCfg, loadErr := mcp.LoadConfigs(mcpConfigPaths...)
+		if loadErr != nil {
+			extensionHost.Notify(loadErr.Error(), "warning")
+		} else {
+			oauthStore := mcpoauth.NewStore(cfg.MCPAuthFile)
+			authorizer := &mcpoauth.Authorizer{Store: oauthStore, Client: mcpoauth.NewClient()}
+			mcpRuntime = newMCPRuntime(mcpCfg, registry, oauthStore, authorizer, func() {
+				if mcpPolicyReady {
+					reapplyToolPolicy(registry, opts)
 				}
-				if err = mcpRuntime.Connect(ctx); err != nil {
-					extensionHost.Notify(err.Error(), "warning")
-					if hint := mcpLoginHint(err, mcpCfg); fullscreen != nil && hint != "" {
-						extensionHost.Notify(hint, "notice")
-					}
+			})
+			if fullscreen != nil {
+				if err := registry.RegisterCommand(mcpRuntime.command(mcpNoticeWriter{host: extensionHost}, extensionHost.Input)); err != nil {
+					return err
+				}
+			}
+			if err = mcpRuntime.Connect(ctx); err != nil {
+				extensionHost.Notify(err.Error(), "warning")
+				if hint := mcpLoginHint(err, mcpCfg); fullscreen != nil && hint != "" {
+					extensionHost.Notify(hint, "notice")
 				}
 			}
 		}

@@ -351,6 +351,29 @@ func TestReadSSEResponse(t *testing.T) {
 	}
 }
 
+func TestLoadConfigsMergesFilesAndLaterServerWins(t *testing.T) {
+	dir := t.TempDir()
+	globalPath := dir + "/global.json"
+	projectPath := dir + "/project.json"
+	if err := os.WriteFile(globalPath, []byte(`{"mcpServers":{"global":{"command":"global"},"shared":{"url":"https://global.test"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(projectPath, []byte(`{"mcpServers":{"project":{"command":"project"},"shared":{"url":"https://project.test"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadConfigs(globalPath, projectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MCPServers["global"].Command != "global" || cfg.MCPServers["project"].Command != "project" {
+		t.Fatalf("merged servers = %+v", cfg.MCPServers)
+	}
+	if got := cfg.MCPServers["shared"].URL; got != "https://project.test" {
+		t.Fatalf("shared server URL = %q, want project override", got)
+	}
+}
+
 func TestLoadConfigEnabled(t *testing.T) {
 	path := t.TempDir() + "/mcp.json"
 	data := `{"mcpServers":{"off":{"command":"nope","enabled":false},"default":{"url":"http://example.test"}}}`

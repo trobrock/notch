@@ -97,7 +97,7 @@ func TestLoadMergesUserThenProject(t *testing.T) {
 	cwd := t.TempDir()
 	t.Setenv("NOTCH_HOME", "")
 	writeJSON(t, filepath.Join(home, ".config", "notch", "config.json"), `{
-		"provider":"openai", "model":"global-model", "base_url":"https://global.test",
+		"provider":"openai", "model":"global-model", "base_url":"https://global.test", "mcp_config":"global-mcp.json",
 		"max_tokens":123, "system_prompt":"global prompt", "extension_dirs":["global-ext"],
 		"skill_dirs":["global-skill"], "prompt_dirs":["global-prompt"], "theme_dirs":["global-theme"], "session_dir":"global-sessions",
 		"theme":"dracula", "thinking_level":"low", "mouse":false, "context_window":99999, "model_cache":"custom-models.json", "model_refresh_hours":12, "auto_update":false,
@@ -118,8 +118,12 @@ func TestLoadMergesUserThenProject(t *testing.T) {
 	if cfg.Provider != "openai" || cfg.Model != "project-model" || cfg.BaseURL != "https://global.test" || cfg.MaxTokens != 456 {
 		t.Fatalf("scalar merge failed: %+v", cfg)
 	}
-	if cfg.SystemPrompt != "global prompt" || cfg.MCPConfig != filepath.Join(cwd, "project-mcp.json") || cfg.SessionDir != filepath.Join(home, ".local", "share", "notch", "sessions") {
+	if cfg.SystemPrompt != "global prompt" || cfg.MCPConfig != filepath.Join(home, ".config", "notch", "global-mcp.json") || cfg.ProjectMCPConfig != filepath.Join(cwd, "project-mcp.json") || cfg.SessionDir != filepath.Join(home, ".local", "share", "notch", "sessions") {
 		t.Fatalf("scalar inheritance failed: %+v", cfg)
+	}
+	wantMCPPaths := []string{filepath.Join(home, ".config", "notch", "global-mcp.json"), filepath.Join(cwd, "project-mcp.json")}
+	if !reflect.DeepEqual(cfg.MCPConfigPaths(), wantMCPPaths) {
+		t.Fatalf("MCP config paths = %q, want %q", cfg.MCPConfigPaths(), wantMCPPaths)
 	}
 	if cfg.Theme != "dracula" || cfg.ThinkingLevel != "high" || cfg.CacheRetention != "long" || cfg.MouseCapture == nil || *cfg.MouseCapture || cfg.ContextWindow != 99999 || cfg.ModelCache != filepath.Join(home, ".local", "share", "notch", "models.json") || cfg.ModelRefreshHours != 12 || cfg.AutoUpdate == nil || *cfg.AutoUpdate || cfg.Compaction == nil || cfg.Compaction.Enabled == nil || *cfg.Compaction.Enabled || cfg.Compaction.ReserveTokens != 1000 || cfg.Compaction.KeepRecentTokens != 3000 {
 		t.Fatalf("theme/thinking/compaction merge failed: %+v", cfg)
@@ -249,14 +253,15 @@ func TestLoadWorkspaceUsesTrustedProjectMCP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if trusted.MCPConfig != path {
-		t.Fatalf("trusted MCP config = %q, want %q", trusted.MCPConfig, path)
+	wantGlobal := filepath.Join(home, ".config", "notch", "mcp.json")
+	if trusted.MCPConfig != wantGlobal || trusted.ProjectMCPConfig != path {
+		t.Fatalf("trusted MCP configs = %q, want global %q and project %q", trusted.MCPConfigPaths(), wantGlobal, path)
 	}
 	untrusted, err := LoadWorkspace(home, root, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if untrusted.MCPConfig == path {
+	if untrusted.ProjectMCPConfig != "" {
 		t.Fatalf("untrusted project MCP loaded: %+v", untrusted)
 	}
 }

@@ -115,6 +115,7 @@ type Config struct {
 	MaxTokens             int                      `json:"max_tokens,omitempty"`
 	SystemPrompt          string                   `json:"system_prompt,omitempty"`
 	MCPConfig             string                   `json:"mcp_config,omitempty"`
+	ProjectMCPConfig      string                   `json:"-"`
 	ExtensionDirs         []string                 `json:"extension_dirs,omitempty"`
 	SkillDirs             []string                 `json:"skill_dirs,omitempty"`
 	PromptDirs            []string                 `json:"prompt_dirs,omitempty"`
@@ -141,6 +142,19 @@ type Config struct {
 	Compaction            *CompactionConfig        `json:"compaction,omitempty"`
 	configRoot            string
 	dataRoot              string
+}
+
+// MCPConfigPaths returns MCP configuration files in merge order. Project
+// servers override global servers with the same name.
+func (c Config) MCPConfigPaths() []string {
+	paths := make([]string, 0, 2)
+	if c.MCPConfig != "" {
+		paths = append(paths, c.MCPConfig)
+	}
+	if c.ProjectMCPConfig != "" && filepath.Clean(c.ProjectMCPConfig) != filepath.Clean(c.MCPConfig) {
+		paths = append(paths, c.ProjectMCPConfig)
+	}
+	return paths
 }
 
 // Defaults returns the built-in configuration. home is the user's home
@@ -266,7 +280,7 @@ func load(home, workspaceRoot string, includeUser, includeProject bool) (Config,
 		projectNotch := filepath.Join(workspaceRoot, ".notch")
 		projectMCP := filepath.Join(projectNotch, "mcp.json")
 		if _, statErr := os.Stat(projectMCP); statErr == nil {
-			cfg.MCPConfig = projectMCP
+			cfg.ProjectMCPConfig = projectMCP
 		} else if !errors.Is(statErr, os.ErrNotExist) {
 			return Config{}, fmt.Errorf("inspect project MCP config %q: %w", projectMCP, statErr)
 		}
@@ -287,6 +301,10 @@ func load(home, workspaceRoot string, includeUser, includeProject bool) (Config,
 					return Config{}, fmt.Errorf("project config %q cannot define roles; roles are global-only", projectPath)
 				}
 				resolveProjectPaths(&layer, workspaceRoot)
+				if layer.MCPConfig != "" {
+					cfg.ProjectMCPConfig = layer.MCPConfig
+					layer.MCPConfig = ""
+				}
 				mergeProject(&cfg, layer)
 			} else if !errors.Is(err, os.ErrNotExist) {
 				return Config{}, fmt.Errorf("inspect config %q: %w", projectPath, err)
