@@ -57,6 +57,22 @@ func (c ServerConfig) isEnabled() bool { return !c.enabledSet || c.Enabled }
 
 func (c ServerConfig) OAuthEnabled() bool { return c.OAuth != nil || c.Auth == "oauth" }
 
+// LoadConfigs reads MCP configurations in order. A server in a later file
+// replaces a server with the same name from an earlier file.
+func LoadConfigs(paths ...string) (Config, error) {
+	merged := Config{MCPServers: make(map[string]ServerConfig)}
+	for _, path := range paths {
+		cfg, err := LoadConfig(path)
+		if err != nil {
+			return Config{}, err
+		}
+		for name, server := range cfg.MCPServers {
+			merged.MCPServers[name] = server
+		}
+	}
+	return merged, nil
+}
+
 // LoadConfig reads an MCP configuration from path.
 func LoadConfig(path string) (Config, error) {
 	data, err := os.ReadFile(path)

@@ -339,7 +339,7 @@ Put that file at `.notch/prompts/review.md` or `.agents/commands/review.md` and 
 
 ## MCP
 
-The default MCP file is `$XDG_CONFIG_HOME/notch/mcp.json` (or `~/.config/notch/mcp.json` when unset). It is only loaded if the file exists.
+The default global MCP file is `$XDG_CONFIG_HOME/notch/mcp.json` (or `~/.config/notch/mcp.json` when unset). It is only loaded if the file exists. A trusted project can add servers in `.notch/mcp.json`, or select another project file with `mcp_config` in `.notch/config.json`. Global and project servers are merged. When both files use the same server name, the project definition wins.
 Because `mcp.json` is configuration rather than a private credential store, do not put literal secrets in MCP `headers` or `env`. Values in those objects support strict `${NAME}` environment-variable interpolation; loading fails if a referenced variable is unset or malformed. Use `$$` for a literal `$`. Prefer MCP OAuth when available; OAuth credentials are stored privately under the data root.
 
 ```json

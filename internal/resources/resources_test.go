@@ -34,6 +34,17 @@ func TestLoadBundledSkillsAndDiskOverride(t *testing.T) {
 			t.Fatalf("bundled skill %q = %#v", name, skill)
 		}
 	}
+	softwareTeam := catalog.Skills["software-team"]
+	for _, text := range []string{"Use whenever", "configured specialist roles"} {
+		if !strings.Contains(softwareTeam.Description, text) {
+			t.Fatalf("software-team description missing %q: %q", text, softwareTeam.Description)
+		}
+	}
+	for _, text := range []string{"actively compare", "set the matching `role`", "do not leave it blank"} {
+		if !strings.Contains(softwareTeam.Content, text) {
+			t.Fatalf("software-team instructions missing %q", text)
+		}
+	}
 
 	dir := t.TempDir()
 	writeResource(t, filepath.Join(dir, "override.md"), "---\nname: notch-config\ndescription: custom config\n---\ncustom instructions")
