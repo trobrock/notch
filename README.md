@@ -141,7 +141,6 @@ notch [flags] [prompt words...]
   --idle-timeout duration cancel after no provider or tool events (for example 2m)
   --setting-sources list  user, project, user,project (default), or none
   --print, -p             process the prompt non-interactively and exit
-  --plan                  start with read-only plan mode enabled
   --system-prompt string  override the configured system prompt
   --system-prompt-file    read the system prompt override from a file
   --continue              continue the latest session for this working directory
@@ -194,7 +193,6 @@ notch extensions remove NAME
 
 ```sh
 notch "Explain internal/agent"
-notch --plan "Plan an authentication refactor"
 notch -p "Explain internal/agent"
 notch --json "Run the tests and report failures" | jq -c .
 printf '%s\n' '{"id":"s","type":"get_state"}' | notch --mode rpc --no-session --tools read,grep
@@ -208,7 +206,7 @@ notch --no-session
 notch --mcp-config ./mcp.json
 ```
 
-Fullscreen interactive commands include `/help`, `/model [refresh]`, `/tools`, `/skills`, `/thinking [LEVEL]`, `/theme [NAME]`, `/compact [instructions]`, `/plan [on|off|status]`, `/goal [start|status|resume|clear]`, `/new`, `/resume`, `/clear`, `/exit`, and `/quit`, plus commands registered by extensions. `/goal` runs a bounded, durable single-agent objective and requires session persistence; see [goal mode](docs/goals.md). The built-in `software-team` skill describes how to turn a user or Developerly handoff into measurable goal checks, choose direct work or specialist helpers through `coordinate_helpers`, integrate changes, and verify the result. `--plan` enables the same read-only plan mode before the initial prompt in TUI and non-interactive runs; it cannot be combined with tool restriction flags or `--no-extensions`. Typing `/` opens a filtered command menu with descriptions; Up/Down selects an entry and Tab or Enter completes it. Skills are invoked as `/skill:name arguments`; prompt templates use `/name arguments`. See the [TUI guide](docs/tui.md) for runtime command behavior.
+Fullscreen interactive commands include `/help`, `/model [refresh]`, `/tools`, `/skills`, `/thinking [LEVEL]`, `/theme [NAME]`, `/compact [instructions]`, `/goal [start|status|resume|clear]`, `/new`, `/resume`, `/clear`, `/exit`, and `/quit`, plus commands registered by extensions. `/goal` runs a bounded, durable single-agent objective and requires session persistence; see [goal mode](docs/goals.md). The built-in `software-team` skill describes how to turn a user or Developerly handoff into measurable goal checks, choose direct work or specialist helpers through `coordinate_helpers`, integrate changes, and verify the result. Typing `/` opens a filtered command menu with descriptions; Up/Down selects an entry and Tab or Enter completes it. Skills are invoked as `/skill:name arguments`; prompt templates use `/name arguments`. See the [TUI guide](docs/tui.md) for runtime command behavior.
 
 `--mode rpc` exposes asynchronous Pi-style command responses and streaming events over strict JSONL; see [RPC mode](docs/rpc.md). Tool flags apply to every run mode after built-in, extension, and MCP registration. JSONL runs emit `session_start` with the resolved model, tools, skills, instructions, and workspace trust state, then a terminal `run_end` with cumulative usage, cost accounting status, turns, elapsed time, final text, and stop reason. Reaching `--max-turns` or `--max-cost-usd` exits with status 2; clean runs exit 0 and errors exit 1. Unknown pricing is explicit and prevents enforcement of a requested cost ceiling.
 
@@ -374,7 +372,7 @@ For example, `mcp_search({"query":"sentry issues"})` reveals matching issue tool
 
 This is lazy **schema disclosure**, not lazy server startup: connections and `tools/list` still happen at startup. Revealed tools remain exposed for the registration's lifetime; restarting or reloading MCP resets disclosure to configured pins. Resuming a session in a new process may require searching again. `/tools` and RPC `get_tools` retain the inventory of permitted tools, including deferred tools; JSONL `session_start.tools` lists schemas currently advertised to the model.
 
-Tool permissions are unchanged. `--exclude-tools` removes targets from both discovery and execution. Explicit `--tools` and active-tool selections expose the selected tools directly; adding only `mcp_search` to a strict allowlist does **not** grant access to excluded targets. Disabling extensions does not disable MCP discovery, but `--no-tools` does. Plan mode keeps MCP search and calls disabled. Hiding a schema is not an access-control boundary; a known permitted tool name can still be called directly. Actual savings depend on discovery overhead, tool use, and caching.
+Tool permissions are unchanged. `--exclude-tools` removes targets from both discovery and execution. Explicit `--tools` and active-tool selections expose the selected tools directly; adding only `mcp_search` to a strict allowlist does **not** grant access to excluded targets. Disabling extensions does not disable MCP discovery, but `--no-tools` does. Hiding a schema is not an access-control boundary; a known permitted tool name can still be called directly. Actual savings depend on discovery overhead, tool use, and caching.
 
 Remote tools are registered as `mcp__<server>__<tool>`. Notch performs the MCP 2025-06-18 handshake, follows paginated `tools/list`, and calls tools over stdio or HTTP responses in JSON or SSE form. Resource/prompt MCP capabilities are not implemented yet.
 

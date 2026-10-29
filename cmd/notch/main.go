@@ -79,7 +79,7 @@ type options struct {
 	maxTurns                                                                                                                                                                            int
 	maxCostUSD                                                                                                                                                                          float64
 	idleTimeout                                                                                                                                                                         time.Duration
-	printMode, planMode, continueSession, resumeSpecified, noSession, jsonOutput, noTUI, init, showVersion, rpcMode                                                                     bool
+	printMode, continueSession, resumeSpecified, noSession, jsonOutput, noTUI, init, showVersion, rpcMode                                                                               bool
 	showEffectiveSettings, acknowledgeProfileChange                                                                                                                                     bool
 	noTools, noBuiltinTools, noExtensions, noResources                                                                                                                                  bool
 	safe, trustWorkspace                                                                                                                                                                bool
@@ -143,7 +143,6 @@ func newRootFlagSet(opts *options) *flag.FlagSet {
 	flags.StringVar(&opts.settingSources, "setting-sources", "user,project", "configuration/resource sources: user, project, user,project, or none")
 	flags.BoolVar(&opts.printMode, "print", false, "non-interactive mode: process prompt and exit")
 	flags.BoolVar(&opts.printMode, "p", false, "non-interactive mode (shorthand)")
-	flags.BoolVar(&opts.planMode, "plan", false, "start with read-only plan mode enabled")
 	flags.StringVar(&opts.systemPrompt, "system-prompt", "", "override the configured system prompt")
 	flags.StringVar(&opts.systemPromptFile, "system-prompt-file", "", "read the system prompt override from a file")
 	flags.StringVar(&opts.delegationInstructionsFile, "delegation-instructions-file", "", "append trusted delegation instructions after project guidance")
@@ -241,12 +240,6 @@ func run(args []string) error {
 	}
 	if opts.safe && opts.settingSources != "user,project" {
 		return errors.New("--safe and --setting-sources cannot be combined")
-	}
-	if opts.noExtensions && opts.planMode {
-		return errors.New("--plan cannot be combined with --no-extensions")
-	}
-	if opts.planMode && (opts.noTools || opts.noBuiltinTools || opts.toolAllow != "" || opts.toolExclude != "") {
-		return errors.New("--plan cannot be combined with tool restriction flags")
 	}
 	if opts.noTools && (opts.toolAllow != "" || opts.toolExclude != "") {
 		return errors.New("--no-tools cannot be combined with --tools or --exclude-tools")
@@ -815,11 +808,6 @@ func run(args []string) error {
 			ContextWindow: contextWindow, MaxTokens: cfg.MaxTokens, SessionFile: sessionFile, SessionID: sessionID,
 			AutoCompactionEnabled: compactionEnabled,
 		})
-		if opts.planMode {
-			if err := enableStartupPlanMode(ctx, registry); err != nil {
-				return err
-			}
-		}
 		return rpcServer.Run(ctx)
 	}
 	if fullscreen != nil {
@@ -872,22 +860,12 @@ func run(args []string) error {
 		}
 		fullscreen.SetSessionFactory(store, sessionFactory)
 		fullscreen.Configure(runner, registry, catalog)
-		if opts.planMode {
-			if err := enableStartupPlanMode(ctx, registry); err != nil {
-				return err
-			}
-		}
 		if err := fullscreen.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			return err
 		}
 		return nil
 	}
 
-	if opts.planMode {
-		if err := enableStartupPlanMode(ctx, registry); err != nil {
-			return err
-		}
-	}
 	emit := terminal.Render
 	if opts.jsonOutput {
 		encoder := json.NewEncoder(os.Stdout)
@@ -1401,17 +1379,6 @@ func makeProvider(ctx context.Context, cfg config.Config, store *credentials.Sto
 	default:
 		return nil, fmt.Errorf("unsupported provider %q (use openai-codex, anthropic-claude-code, openrouter, anthropic, or openai)", cfg.Provider)
 	}
-}
-
-func enableStartupPlanMode(ctx context.Context, registry *extension.Registry) error {
-	command, ok := registry.Command("plan")
-	if !ok {
-		return errors.New("--plan requires the official plan extension")
-	}
-	if _, err := command.Execute(ctx, "on"); err != nil {
-		return fmt.Errorf("enable plan mode: %w", err)
-	}
-	return nil
 }
 
 func reapplyToolPolicy(registry *extension.Registry, opts options) {
