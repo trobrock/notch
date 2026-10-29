@@ -287,7 +287,7 @@ func TestPendingToolThinkingAndCompactionIconsAnimate(t *testing.T) {
 func TestStartupResourceSectionsRenderCompactly(t *testing.T) {
 	state := &LayoutState{Transcript: []TranscriptEntry{
 		{Kind: KindNotice, Label: "skills", Text: "/skill:config  /skill:review"},
-		{Kind: KindNotice, Label: "commands", Text: "/deploy  /plan"},
+		{Kind: KindNotice, Label: "commands", Text: "/deploy  /preview"},
 	}}
 	lines := renderTranscript(state, 40, completeTheme(Theme{}, "dark"))
 	plain := plainANSI(strings.Join(lines, "\n"))

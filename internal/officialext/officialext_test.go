@@ -42,7 +42,7 @@ func TestRegisterKeepsOfficialExtensionsSegmented(t *testing.T) {
 	if err := Register(registry, &testHost{}); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"ask_user_question", "complete_goal", "exit_plan_mode", "explore_codebase", "intercom_configure", "intercom_list", "intercom_send", "intercom_reply", "intercom_inbox", "intercom_request_status", "intercom_retry", "list_models", "list_monitors", "monitor_command", "monitor_github_pr_checks", "report_goal_progress", "run_subagent", "stop_monitor", "switch_model", "update_task_list"} {
+	for _, name := range []string{"ask_user_question", "complete_goal", "explore_codebase", "intercom_configure", "intercom_list", "intercom_send", "intercom_reply", "intercom_inbox", "intercom_request_status", "intercom_retry", "list_models", "list_monitors", "monitor_command", "monitor_github_pr_checks", "report_goal_progress", "run_subagent", "stop_monitor", "switch_model", "update_task_list"} {
 		tool, ok := registry.Tool(name)
 		if !ok {
 			t.Fatalf("%s not registered", name)
@@ -50,6 +50,12 @@ func TestRegisterKeepsOfficialExtensionsSegmented(t *testing.T) {
 		if tool.Source == "" {
 			t.Fatalf("%s source is empty", name)
 		}
+	}
+	if _, ok := registry.Command("plan"); ok {
+		t.Fatal("removed plan command is registered")
+	}
+	if _, ok := registry.Tool("exit_plan_mode"); ok {
+		t.Fatal("removed exit_plan_mode tool is registered")
 	}
 }
 

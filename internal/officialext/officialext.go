@@ -13,7 +13,6 @@ import (
 	"github.com/trobrock/notch/internal/officialext/intercom"
 	"github.com/trobrock/notch/internal/officialext/modelswitch"
 	"github.com/trobrock/notch/internal/officialext/monitor"
-	"github.com/trobrock/notch/internal/officialext/plan"
 	"github.com/trobrock/notch/internal/officialext/rtk"
 	"github.com/trobrock/notch/internal/officialext/subagent"
 	"github.com/trobrock/notch/internal/officialext/tasklist"
@@ -74,7 +73,6 @@ func registerWithRoleConfig(registry *extension.Registry, host extension.Host, s
 		func() error { return intercom.Register(registry, host) },
 		func() error { return monitor.Register(registry, host) },
 		func() error { return modelswitch.Register(registry, host) },
-		func() error { return plan.Register(registry, host) },
 		func() error { return rtk.Register(registry, host) },
 		func() error { return subagent.RegisterWithRunner(registry, exploreRunner) },
 		func() error { return team.RegisterWithRunner(registry, host, exploreRunner) },

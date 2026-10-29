@@ -1022,7 +1022,7 @@ func TestConfigureShowsAvailableSkillsAndCommands(t *testing.T) {
 	}
 	runner := newAppTestAgent(t, store)
 	registry := extension.NewRegistry()
-	for _, command := range []string{"plan", "deploy"} {
+	for _, command := range []string{"preview", "deploy"} {
 		if err := registry.RegisterCommand(extension.Command{Name: command, Description: command, Execute: func(context.Context, string) (string, error) { return "", nil }}); err != nil {
 			t.Fatal(err)
 		}
@@ -1044,7 +1044,7 @@ func TestConfigureShowsAvailableSkillsAndCommands(t *testing.T) {
 		t.Fatalf("skills entry = %#v", skills)
 	}
 	commands := a.state.layout.Transcript[2]
-	if commands.Label != "commands" || commands.Text != "/audit  /deploy  /fix  /plan" {
+	if commands.Label != "commands" || commands.Text != "/audit  /deploy  /fix  /preview" {
 		t.Fatalf("commands entry = %#v", commands)
 	}
 }
