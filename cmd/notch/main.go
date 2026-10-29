@@ -529,6 +529,15 @@ func run(args []string) error {
 	for _, notice := range startupNotices {
 		extensionHost.Notify(notice.message, notice.level)
 	}
+	var catalog *resources.Catalog
+	if opts.noResources {
+		catalog = &resources.Catalog{Skills: map[string]resources.Skill{}, Templates: map[string]resources.Template{}}
+	} else {
+		catalog, err = resources.LoadBundled(cfg.SkillDiscoveryDirs(), cfg.PromptDiscoveryDirs())
+		if err != nil {
+			extensionHost.Notify(err.Error(), "warning")
+		}
+	}
 	registry := extension.NewRegistry()
 	herdrReporter.Register(registry)
 	if !opts.noTools {
@@ -542,7 +551,7 @@ func run(args []string) error {
 			if encodeErr != nil {
 				return encodeErr
 			}
-			if err := officialext.RegisterWithRoleConfig(registry, extensionHost, opts.settingSources, cfg.Provider, cfg.Model, routingValue, allowedProviders, cfg, activeRouting); err != nil {
+			if err := officialext.RegisterWithRoleConfigAndResources(registry, extensionHost, opts.settingSources, cfg.Provider, cfg.Model, routingValue, allowedProviders, cfg, activeRouting, catalog); err != nil {
 				return err
 			}
 		}
@@ -607,15 +616,6 @@ func run(args []string) error {
 		defer mcpRuntime.Close()
 	}
 
-	var catalog *resources.Catalog
-	if opts.noResources {
-		catalog = &resources.Catalog{Skills: map[string]resources.Skill{}, Templates: map[string]resources.Template{}}
-	} else {
-		catalog, err = resources.LoadBundled(cfg.SkillDiscoveryDirs(), cfg.PromptDiscoveryDirs())
-		if err != nil {
-			extensionHost.Notify(err.Error(), "warning")
-		}
-	}
 	skillToolAvailable := false
 	if !opts.noTools {
 		if !opts.noBuiltinTools {
