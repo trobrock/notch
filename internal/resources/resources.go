@@ -324,6 +324,12 @@ func (c *Catalog) RegisterSkillTool(registry *extension.Registry) (bool, error) 
 	return true, nil
 }
 
+// Skill resolves a skill name using the same case-insensitive lookup as the
+// interactive skill tool.
+func (c *Catalog) Skill(name string) (Skill, bool) {
+	return c.lookupSkill(name)
+}
+
 func (c *Catalog) lookupSkill(name string) (Skill, bool) {
 	name = strings.TrimSpace(name)
 	if c == nil || name == "" {

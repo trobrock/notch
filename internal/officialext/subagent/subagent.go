@@ -23,6 +23,7 @@ import (
 	"github.com/trobrock/notch/internal/delegation"
 	"github.com/trobrock/notch/internal/extension"
 	"github.com/trobrock/notch/internal/model"
+	"github.com/trobrock/notch/internal/resources"
 )
 
 const (
@@ -34,6 +35,7 @@ const (
 	defaultMaxOutputChars = 12000
 	maxOutputChars        = 50000
 	maxTimeoutSeconds     = 86400
+	maxSkills             = 16
 	defaultIdleTimeout    = 30 * time.Minute
 	maxEventLine          = 16 << 20
 	defaultHeartbeat      = 10 * time.Second
@@ -44,26 +46,27 @@ var errIdleTimeout = errors.New("subagent inactivity timeout")
 var readOnlyTools = map[string]bool{"read": true, "grep": true, "find": true, "ls": true}
 
 type Input struct {
-	Prompt            string  `json:"prompt"`
-	Role              string  `json:"role,omitempty"`
-	Model             string  `json:"model,omitempty"`
-	CWD               string  `json:"cwd,omitempty"`
-	Tools             string  `json:"tools,omitempty"`
-	AllowWriteTools   bool    `json:"allowWriteTools,omitempty"`
-	TimeoutSeconds    int     `json:"timeoutSeconds,omitempty"`
-	MaxOutputChars    int     `json:"maxOutputChars,omitempty"`
-	MaxTurns          int     `json:"maxTurns,omitempty"`
-	MaxCostUSD        float64 `json:"maxCostUSD,omitempty"`
-	SystemPrompt      string  `json:"systemPrompt,omitempty"`
-	Thinking          string  `json:"thinking,omitempty"`
-	ModelExplicit     bool    `json:"-"`
-	ThinkingExplicit  bool    `json:"-"`
-	TimeoutExplicit   bool    `json:"-"`
-	MaxOutputExplicit bool    `json:"-"`
-	MaxTurnsExplicit  bool    `json:"-"`
-	MaxCostExplicit   bool    `json:"-"`
-	TimeoutLimit      int     `json:"-"`
-	MaxOutputLimit    int     `json:"-"`
+	Prompt            string   `json:"prompt"`
+	Role              string   `json:"role,omitempty"`
+	Model             string   `json:"model,omitempty"`
+	CWD               string   `json:"cwd,omitempty"`
+	Tools             string   `json:"tools,omitempty"`
+	AllowWriteTools   bool     `json:"allowWriteTools,omitempty"`
+	TimeoutSeconds    int      `json:"timeoutSeconds,omitempty"`
+	MaxOutputChars    int      `json:"maxOutputChars,omitempty"`
+	MaxTurns          int      `json:"maxTurns,omitempty"`
+	MaxCostUSD        float64  `json:"maxCostUSD,omitempty"`
+	SystemPrompt      string   `json:"systemPrompt,omitempty"`
+	Skills            []string `json:"skills,omitempty"`
+	Thinking          string   `json:"thinking,omitempty"`
+	ModelExplicit     bool     `json:"-"`
+	ThinkingExplicit  bool     `json:"-"`
+	TimeoutExplicit   bool     `json:"-"`
+	MaxOutputExplicit bool     `json:"-"`
+	MaxTurnsExplicit  bool     `json:"-"`
+	MaxCostExplicit   bool     `json:"-"`
+	TimeoutLimit      int      `json:"-"`
+	MaxOutputLimit    int      `json:"-"`
 }
 
 type Usage struct {
@@ -94,6 +97,47 @@ type Runner interface {
 
 type roleUsageDescriber interface {
 	RoleUsageDescription() string
+}
+
+// NewSkillRunner resolves explicitly requested skills from the parent's
+// startup catalog and injects their instructions without exposing resources to
+// the child process.
+func NewSkillRunner(base Runner, catalog *resources.Catalog) Runner {
+	if base == nil {
+		return nil
+	}
+	return &skillRunner{base: base, catalog: catalog}
+}
+
+type skillRunner struct {
+	base    Runner
+	catalog *resources.Catalog
+}
+
+func (r *skillRunner) RoleUsageDescription() string {
+	if describer, ok := r.base.(roleUsageDescriber); ok {
+		return describer.RoleUsageDescription()
+	}
+	return ""
+}
+
+func (r *skillRunner) Run(ctx context.Context, input Input, update func(string)) (Result, error) {
+	if len(input.Skills) == 0 {
+		return r.base.Run(ctx, input, update)
+	}
+	var sections []string
+	for _, name := range input.Skills {
+		skill, ok := r.catalog.Skill(name)
+		if !ok {
+			return Result{}, fmt.Errorf("delegated skill %q is unavailable in the parent resource catalog", name)
+		}
+		content := strings.ReplaceAll(skill.Content, "$ARGUMENTS", "")
+		sections = append(sections, "## Skill: "+skill.Name+"\n\n"+strings.TrimSpace(content))
+	}
+	delegated := "# Delegated skills\n\nThe parent selected these skill instructions for this task. Follow them within the tools and authority granted by the delegation.\n\n" + strings.Join(sections, "\n\n")
+	input.SystemPrompt = strings.TrimSpace(input.SystemPrompt + "\n\n" + delegated)
+	input.Skills = nil
+	return r.base.Run(ctx, input, update)
 }
 
 // RoleDescription adds configured "when to use" guidance to a role field's
@@ -325,7 +369,7 @@ func RegisterWithRouting(registry *extension.Registry, host extension.Host, sett
 	if err != nil {
 		return err
 	}
-	return RegisterWithRunner(registry, runner)
+	return RegisterWithRunner(registry, NewSkillRunner(runner, nil))
 }
 
 // RegisterWithRunner exposes runner injection for focused tests.
@@ -338,7 +382,7 @@ func RegisterWithRunner(registry *extension.Registry, runner Runner) error {
 		UpdateMode: "replace",
 		Definition: model.ToolDefinition{
 			Name:        ToolName,
-			Description: "Spawn a focused Notch subagent in an isolated process. Defaults to read-only tools; enable write-capable tools only when the user explicitly wants delegated implementation. Omit model to use the current parent provider/model. An unqualified model stays on the current provider. Use a provider-qualified model only when the user explicitly requested that provider (or explicitly configured it for delegation); if a requested model is unavailable on the current provider and no other provider was named, ask before using another provider.",
+			Description: "Spawn a focused Notch subagent in an isolated process. Defaults to read-only tools; enable write-capable tools only when the user explicitly wants delegated implementation. Pass skill names through skills; do not grant the child the skill tool. Omit model to use the current parent provider/model. An unqualified model stays on the current provider. Use a provider-qualified model only when the user explicitly requested that provider (or explicitly configured it for delegation); if a requested model is unavailable on the current provider and no other provider was named, ask before using another provider.",
 			InputSchema: schema(RoleDescription(runner, "Reusable specialist role. Built-ins: lead, researcher, designer, developer (implementer alias), qa, reviewer. Global custom roles are also accepted.")),
 		},
 		Execute: func(ctx context.Context, raw json.RawMessage, update func(string)) (extension.ToolResult, error) {
@@ -392,6 +436,7 @@ func schema(roleDescriptions ...string) map[string]any {
 			"maxTurns":        map[string]any{"type": "integer", "minimum": 0, "description": "Optional maximum model turns; 0 (default) is unlimited. Do not set a small cap for substantial work."},
 			"maxCostUSD":      map[string]any{"type": "number", "minimum": 0, "description": "Optional cumulative estimated cost cap; 0 (default) is unlimited."},
 			"systemPrompt":    map[string]any{"type": "string", "description": "Additional system instructions for the subagent."},
+			"skills":          map[string]any{"type": "array", "items": map[string]any{"type": "string", "minLength": 1}, "maxItems": maxSkills, "description": "Skill names resolved by the parent and injected into the child. Use this instead of granting the child the skill tool."},
 			"thinking":        map[string]any{"type": "string", "enum": []string{"off", "minimal", "low", "medium", "high", "xhigh"}},
 		},
 		"required": []string{"prompt"}, "additionalProperties": false,
@@ -445,6 +490,23 @@ func decodeInput(raw json.RawMessage) (Input, error) {
 	if err != nil {
 		return input, err
 	}
+	if len(input.Skills) > maxSkills {
+		return input, fmt.Errorf("skills contains %d entries; maximum is %d", len(input.Skills), maxSkills)
+	}
+	seenSkills := make(map[string]bool, len(input.Skills))
+	skills := make([]string, 0, len(input.Skills))
+	for _, name := range input.Skills {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return input, errors.New("skill names must not be empty")
+		}
+		key := strings.ToLower(name)
+		if !seenSkills[key] {
+			seenSkills[key] = true
+			skills = append(skills, name)
+		}
+	}
+	input.Skills = skills
 	var unsafe []string
 	for _, tool := range tools {
 		if !readOnlyTools[tool] {
@@ -484,6 +546,9 @@ func parseTools(value string) ([]string, error) {
 }
 
 func (r *processRunner) Run(ctx context.Context, input Input, update func(string)) (Result, error) {
+	if len(input.Skills) != 0 {
+		return Result{}, errors.New("delegated skills were not resolved by the parent; register the subagent runner with the parent resource catalog")
+	}
 	cwd := input.CWD
 	if cwd == "" {
 		cwd = r.defaultCWD

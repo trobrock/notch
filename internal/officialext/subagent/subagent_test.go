@@ -16,15 +16,18 @@ import (
 	"github.com/trobrock/notch/internal/config"
 	"github.com/trobrock/notch/internal/delegation"
 	"github.com/trobrock/notch/internal/extension"
+	"github.com/trobrock/notch/internal/resources"
 )
 
 type fakeRunner struct {
 	input  Input
 	result Result
 	err    error
+	calls  int
 }
 
 func (r *fakeRunner) Run(_ context.Context, input Input, update func(string)) (Result, error) {
+	r.calls++
 	r.input = input
 	if update != nil {
 		update("running")
@@ -67,6 +70,62 @@ func TestRunSubagentDefaultsAndReturnsDetails(t *testing.T) {
 	}
 	if !reflect.DeepEqual(updates, []string{"running"}) {
 		t.Fatalf("updates = %#v", updates)
+	}
+}
+
+func TestRunSubagentInjectsExplicitSkills(t *testing.T) {
+	registry := extension.NewRegistry()
+	base := &fakeRunner{result: Result{Output: "done"}}
+	catalog := &resources.Catalog{Skills: map[string]resources.Skill{
+		"qa":      {Name: "qa", Content: "Check the visible behavior."},
+		"browser": {Name: "browser", Content: "Use the browser safely."},
+	}}
+	if err := RegisterWithRunner(registry, NewSkillRunner(base, catalog)); err != nil {
+		t.Fatal(err)
+	}
+	tool, _ := registry.Tool(ToolName)
+	result, err := tool.Execute(context.Background(), json.RawMessage(`{"prompt":"inspect","skills":[" qa ","QA","browser"],"systemPrompt":"Keep evidence."}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError || result.Content != "done" {
+		t.Fatalf("result = %#v", result)
+	}
+	if base.input.Skills != nil {
+		t.Fatalf("resolved skills leaked to child runner: %#v", base.input.Skills)
+	}
+	for _, text := range []string{"Keep evidence.", "# Delegated skills", "## Skill: qa", "Check the visible behavior.", "## Skill: browser", "Use the browser safely."} {
+		if !strings.Contains(base.input.SystemPrompt, text) {
+			t.Fatalf("system prompt missing %q: %q", text, base.input.SystemPrompt)
+		}
+	}
+	if strings.Index(base.input.SystemPrompt, "## Skill: qa") > strings.Index(base.input.SystemPrompt, "## Skill: browser") {
+		t.Fatalf("skill order changed: %q", base.input.SystemPrompt)
+	}
+}
+
+func TestRunSubagentRejectsUnavailableSkillBeforeDispatch(t *testing.T) {
+	base := &fakeRunner{}
+	runner := NewSkillRunner(base, &resources.Catalog{Skills: map[string]resources.Skill{}})
+	_, err := runner.Run(context.Background(), Input{Prompt: "inspect", Skills: []string{"missing"}}, nil)
+	if err == nil || !strings.Contains(err.Error(), `delegated skill "missing" is unavailable`) {
+		t.Fatalf("error = %v", err)
+	}
+	if base.calls != 0 {
+		t.Fatalf("base runner calls = %d, want 0", base.calls)
+	}
+}
+
+func TestRunSubagentRejectsInvalidSkillNames(t *testing.T) {
+	for name, raw := range map[string]string{
+		"empty":    `{"prompt":"inspect","skills":[" "]}`,
+		"too many": `{"prompt":"inspect","skills":["1","2","3","4","5","6","7","8","9","10","11","12","13","14","15","16","17"]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := decodeInput(json.RawMessage(raw)); err == nil {
+				t.Fatal("expected validation error")
+			}
+		})
 	}
 }
 
@@ -195,6 +254,14 @@ func TestDelegatedUsageShape(t *testing.T) {
 	}
 }
 
+func TestProcessRunnerRejectsUnresolvedSkills(t *testing.T) {
+	runner := &processRunner{defaultCWD: t.TempDir()}
+	_, err := runner.Run(context.Background(), Input{Prompt: "inspect", Skills: []string{"qa"}}, nil)
+	if err == nil || !strings.Contains(err.Error(), "not resolved by the parent") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestProcessRunnerSendsPromptOnStdinAndReportsHeartbeat(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell script test")
@@ -228,6 +295,39 @@ printf '{"type":"turn_end","usage":{"input_tokens":1,"output_tokens":2},"message
 	}
 	if len(updates) == 0 || !strings.Contains(updates[len(updates)-1], "elapsed") {
 		t.Fatalf("heartbeat updates = %#v", updates)
+	}
+}
+
+func TestProcessRunnerKeepsResourcesDisabledWhenInjectingSkills(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script test")
+	}
+	path := t.TempDir() + "/skill-subagent.sh"
+	script := `#!/bin/sh
+seen_resources=""
+delegation=""
+previous=""
+for arg in "$@"; do
+  [ "$arg" = "--no-resources" ] && seen_resources=1
+  [ "$previous" = "--delegation-instructions-file" ] && delegation="$arg"
+  previous="$arg"
+done
+[ "$seen_resources" = 1 ] || exit 7
+[ -n "$delegation" ] || exit 8
+grep -q '## Skill: qa' "$delegation" || exit 9
+grep -q 'Check the visible behavior.' "$delegation" || exit 10
+printf '{"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}\n'
+`
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	base := &processRunner{executable: path, defaultCWD: t.TempDir()}
+	runner := NewSkillRunner(base, &resources.Catalog{Skills: map[string]resources.Skill{
+		"qa": {Name: "qa", Content: "Check the visible behavior."},
+	}})
+	result, err := runner.Run(context.Background(), Input{Prompt: "go", Skills: []string{"qa"}, Tools: defaultTools, Thinking: DefaultThinking, TimeoutSeconds: 1, MaxOutputChars: 2000}, nil)
+	if err != nil || result.ExitCode != 0 || result.Output != "done" {
+		t.Fatalf("Run() = %#v, %v", result, err)
 	}
 }
 
@@ -442,6 +542,26 @@ func (*roleTestHost) EditorText(context.Context) (string, error)       { return 
 func (*roleTestHost) SetEditorText(context.Context, string) error      { return nil }
 func (*roleTestHost) SetStatus(string, string)                         {}
 func (*roleTestHost) SetPanel(string, string, []string)                {}
+
+func TestSkillAndRoleRunnersPreserveAllInstructions(t *testing.T) {
+	base := &fakeRunner{result: Result{Output: "ok"}}
+	host := &roleTestHost{}
+	cfg := config.Config{Roles: map[string]config.RoleConfig{"reviewer": {Instructions: "ROLE CONTRACT"}}}
+	catalog := &resources.Catalog{Skills: map[string]resources.Skill{"qa": {Name: "qa", Content: "SKILL CONTRACT"}}}
+	runner := NewSkillRunner(NewRoleRunner(base, host, cfg, nil, "openai"), catalog)
+	_, err := runner.Run(context.Background(), Input{Prompt: "task", Role: "reviewer", Skills: []string{"qa"}, SystemPrompt: "CALLER CONTRACT"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{"ROLE CONTRACT", "CALLER CONTRACT", "SKILL CONTRACT"} {
+		if !strings.Contains(base.input.SystemPrompt, text) {
+			t.Fatalf("system prompt missing %q: %q", text, base.input.SystemPrompt)
+		}
+	}
+	if base.input.Skills != nil {
+		t.Fatalf("resolved skills leaked to child runner: %#v", base.input.Skills)
+	}
+}
 
 func TestRoleRunnerPrecedenceProvenanceAndAdditivePrompt(t *testing.T) {
 	base := &fakeRunner{result: Result{Output: "ok"}}

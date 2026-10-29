@@ -18,6 +18,7 @@ import (
 	"github.com/trobrock/notch/internal/officialext/subagent"
 	"github.com/trobrock/notch/internal/officialext/tasklist"
 	"github.com/trobrock/notch/internal/officialext/team"
+	"github.com/trobrock/notch/internal/resources"
 )
 
 // Register registers all official extensions. Implementations remain isolated
@@ -41,16 +42,22 @@ func RegisterWithRuntime(registry *extension.Registry, host extension.Host, sett
 // RegisterWithRouting propagates an immutable profile snapshot to every child
 // process used by all delegation tools.
 func RegisterWithRouting(registry *extension.Registry, host extension.Host, settingSources, provider, modelName, routingSnapshot string, allowedProviders []string) error {
-	return registerWithRoleConfig(registry, host, settingSources, provider, modelName, routingSnapshot, allowedProviders, config.Config{}, nil)
+	return registerWithRoleConfig(registry, host, settingSources, provider, modelName, routingSnapshot, allowedProviders, config.Config{}, nil, nil)
 }
 
 // RegisterWithRoleConfig adds global reusable role contracts to all existing
 // delegation tools. Authority and tool grants remain in those tools.
 func RegisterWithRoleConfig(registry *extension.Registry, host extension.Host, settingSources, provider, modelName, routingSnapshot string, allowedProviders []string, cfg config.Config, routing *config.RoutingSnapshot) error {
-	return registerWithRoleConfig(registry, host, settingSources, provider, modelName, routingSnapshot, allowedProviders, cfg, routing)
+	return registerWithRoleConfig(registry, host, settingSources, provider, modelName, routingSnapshot, allowedProviders, cfg, routing, nil)
 }
 
-func registerWithRoleConfig(registry *extension.Registry, host extension.Host, settingSources, provider, modelName, routingSnapshot string, allowedProviders []string, cfg config.Config, routing *config.RoutingSnapshot) error {
+// RegisterWithRoleConfigAndResources also gives delegation tools the parent's
+// resolved startup catalog for explicit skill injection.
+func RegisterWithRoleConfigAndResources(registry *extension.Registry, host extension.Host, settingSources, provider, modelName, routingSnapshot string, allowedProviders []string, cfg config.Config, routing *config.RoutingSnapshot, catalog *resources.Catalog) error {
+	return registerWithRoleConfig(registry, host, settingSources, provider, modelName, routingSnapshot, allowedProviders, cfg, routing, catalog)
+}
+
+func registerWithRoleConfig(registry *extension.Registry, host extension.Host, settingSources, provider, modelName, routingSnapshot string, allowedProviders []string, cfg config.Config, routing *config.RoutingSnapshot, catalog *resources.Catalog) error {
 	if registry == nil || host == nil {
 		return errors.New("register official extensions: registry and host are required")
 	}
@@ -59,6 +66,7 @@ func registerWithRoleConfig(registry *extension.Registry, host extension.Host, s
 		return err
 	}
 	exploreRunner = subagent.NewRoleRunner(exploreRunner, host, cfg, routing, provider)
+	exploreRunner = subagent.NewSkillRunner(exploreRunner, catalog)
 	registrations := []func() error{
 		func() error { return askuser.Register(registry, host) },
 		func() error { return explore.RegisterWithRunner(registry, exploreRunner) },
