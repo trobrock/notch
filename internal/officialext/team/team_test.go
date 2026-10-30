@@ -304,16 +304,16 @@ func TestWriterIsolationStaleBaseConflictAndNoCleanup(t *testing.T) {
 		name, expected                                                  string
 		sameRoot, sameBranch, dirty, finalDirty, leadAdvanced, conflict bool
 		wantError                                                       bool
-		wantResult                                                      string
+		wantErrorText, wantResult                                       string
 	}{
-		{"stale base", "old", false, false, false, false, false, false, true, ""},
-		{"same worktree", base, true, false, false, false, false, false, true, ""},
-		{"same branch", base, false, true, false, false, false, false, true, ""},
-		{"dirty worktree", base, false, false, true, false, false, false, true, ""},
-		{"uncommitted result", base, false, false, false, true, false, false, false, "uncommitted"},
-		{"lead advanced", base, false, false, false, false, true, false, false, "lead HEAD changed"},
-		{"conflict", base, false, false, false, false, false, true, false, "conflict"},
-		{"clean writer", base, false, false, false, false, false, false, false, ""},
+		{"stale base", "old", false, false, false, false, false, false, true, "stale expected_base", ""},
+		{"same worktree", base, true, false, false, false, false, false, true, "uses the lead worktree /lead", ""},
+		{"same branch", base, false, true, false, false, false, false, true, `uses the lead branch "main"`, ""},
+		{"dirty worktree", base, false, false, true, false, false, false, true, "pre-existing changes", ""},
+		{"uncommitted result", base, false, false, false, true, false, false, false, "", "uncommitted"},
+		{"lead advanced", base, false, false, false, false, true, false, false, "", "lead HEAD changed"},
+		{"conflict", base, false, false, false, false, false, true, false, "", "conflict"},
+		{"clean writer", base, false, false, false, false, false, false, false, "", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			writerRoot := "/writer"
@@ -339,6 +339,9 @@ func TestWriterIsolationStaleBaseConflictAndNoCleanup(t *testing.T) {
 			if tc.wantError {
 				if err == nil {
 					t.Fatalf("expected validation error, result=%#v", result)
+				}
+				if !strings.Contains(err.Error(), tc.wantErrorText) {
+					t.Fatalf("error = %q, want text %q", err, tc.wantErrorText)
 				}
 				return
 			}
@@ -396,6 +399,65 @@ func TestFailedWriterStillRunsPostRunAudit(t *testing.T) {
 	}
 }
 
+func TestChangeValidationExplainsMissingAndSharedIsolation(t *testing.T) {
+	baseInput := func(tasks string) Input {
+		return Input{AllowWriteTools: true, IntegrationOwner: "lead", Tasks: mustTasks(t, tasks)}
+	}
+	tests := []struct {
+		name    string
+		tasks   string
+		states  map[string][]gitSnapshot
+		wantErr string
+	}{
+		{
+			name:    "missing cwd",
+			tasks:   `[{"id":"qa","kind":"change","prompt":"test","tools":"bash","expected_base":"base","acceptance_checks":["pass"]}]`,
+			wantErr: "change task qa is missing cwd",
+		},
+		{
+			name:    "missing expected base",
+			tasks:   `[{"id":"qa","kind":"change","prompt":"test","cwd":"/qa","tools":"bash","acceptance_checks":["pass"]}]`,
+			wantErr: "change task qa is missing expected_base",
+		},
+		{
+			name:  "shared worktree",
+			tasks: `[{"id":"a","kind":"change","prompt":"a","cwd":"/a","tools":"edit","expected_base":"base","acceptance_checks":["pass"]},{"id":"b","kind":"change","prompt":"b","cwd":"/b","tools":"edit","expected_base":"base","acceptance_checks":["pass"]}]`,
+			states: map[string][]gitSnapshot{
+				"/a": {{root: "/shared", branch: "a", head: "base"}},
+				"/b": {{root: "/shared", branch: "b", head: "base"}},
+			},
+			wantErr: "change tasks a and b share worktree /shared",
+		},
+		{
+			name:  "shared branch",
+			tasks: `[{"id":"a","kind":"change","prompt":"a","cwd":"/a","tools":"edit","expected_base":"base","acceptance_checks":["pass"]},{"id":"b","kind":"change","prompt":"b","cwd":"/b","tools":"edit","expected_base":"base","acceptance_checks":["pass"]}]`,
+			states: map[string][]gitSnapshot{
+				"/a": {{root: "/a", branch: "shared", head: "base"}},
+				"/b": {{root: "/b", branch: "shared", head: "base"}},
+			},
+			wantErr: `change tasks a and b share branch "shared"`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			input := baseInput(tc.tasks)
+			_, err := normalizeAndValidate(&input, "/lead", "/repo/.git", "main", "base", nil, &fakeGit{states: tc.states}, context.Background())
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error = %v, want text %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func mustTasks(t *testing.T, raw string) []Task {
+	t.Helper()
+	var tasks []Task
+	if err := json.Unmarshal([]byte(raw), &tasks); err != nil {
+		t.Fatal(err)
+	}
+	return tasks
+}
+
 func TestWriteAuthorizationAndNoTeamCommand(t *testing.T) {
 	runner := &scriptedRunner{outputs: map[string][]subagent.Result{}}
 	host := &fakeHost{cwd: "/lead"}
@@ -427,6 +489,15 @@ func TestUnknownCostRemainsUnknownAndEnvelopeValidation(t *testing.T) {
 	}
 	if got := unsafeTools("read, bash, edit"); !reflect.DeepEqual(got, []string{"bash", "edit"}) {
 		t.Fatalf("unsafe = %#v", got)
+	}
+	schema, err := json.Marshal(teamSchema())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{"research and review are read-only", "QA helper that only inspects code should use review", "clean existing worktree separate from the lead"} {
+		if !strings.Contains(string(schema), text) {
+			t.Fatalf("schema does not explain %q", text)
+		}
 	}
 }
 
