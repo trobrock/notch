@@ -252,7 +252,7 @@ func register(registry *extension.Registry, host extension.Host, runner subagent
 	c := &coordinator{host: host, runner: runner, git: git}
 	tool := extension.Tool{Source: Source, UpdateMode: "replace", Definition: model.ToolDefinition{
 		Name:        ToolName,
-		Description: "Run a small, opt-in lead-and-helper workflow using existing isolated Notch subagents. Use only when the user asks for coordinated helpers. The lead owns scope, decisions, synthesis, and integration. Assign optional designer, implementer, QA, and reviewer roles, and choose per-helper models and thinking suited to the work. Turn, cost, and total-runtime caps are optional; do not impose small caps on productive work. Keep reports concise and judgment with the lead. Initial helpers run independently and return concise JSON results with scoped checks and artifact references. Research and review are read-only by default. A change helper requires allow_write_tools=true, a separate existing Git worktree/branch, its expected base commit, and integration_owner=lead. This tool never creates, resets, merges, deletes, or cleans a worktree. Delegated usage is returned separately so parent and /goal budgets count it once; unknown child cost stays unknown.",
+		Description: "Run a small, opt-in lead-and-helper workflow using existing isolated Notch subagents. Use only when the user asks for coordinated helpers. The lead owns scope, decisions, synthesis, and integration. Assign optional designer, implementer, QA, and reviewer roles, and choose per-helper models and thinking suited to the work. Turn, cost, and total-runtime caps are optional; do not impose small caps on productive work. Keep reports concise and judgment with the lead. Initial helpers run independently and return concise JSON results with scoped checks and artifact references. Research and review are read-only by default. A QA helper that only inspects code should use kind=review; QA that needs bash or another write-capable tool must use kind=change. Before starting a change helper, create a clean worktree and unique branch from the lead HEAD (for example: git worktree add ../project-qa -b helpers/qa $(git rev-parse HEAD)). A change helper requires allow_write_tools=true, that separate existing Git worktree/branch, expected_base set to the lead HEAD commit, and integration_owner=lead. This tool never creates, resets, merges, deletes, or cleans a worktree. Delegated usage is returned separately so parent and /goal budgets count it once; unknown child cost stays unknown.",
 		InputSchema: teamSchema(subagent.RoleDescription(runner, "Optional reusable specialist role. Built-ins include designer, developer (implementer alias), qa, and reviewer; global custom roles are accepted.")),
 	}, Execute: c.execute}
 	_, err := registry.RegisterBatch(extension.Batch{Tools: []extension.Tool{tool}})
@@ -268,11 +268,11 @@ func teamSchema(roleDescriptions ...string) map[string]any {
 		return map[string]any{"type": "string", "description": description}
 	}
 	task := map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
-		"id": str("Short unique helper ID"), "kind": map[string]any{"type": "string", "enum": []string{"research", "review", "change"}},
+		"id": str("Short unique helper ID"), "kind": map[string]any{"type": "string", "enum": []string{"research", "review", "change"}, "description": "research and review are read-only; change permits write-capable tools and requires an existing isolated worktree and branch. A QA helper that only inspects code should use review."},
 		"role":   map[string]any{"type": "string", "description": roleDescription},
-		"prompt": str("One narrow task; do not include another helper's result"), "cwd": str("Working directory; required for a change helper"),
-		"tools": str("Comma-separated tools; defaults to read,grep,find,ls"), "acceptance_checks": map[string]any{"type": "array", "items": str("One check this helper owns"), "minItems": 1},
-		"expected_base":    str("Exact lead commit used to create this writer worktree; required for change"),
+		"prompt": str("One narrow task; do not include another helper's result"), "cwd": str("Working directory. For change helpers, this must be a clean existing worktree separate from the lead and every other change helper."),
+		"tools": str("Comma-separated tools; defaults to read,grep,find,ls. bash and other tools outside that list make the task write-capable."), "acceptance_checks": map[string]any{"type": "array", "items": str("One check this helper owns"), "minItems": 1},
+		"expected_base":    str("Exact lead HEAD commit used to create this change helper's worktree; required for change"),
 		"model":            str("Per-helper model override; use a cheaper model for bounded routine work and reserve stronger models for judgment-heavy roles"),
 		"thinking":         map[string]any{"type": "string", "enum": []string{"off", "minimal", "low", "medium", "high", "xhigh"}},
 		"timeout_seconds":  map[string]any{"type": "integer", "minimum": 0, "maximum": maxTimeout, "description": "Optional total runtime cap; 0 (default) is unlimited while active. Helpers stop after 30 minutes without provider or tool events."},
@@ -385,7 +385,7 @@ func normalizeAndValidate(input *Input, leadRoot, leadCommon, leadBranch, leadHe
 	if input.TimeoutSeconds < 0 || input.TimeoutSeconds > maxTimeout || input.ClarifyWaitSeconds < 1 || input.ClarifyWaitSeconds > maxClarifyWait {
 		return nil, errors.New("helper timeout is outside the allowed range")
 	}
-	seen, roots, branches := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	seen, roots, branches := map[string]bool{}, map[string]string{}, map[string]string{}
 	writers := map[string]*writerState{}
 	for i := range input.Tasks {
 		t := &input.Tasks[i]
@@ -442,8 +442,11 @@ func normalizeAndValidate(input *Input, leadRoot, leadCommon, leadBranch, leadHe
 		if len(unsafe) == 0 {
 			return nil, fmt.Errorf("change task %s has no write-capable tool", t.ID)
 		}
-		if t.CWD == "" || t.ExpectedBase == "" {
-			return nil, fmt.Errorf("change task %s requires cwd and expected_base", t.ID)
+		if t.CWD == "" {
+			return nil, fmt.Errorf("change task %s is missing cwd; use a clean existing worktree separate from the lead", t.ID)
+		}
+		if t.ExpectedBase == "" {
+			return nil, fmt.Errorf("change task %s is missing expected_base; set it to the lead HEAD commit used to create the worktree", t.ID)
 		}
 		if leadErr != nil {
 			return nil, fmt.Errorf("inspect lead worktree: %w", leadErr)
@@ -455,8 +458,17 @@ func normalizeAndValidate(input *Input, leadRoot, leadCommon, leadBranch, leadHe
 		if common != leadCommon {
 			return nil, fmt.Errorf("change task %s is not a worktree of the lead repository", t.ID)
 		}
-		if root == leadRoot || branch == leadBranch || roots[root] || branches[branch] {
-			return nil, fmt.Errorf("change task %s must use a separate worktree and branch", t.ID)
+		if root == leadRoot {
+			return nil, fmt.Errorf("change task %s uses the lead worktree %s; use a separate existing worktree", t.ID, root)
+		}
+		if branch == leadBranch {
+			return nil, fmt.Errorf("change task %s uses the lead branch %q; use a unique helper branch", t.ID, branch)
+		}
+		if owner, exists := roots[root]; exists {
+			return nil, fmt.Errorf("change tasks %s and %s share worktree %s; each change task needs its own worktree", owner, t.ID, root)
+		}
+		if owner, exists := branches[branch]; exists {
+			return nil, fmt.Errorf("change tasks %s and %s share branch %q; each change task needs its own branch", owner, t.ID, branch)
 		}
 		if dirty {
 			return nil, fmt.Errorf("change task %s worktree has pre-existing changes; preserve them by choosing a clean worktree", t.ID)
@@ -467,7 +479,7 @@ func normalizeAndValidate(input *Input, leadRoot, leadCommon, leadBranch, leadHe
 		if head != t.ExpectedBase {
 			return nil, fmt.Errorf("change task %s must start exactly at expected_base; writer HEAD is %s", t.ID, head)
 		}
-		roots[root], branches[branch] = true, true
+		roots[root], branches[branch] = t.ID, t.ID
 		writers[t.ID] = &writerState{Root: root, CommonGitDir: common, Branch: branch, StartHead: head, BaseCurrent: true, IntegrationOwner: "lead"}
 	}
 	return writers, nil
