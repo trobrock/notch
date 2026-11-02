@@ -703,7 +703,7 @@ func ResolveProfile(cfg *Config, name string) (RoutingSnapshot, error) {
 		return RoutingSnapshot{}, fmt.Errorf("profile %q: provider is required", name)
 	}
 	if !supportedRoutingProvider(profile.Provider) {
-		return RoutingSnapshot{}, fmt.Errorf("profile %q: unsupported provider %q (expected openai-codex, anthropic-claude-code, openrouter, anthropic, or openai)", name, profile.Provider)
+		return RoutingSnapshot{}, fmt.Errorf("profile %q: unsupported provider %q (expected openai-codex, claude-agent, anthropic-claude-code, openrouter, anthropic, or openai)", name, profile.Provider)
 	}
 	if profile.CredentialRef != "" && !validCredentialReference(profile.Provider, profile.CredentialRef) {
 		return RoutingSnapshot{}, fmt.Errorf("profile %q: credential_ref %q must be %q or use the provider-prefixed form %q", name, profile.CredentialRef, profile.Provider, profile.Provider+":NAME")
@@ -851,6 +851,8 @@ func defaultModelForProvider(provider string) string {
 		return "gpt-5.6-terra"
 	case "openrouter":
 		return "anthropic/claude-sonnet-4.5"
+	case "claude-agent":
+		return "sonnet"
 	case "anthropic", "anthropic-claude-code":
 		return "claude-sonnet-4-5"
 	default:
@@ -890,7 +892,7 @@ func validateProfileNames(profiles map[string]ProfileConfig) error {
 
 func supportedRoutingProvider(provider string) bool {
 	switch normalizeRoutingProvider(provider) {
-	case "openai-codex", "anthropic-claude-code", "openrouter", "anthropic", "openai":
+	case "openai-codex", "claude-agent", "anthropic-claude-code", "openrouter", "anthropic", "openai":
 		return true
 	default:
 		return false

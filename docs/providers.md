@@ -113,9 +113,26 @@ notch --provider anthropic --model claude-sonnet-4-5
 
 The adapter sends native streaming Messages requests and supports Anthropic tool-use blocks. `ANTHROPIC_API_KEY` is the only authentication method for this provider; there is no stored OAuth credential path for `anthropic`.
 
-### `anthropic-claude-code`
+### `claude-agent`
 
-Use this provider for a Claude Pro or Max subscription via OAuth:
+Use this provider for a Claude Pro/Max plan or any other login supported by Claude Code. Install Claude Code 2.1.248 or later and sign in first:
+
+```sh
+claude auth login
+notch --provider claude-agent --model sonnet
+```
+
+Notch runs the installed `claude` executable through its stream-JSON Agent SDK protocol. Claude Code owns authentication and model requests. Notch never reads, stores, or copies Claude's OAuth token. Notch disables Claude Code's built-in tools and exposes Notch tools through an in-process MCP bridge, so the usual Notch permissions, tool results, and JSONL history remain authoritative.
+
+Set `NOTCH_CLAUDE_PATH=/absolute/path/to/claude` to choose another executable. The provider disables Claude Code project instructions, memory, and auto-compaction so they do not conflict with Notch. It starts a fresh Claude process for each user turn and replays the durable Notch transcript; one process remains alive across that turn's tool calls. The model catalog currently uses conservative bundled `sonnet`, `opus`, and `haiku` aliases instead of probing Claude Code.
+
+The short provider alias `claude` selects `claude-agent`.
+
+### `anthropic-claude-code` (legacy)
+
+This older provider sends Claude OAuth tokens directly to the Messages API. It remains available for backwards compatibility, but new setups should use `claude-agent`, which follows the current Claude Agent integration model and leaves credentials inside Claude Code.
+
+Use the legacy provider for a Claude Pro or Max subscription via OAuth:
 
 ```sh
 notch login anthropic-claude-code

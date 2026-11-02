@@ -184,6 +184,13 @@ type Provider interface {
 	Stream(ctx context.Context, req Request, onEvent func(StreamEvent)) (Response, error)
 }
 
+// PendingTurnAborter is implemented by stateful providers that may be waiting
+// for tool results after Stream returns. The agent calls it when a prompt run
+// ends so an abandoned provider process cannot consume the next user prompt.
+type PendingTurnAborter interface {
+	AbortPendingTurn()
+}
+
 // ModelInfo is provider-discovered metadata used by the runtime model registry.
 type ModelInfo struct {
 	ID            string `json:"id"`

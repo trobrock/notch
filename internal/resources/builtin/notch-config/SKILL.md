@@ -70,8 +70,9 @@ Custom themes are direct JSON files in `theme_dirs`, defaulting to user and proj
 Supported provider names are:
 
 - `openai-codex` for a ChatGPT subscription;
+- `claude-agent` for a Claude Pro/Max plan through the installed `claude` program;
 - `anthropic` for Anthropic API keys (`ANTHROPIC_API_KEY`);
-- `anthropic-claude-code` for a Claude Pro/Max OAuth subscription;
+- `anthropic-claude-code` for the legacy direct Claude OAuth flow;
 - `openrouter`;
 - `openai` for OpenAI Responses-compatible APIs, including local Ollama setups.
 

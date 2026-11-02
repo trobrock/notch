@@ -30,6 +30,35 @@ func TestResolveProfileAppliesRoutingAndAllowlist(t *testing.T) {
 	}
 }
 
+func TestResolveProfileAllowsCodexPrimaryToDelegateToClaudeAgent(t *testing.T) {
+	cfg := Config{ThinkingLevel: "medium", Profiles: map[string]ProfileConfig{
+		"personal": {
+			Provider:         "openai-codex",
+			Model:            "codex-model",
+			AllowedProviders: []string{"openai-codex", "claude-agent"},
+			RoleModels:       map[string]string{"reviewer": "claude-agent/sonnet"},
+		},
+	}}
+
+	snapshot, err := ResolveProfile(&cfg, "personal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Provider != "openai-codex" || cfg.Model != "codex-model" {
+		t.Fatalf("primary route = %s/%s", cfg.Provider, cfg.Model)
+	}
+	if err := snapshot.ValidateProvider("claude-agent"); err != nil {
+		t.Fatalf("Claude delegation should be allowed: %v", err)
+	}
+	role, err := ResolveRole(cfg, &snapshot, "reviewer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if role.Model != "claude-agent/sonnet" {
+		t.Fatalf("reviewer model = %q", role.Model)
+	}
+}
+
 func TestResolveProfileErrorsAreActionable(t *testing.T) {
 	cfg := Config{Profiles: map[string]ProfileConfig{"bad": {Provider: "anthropic", Model: "", AllowedProviders: []string{"anthropic"}}}}
 	if _, err := ResolveProfile(&cfg, "missing"); err == nil || !strings.Contains(err.Error(), "available") {
