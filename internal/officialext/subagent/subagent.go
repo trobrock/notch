@@ -290,7 +290,7 @@ func (r *roleRunner) validateModel(ctx context.Context, value string) error {
 
 func isProviderName(value string) bool {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "openai-codex", "anthropic-claude-code", "openrouter", "anthropic", "openai":
+	case "openai-codex", "claude-agent", "anthropic-claude-code", "openrouter", "anthropic", "openai":
 		return true
 	default:
 		return false

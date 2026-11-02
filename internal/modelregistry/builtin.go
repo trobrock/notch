@@ -27,6 +27,11 @@ func Builtin(provider string) []Entry {
 		},
 		"anthropic":             cloneEntries(anthropicCatalog),
 		"anthropic-claude-code": cloneEntries(anthropicCatalog),
+		"claude-agent": {
+			{ID: "sonnet", Name: "Claude Sonnet", ContextWindow: 200000, Reasoning: true},
+			{ID: "opus", Name: "Claude Opus", ContextWindow: 200000, Reasoning: true},
+			{ID: "haiku", Name: "Claude Haiku", ContextWindow: 200000, Reasoning: true},
+		},
 		"openrouter": {
 			{ID: "anthropic/claude-sonnet-4.5", Name: "Claude Sonnet 4.5", ContextWindow: 1000000, Reasoning: true},
 			{ID: "openai/gpt-5", Name: "OpenAI GPT-5", ContextWindow: 400000, Reasoning: true},

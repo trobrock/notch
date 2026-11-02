@@ -50,6 +50,8 @@ Use model IDs returned by `list_models`. The optional `when_to_use` text is show
 
 Notch validates a role-selected model before dispatch. It fails if the model is unavailable or its provider is outside the active profile. It never searches another provider as a fallback. Model capability and price change over time, so choose a currently available inexpensive model for bounded routine work and escalate only when evidence shows it is needed.
 
+A profile may keep Codex as its main provider and map only selected roles to a Claude subscription. Add `"claude-agent"` to `allowed_providers`, then use a provider-qualified mapping such as `"reviewer": "claude-agent/sonnet"`. Other unqualified role models continue to use the profile's main provider. Claude Code owns the login for this route; the profile does not need a Claude credential reference.
+
 ## Use roles
 
 - `run_subagent`: set `role` to a built-in or custom role.

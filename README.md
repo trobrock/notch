@@ -11,7 +11,8 @@ Notch is an MVP, not a drop-in reimplementation of [Pi](https://github.com/badlo
 ## What is included
 
 - Native Anthropic Messages, OpenAI and Codex Responses, and OpenRouter Chat Completions providers (no provider SDKs)
-- Provider OAuth for ChatGPT Plus/Pro (`openai-codex`), Claude Pro/Max (`anthropic-claude-code`), and OpenRouter
+- Claude Pro/Max through the installed `claude` program (`claude-agent`), without reading Claude credentials
+- Provider OAuth for ChatGPT Plus/Pro (`openai-codex`), legacy Claude OAuth (`anthropic-claude-code`), and OpenRouter
 - API-key access for Anthropic, OpenAI, and OpenRouter, plus local Ollama through OpenAI Responses
 - Built-in `read`, `write`, `edit`, `bash`, `grep`, `find`, and `ls` tools with strict allow/exclude controls
 - Pi-style fullscreen TUI with searchable provider/model selection, themed Markdown, tool cards, streamed thinking summaries or a fallback thinking indicator, and a multiline composer, plus a line-oriented fallback for pipes
@@ -107,7 +108,14 @@ notch login openrouter
 notch --provider openrouter --model anthropic/claude-sonnet-4.5
 ```
 
-Claude Pro/Max OAuth is available with `notch login anthropic-claude-code` (provider `anthropic-claude-code`); direct `ANTHROPIC_API_KEY` authentication uses the `anthropic` provider as shown above. See [providers and authentication](docs/providers.md) for authentication precedence, credential storage, test status, and the Pi import command.
+For Claude Pro or Max, install Claude Code, sign in, and use the native Claude Agent provider. Notch launches `claude` through its stream-JSON agent protocol and never reads or copies the saved OAuth token:
+
+```sh
+claude auth login
+notch --provider claude-agent --model sonnet
+```
+
+Set `NOTCH_CLAUDE_PATH` when `claude` is not on `PATH`. The older `anthropic-claude-code` direct-OAuth provider remains for compatibility, but `claude` now resolves to `claude-agent`. Direct `ANTHROPIC_API_KEY` authentication uses the `anthropic` provider. See [providers and authentication](docs/providers.md) for details.
 
 A tested local setup uses Ollama's OpenAI-compatible Responses endpoint. Start Ollama, install a model that supports the Responses/tool-calling behavior you need, and point Notch at the server:
 
@@ -133,7 +141,7 @@ When `base_url` is set, Notch does not require `OPENAI_API_KEY`. It sends reques
 ```text
 notch [flags] [prompt words...]
 
-  --provider string       openai-codex, anthropic-claude-code, openrouter, anthropic, or openai
+  --provider string       openai-codex, claude-agent, anthropic-claude-code, openrouter, anthropic, or openai
   --model, -m string      model ID
   --thinking string       off, minimal, low, medium, high, or xhigh
   --max-turns int         maximum model turns per run (0 is unlimited)

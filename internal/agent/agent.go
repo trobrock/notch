@@ -39,7 +39,7 @@ const (
 func systemPromptForModel(base, providerName, modelName string) string {
 	providerName = strings.ToLower(strings.TrimSpace(providerName))
 	modelName = strings.ToLower(strings.TrimSpace(modelName))
-	if providerName != "anthropic" && providerName != "anthropic-claude-code" && !strings.Contains(modelName, "claude") {
+	if providerName != "anthropic" && providerName != "anthropic-claude-code" && providerName != "claude-agent" && !strings.Contains(modelName, "claude") {
 		return base
 	}
 	if strings.TrimSpace(base) == "" {
@@ -529,6 +529,9 @@ func (a *Agent) promptWithStart(ctx context.Context, text string, emit func(Even
 	}
 	a.beginProcessing(emit)
 	defer a.endProcessing()
+	if aborter, ok := a.provider.(model.PendingTurnAborter); ok {
+		defer aborter.AbortPendingTurn()
+	}
 	if started != nil {
 		started()
 	}

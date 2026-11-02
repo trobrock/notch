@@ -24,7 +24,8 @@ Malformed custom themes and plugin, Lua, and MCP load failures are generally sho
 - `internal/config`: layered JSON configuration and directory defaults.
 - `internal/model`: provider-neutral messages, content blocks, tool definitions, requests, responses, and model-list metadata.
 - `internal/modelregistry`: embedded model fallback plus atomic, endpoint-scoped, stale-on-demand provider cache.
-- `internal/provider/anthropic`: native streaming Anthropic Messages client, shared by the `anthropic` (API key) and `anthropic-claude-code` (OAuth) provider keys.
+- `internal/provider/anthropic`: native streaming Anthropic Messages client, shared by the `anthropic` (API key) and legacy `anthropic-claude-code` (OAuth) provider keys.
+- `internal/provider/claudeagent`: native Go client for the installed `claude` stream-JSON protocol; Claude Code owns subscription authentication while Notch tools are bridged through SDK MCP control messages.
 - `internal/provider/openai`: native streaming OpenAI Responses client; custom base URLs enable compatible servers such as Ollama.
 - `internal/provider/codex`: configures the Responses client for ChatGPT's native Codex endpoint.
 - `internal/provider/openrouter`: native streaming OpenRouter Chat Completions client.

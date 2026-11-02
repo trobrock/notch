@@ -35,6 +35,7 @@ import (
 	"github.com/trobrock/notch/internal/officialext"
 	"github.com/trobrock/notch/internal/pricing"
 	"github.com/trobrock/notch/internal/provider/anthropic"
+	"github.com/trobrock/notch/internal/provider/claudeagent"
 	"github.com/trobrock/notch/internal/provider/codex"
 	"github.com/trobrock/notch/internal/provider/openai"
 	"github.com/trobrock/notch/internal/provider/openrouter"
@@ -129,7 +130,7 @@ func processExitCode(err error) int {
 func newRootFlagSet(opts *options) *flag.FlagSet {
 	flags := flag.NewFlagSet("notch", flag.ContinueOnError)
 	resume := optionalStringFlag{value: &opts.resumeSession, specified: &opts.resumeSpecified}
-	flags.StringVar(&opts.provider, "provider", "", "provider: openai-codex, anthropic-claude-code, openrouter, anthropic, or openai")
+	flags.StringVar(&opts.provider, "provider", "", "provider: openai-codex, claude-agent, anthropic-claude-code, openrouter, anthropic, or openai")
 	flags.StringVar(&opts.profile, "profile", "", "global routing profile name")
 	flags.StringVar(&opts.routingSnapshot, "routing-snapshot", "", "inherited non-secret routing snapshot (child processes)")
 	flags.BoolVar(&opts.showEffectiveSettings, "show-effective-settings", false, "print resolved non-secret settings as JSON and exit")
@@ -1331,6 +1332,8 @@ func makeProvider(ctx context.Context, cfg config.Config, store *credentials.Sto
 			return anthropic.New(anthropic.Config{APIKey: credential.Access, BaseURL: cfg.BaseURL}), nil
 		}
 		return nil, errors.New("ANTHROPIC_API_KEY is not set")
+	case "claude-agent":
+		return claudeagent.New(claudeagent.Config{BaseURL: cfg.BaseURL}), nil
 	case "anthropic-claude-code":
 		if token := os.Getenv("ANTHROPIC_OAUTH_TOKEN"); token != "" && cfg.CredentialRef == "" {
 			return anthropic.New(anthropic.Config{OAuthToken: token, OAuthMode: true, BaseURL: cfg.BaseURL}), nil
@@ -1377,7 +1380,7 @@ func makeProvider(ctx context.Context, cfg config.Config, store *credentials.Sto
 		}
 		return openai.New(openai.Config{APIKey: key, BaseURL: cfg.BaseURL}), nil
 	default:
-		return nil, fmt.Errorf("unsupported provider %q (use openai-codex, anthropic-claude-code, openrouter, anthropic, or openai)", cfg.Provider)
+		return nil, fmt.Errorf("unsupported provider %q (use openai-codex, claude-agent, anthropic-claude-code, openrouter, anthropic, or openai)", cfg.Provider)
 	}
 }
 
@@ -1445,7 +1448,7 @@ func parseToolNames(value string) ([]string, error) {
 
 func rpcAPIForProvider(provider string) string {
 	switch normalizeProvider(provider) {
-	case "anthropic", "anthropic-claude-code":
+	case "anthropic", "anthropic-claude-code", "claude-agent":
 		return "anthropic-messages"
 	case "openrouter":
 		return "openai-completions"
@@ -1483,7 +1486,7 @@ func normalizeProvider(provider string) string {
 	case "codex", "chatgpt":
 		return "openai-codex"
 	case "claude":
-		return "anthropic-claude-code"
+		return "claude-agent"
 	default:
 		return strings.ToLower(provider)
 	}
@@ -1495,6 +1498,8 @@ func defaultModelFor(provider string) string {
 		return "gpt-5.6-terra"
 	case "openrouter":
 		return "anthropic/claude-sonnet-4.5"
+	case "claude-agent":
+		return "sonnet"
 	case "anthropic", "anthropic-claude-code":
 		return "claude-sonnet-4-5"
 	default:
@@ -1507,6 +1512,8 @@ func contextWindowFor(provider, modelName string) int {
 	switch provider {
 	case "openai-codex":
 		return 272000
+	case "claude-agent":
+		return 200000
 	case "anthropic", "anthropic-claude-code":
 		if strings.Contains(modelName, "claude-") {
 			return 1000000

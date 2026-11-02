@@ -487,8 +487,8 @@ func TestLogoutAnthropicClaudeCodeRemovesLegacyCredential(t *testing.T) {
 	}
 }
 
-func TestNormalizeProviderClaudeSelectsSubscription(t *testing.T) {
-	if got := normalizeProvider("Claude"); got != "anthropic-claude-code" {
+func TestNormalizeProviderClaudeSelectsAgent(t *testing.T) {
+	if got := normalizeProvider("Claude"); got != "claude-agent" {
 		t.Fatalf("normalizeProvider(Claude) = %q", got)
 	}
 	if got := normalizeProvider("anthropic"); got != "anthropic" {
@@ -497,7 +497,7 @@ func TestNormalizeProviderClaudeSelectsSubscription(t *testing.T) {
 }
 
 func TestRPCAPIForProvider(t *testing.T) {
-	want := map[string]string{"anthropic": "anthropic-messages", "anthropic-claude-code": "anthropic-messages", "openrouter": "openai-completions", "openai-codex": "openai-codex-responses", "openai": "openai-responses"}
+	want := map[string]string{"anthropic": "anthropic-messages", "anthropic-claude-code": "anthropic-messages", "claude-agent": "anthropic-messages", "openrouter": "openai-completions", "openai-codex": "openai-codex-responses", "openai": "openai-responses"}
 	for provider, api := range want {
 		if got := rpcAPIForProvider(provider); got != api {
 			t.Errorf("%s API = %q", provider, got)

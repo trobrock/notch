@@ -8,25 +8,35 @@ Profiles may be defined only in the user config at `$XDG_CONFIG_HOME/notch/confi
 {
   "profiles": {
     "personal": {
-      "provider": "anthropic",
-      "model": "your-configured-personal-model-id",
+      "provider": "openai-codex",
+      "model": "your-codex-model-id",
       "thinking_level": "medium",
-      "allowed_providers": ["anthropic"]
+      "allowed_providers": ["openai-codex", "claude-agent"]
     },
     "work": {
-      "provider": "anthropic-claude-code",
+      "provider": "anthropic",
       "model": "your-configured-work-model-id",
       "thinking_level": "high",
-      "allowed_providers": ["anthropic-claude-code"],
-      "credential_ref": "anthropic-claude-code"
+      "allowed_providers": ["anthropic"]
     }
   }
 }
 ```
 
+The personal example keeps Codex as the main model but permits an explicit Claude subscription delegation. Use a provider-qualified helper model so Notch does not silently change providers:
+
+```json
+{
+  "prompt": "Review this change.",
+  "model": "claude-agent/sonnet"
+}
+```
+
+This works with `run_subagent`; `explore_codebase` and coordinated helpers accept the same provider-qualified model. `claude-agent` starts the installed `claude` program, so Claude Code owns its login. No Claude credential belongs in the profile. An unqualified model such as `sonnet` still uses the profile's main provider, so include the `claude-agent/` prefix when crossing from Codex.
+
 The example model IDs are placeholders. Use IDs returned by `notch models PROVIDER` or supplied by your configured provider. Notch does not guess model IDs.
 
-Use `anthropic` for the Anthropic API-key route. Use `anthropic-claude-code` for the Claude Code OAuth route. They are separate providers and credentials. Pick the one that matches a provider and credential you configured; a model name never causes an implicit switch between them.
+Use `claude-agent` for a Claude Pro/Max subscription through the installed Claude Code executable. Use `anthropic` for an Anthropic API key. The older `anthropic-claude-code` direct OAuth route remains available for compatibility. These are separate providers. Pick the route that matches your authentication; a model name never causes an implicit switch between them.
 
 Start and inspect a profile. `NOTCH_PROFILE` is useful for choosing a machine's normal profile; an explicit `--profile` takes precedence:
 
