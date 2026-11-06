@@ -51,8 +51,9 @@ func TestSystemPromptForModelAddsBashGuidanceOnlyForClaude(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := systemPromptForModel("base prompt", tc.provider, tc.model)
-			hasGuidance := strings.Contains(got, "Do not prefix a bash command")
-			if hasGuidance != tc.wantGuidance {
+			hasBashGuidance := strings.Contains(got, "Do not prefix a bash command")
+			hasInspectionGuidance := strings.Contains(got, "prefer the dedicated read, grep, find, and ls tools")
+			if hasBashGuidance != tc.wantGuidance || hasInspectionGuidance != tc.wantGuidance {
 				t.Fatalf("systemPromptForModel() = %q, want guidance %v", got, tc.wantGuidance)
 			}
 			if !strings.HasPrefix(got, "base prompt") {

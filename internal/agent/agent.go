@@ -32,7 +32,7 @@ var (
 
 const (
 	toolExecutionEndCleanupTimeout = 5 * time.Second
-	claudeBashPrompt               = "Do not prefix a bash command with 'cd ...;' or 'cd ... &&' when the tool is already in the right working directory. Run the command directly. When a different directory is needed, set the bash tool's 'cwd' instead."
+	claudeBashPrompt               = "Do not prefix a bash command with 'cd ...;' or 'cd ... &&' when the tool is already in the right working directory. Run the command directly. When a different directory is needed, set the bash tool's 'cwd' instead. For file inspection, prefer the dedicated read, grep, find, and ls tools. Use bash when those tools cannot express the operation."
 	invalidToolCallInputMessage    = model.ToolCallInputErrorMessage
 )
 

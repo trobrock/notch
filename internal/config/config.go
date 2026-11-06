@@ -61,12 +61,6 @@ func (c *CompactionConfig) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-type PresetConfig struct {
-	Provider      string `json:"provider,omitempty"`
-	Model         string `json:"model,omitempty"`
-	ThinkingLevel string `json:"thinking_level,omitempty"`
-}
-
 // ProfileConfig is a global routing boundary. It contains no credential
 // material. CredentialRef names an entry in the existing credential store.
 type ProfileConfig struct {
@@ -128,13 +122,13 @@ type Config struct {
 	Theme                 string                   `json:"theme,omitempty"`
 	ThinkingLevel         string                   `json:"thinking_level,omitempty"`
 	CacheRetention        string                   `json:"cache_retention,omitempty"`
-	Presets               map[string]PresetConfig  `json:"presets,omitempty"`
 	Profiles              map[string]ProfileConfig `json:"profiles,omitempty"`
 	Roles                 map[string]RoleConfig    `json:"roles,omitempty"`
 	SelectedProfile       string                   `json:"profile,omitempty"`
 	CredentialRef         string                   `json:"-"`
 	MouseCapture          *bool                    `json:"mouse,omitempty"`
 	ContextWindow         int                      `json:"context_window,omitempty"`
+	MaxContextWindow      int                      `json:"max_context_window,omitempty"`
 	DisablePricingRefresh *bool                    `json:"disable_pricing_refresh,omitempty"`
 	ModelCache            string                   `json:"-"`
 	ModelRefreshHours     int                      `json:"model_refresh_hours,omitempty"`
@@ -464,14 +458,6 @@ func merge(dst *Config, src Config) {
 	if src.CacheRetention != "" {
 		dst.CacheRetention = strings.ToLower(strings.TrimSpace(src.CacheRetention))
 	}
-	if len(src.Presets) != 0 {
-		if dst.Presets == nil {
-			dst.Presets = make(map[string]PresetConfig, len(src.Presets))
-		}
-		for key, preset := range src.Presets {
-			dst.Presets[strings.ToLower(strings.TrimSpace(key))] = preset
-		}
-	}
 	if len(src.Profiles) != 0 {
 		if dst.Profiles == nil {
 			dst.Profiles = make(map[string]ProfileConfig, len(src.Profiles))
@@ -494,6 +480,9 @@ func merge(dst *Config, src Config) {
 	}
 	if src.ContextWindow > 0 {
 		dst.ContextWindow = src.ContextWindow
+	}
+	if src.MaxContextWindow > 0 {
+		dst.MaxContextWindow = src.MaxContextWindow
 	}
 	if src.DisablePricingRefresh != nil {
 		value := *src.DisablePricingRefresh

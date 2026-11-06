@@ -501,7 +501,6 @@ func run(args []string) error {
 		fullscreen = tui.NewApp(tui.AppConfig{
 			CWD: cwd, Provider: normalizeProvider(cfg.Provider), Model: cfg.Model, SessionDir: sessionDir,
 			Theme: selectedTheme, ThemeName: cfg.Theme, Themes: themeCatalog, ThinkingLevel: cfg.ThinkingLevel,
-			Presets:       tuiPresets(cfg.Presets),
 			InitialPrompt: opts.prompt, MouseCapture: cfg.MouseCapture,
 			GitBranch: gitBranch, Profile: func() string {
 				if activeRouting != nil {
@@ -729,6 +728,9 @@ func run(args []string) error {
 			keepRecentTokens = cfg.Compaction.KeepRecentTokens
 		}
 	}
+	if err := validateContextWindowCeiling(cfg.MaxContextWindow, reserveTokens, compactionEnabled); err != nil {
+		return err
+	}
 	contextWindow := cfg.ContextWindow
 	if contextWindow <= 0 {
 		cachedModels, _ := modelsRegistry.Cached(normalizeProvider(cfg.Provider), modelregistry.Scope(normalizeProvider(cfg.Provider), cfg.BaseURL))
@@ -742,6 +744,7 @@ func run(args []string) error {
 	if contextWindow <= 0 {
 		contextWindow = contextWindowFor(cfg.Provider, cfg.Model)
 	}
+	contextWindow = capContextWindow(contextWindow, cfg.MaxContextWindow)
 	var onThinkingChange func(string)
 	if herdrReporter != nil {
 		onThinkingChange = herdrReporter.SetThinking
@@ -842,6 +845,7 @@ func run(args []string) error {
 				if window <= 0 {
 					window = contextWindowFor(providerName, modelName)
 				}
+				window = capContextWindow(window, baseModelConfig.MaxContextWindow)
 				if switchErr := runner.QueueProviderSwitch(normalizeProvider(providerName), nextProvider, modelName, window); switchErr != nil {
 					return 0, switchErr
 				}
@@ -1468,17 +1472,18 @@ func validThinkingLevel(level string) bool {
 	}
 }
 
-func tuiPresets(presets map[string]config.PresetConfig) map[string]tui.ModelPreset {
-	if len(presets) == 0 {
-		return nil
+func validateContextWindowCeiling(ceiling, reserve int, compactionEnabled bool) error {
+	if compactionEnabled && ceiling > 0 && ceiling <= reserve {
+		return fmt.Errorf("max_context_window (%d) must be greater than compaction.reserveTokens (%d)", ceiling, reserve)
 	}
-	result := make(map[string]tui.ModelPreset, len(presets))
-	for key, preset := range presets {
-		result[key] = tui.ModelPreset{
-			Provider: normalizeProvider(preset.Provider), Model: preset.Model, ThinkingLevel: preset.ThinkingLevel,
-		}
+	return nil
+}
+
+func capContextWindow(window, ceiling int) int {
+	if ceiling > 0 && window > ceiling {
+		return ceiling
 	}
-	return result
+	return window
 }
 
 func normalizeProvider(provider string) string {

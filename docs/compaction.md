@@ -21,7 +21,8 @@ The config shape matches Pi and uses camelCase inside `compaction`:
 
 ```json
 {
-  "context_window": 272000,
+  "context_window": 0,
+  "max_context_window": 200000,
   "compaction": {
     "enabled": true,
     "reserveTokens": 16384,
@@ -34,8 +35,9 @@ The config shape matches Pi and uses camelCase inside `compaction`:
 - `reserveTokens` reserves room before the model's context limit. The current default is **16,384**.
 - `keepRecentTokens` is the target amount of recent context retained whole after summarization. The current default is **20,000**; a single complete recent turn may exceed it.
 - `context_window` overrides the inferred model context size and is useful for local or unrecognized models.
+- `max_context_window` caps the effective size used for context reporting and automatic compaction. Smaller model windows stay unchanged. When automatic compaction is enabled, this value must be greater than `reserveTokens`.
 
-Project copies of these settings apply only in a trusted workspace. `context_window` and compaction settings are project-eligible; session and model-cache paths are fixed below the XDG data root and cannot be configured in JSON.
+Project copies of these settings apply only in a trusted workspace. `context_window`, `max_context_window`, and compaction settings are project-eligible; session and model-cache paths are fixed below the XDG data root and cannot be configured in JSON.
 
 ## Threshold and context indicator
 
@@ -57,6 +59,6 @@ When `context_window` is not set, Notch first uses matching model-registry metad
 | `openrouter` | 128,000 |
 | `openai` and other fallback cases | 128,000 |
 
-Provider limits can change and model/account availability varies. Runtime `/model` selection immediately applies discovered context metadata when present. Override `context_window` when the service's real limit differs; an explicit value wins over registry metadata, and Notch's inferred value does not alter the provider's limit.
+Provider limits can change and model/account availability varies. Runtime `/model` selection immediately applies discovered context metadata when present. Override `context_window` when the service's real limit differs; an explicit value wins over registry metadata. If `max_context_window` is also set, the smaller value is used. These settings control Notch's context reporting and compaction threshold; they do not alter the provider's real limit.
 
 See [sessions and `/new`](tui.md#commands-and-thinking-level) and the [architecture](architecture.md#agent-loop).
