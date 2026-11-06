@@ -100,14 +100,13 @@ func TestLoadMergesUserThenProject(t *testing.T) {
 		"provider":"openai", "model":"global-model", "base_url":"https://global.test", "mcp_config":"global-mcp.json",
 		"max_tokens":123, "system_prompt":"global prompt", "extension_dirs":["global-ext"],
 		"skill_dirs":["global-skill"], "prompt_dirs":["global-prompt"], "theme_dirs":["global-theme"], "session_dir":"global-sessions",
-		"theme":"dracula", "thinking_level":"low", "mouse":false, "context_window":99999, "model_cache":"custom-models.json", "model_refresh_hours":12, "auto_update":false,
-		"presets":{"f1":{"provider":"anthropic","model":"global-preset","thinking_level":"low"}},
+		"theme":"dracula", "thinking_level":"low", "mouse":false, "context_window":99999, "max_context_window":200000, "model_cache":"custom-models.json", "model_refresh_hours":12, "auto_update":false,
 		"compaction":{"enabled":false,"reserve_tokens":1000,"keep_recent_tokens":2000}
 	}`)
 	writeJSON(t, filepath.Join(cwd, ".notch", "config.json"), `{
 		"model":"project-model", "max_tokens":456, "mcp_config":"project-mcp.json",
 		"extension_dirs":["project-ext"], "provider":"", "prompt_dirs":[], "theme_dirs":["project-theme"],
-		"thinking_level":"high", "cache_retention":"long", "auto_update":true, "presets":{"F2":{"provider":"openai-codex","model":"project-preset","thinking_level":"high"}},
+		"thinking_level":"high", "cache_retention":"long", "auto_update":true,
 		"compaction":{"keep_recent_tokens":3000}
 	}`)
 
@@ -125,11 +124,8 @@ func TestLoadMergesUserThenProject(t *testing.T) {
 	if !reflect.DeepEqual(cfg.MCPConfigPaths(), wantMCPPaths) {
 		t.Fatalf("MCP config paths = %q, want %q", cfg.MCPConfigPaths(), wantMCPPaths)
 	}
-	if cfg.Theme != "dracula" || cfg.ThinkingLevel != "high" || cfg.CacheRetention != "long" || cfg.MouseCapture == nil || *cfg.MouseCapture || cfg.ContextWindow != 99999 || cfg.ModelCache != filepath.Join(home, ".local", "share", "notch", "models.json") || cfg.ModelRefreshHours != 12 || cfg.AutoUpdate == nil || *cfg.AutoUpdate || cfg.Compaction == nil || cfg.Compaction.Enabled == nil || *cfg.Compaction.Enabled || cfg.Compaction.ReserveTokens != 1000 || cfg.Compaction.KeepRecentTokens != 3000 {
+	if cfg.Theme != "dracula" || cfg.ThinkingLevel != "high" || cfg.CacheRetention != "long" || cfg.MouseCapture == nil || *cfg.MouseCapture || cfg.ContextWindow != 99999 || cfg.MaxContextWindow != 200000 || cfg.ModelCache != filepath.Join(home, ".local", "share", "notch", "models.json") || cfg.ModelRefreshHours != 12 || cfg.AutoUpdate == nil || *cfg.AutoUpdate || cfg.Compaction == nil || cfg.Compaction.Enabled == nil || *cfg.Compaction.Enabled || cfg.Compaction.ReserveTokens != 1000 || cfg.Compaction.KeepRecentTokens != 3000 {
 		t.Fatalf("theme/thinking/compaction merge failed: %+v", cfg)
-	}
-	if len(cfg.Presets) != 2 || cfg.Presets["f1"].Model != "global-preset" || cfg.Presets["f2"].Model != "project-preset" {
-		t.Fatalf("preset merge failed: %+v", cfg.Presets)
 	}
 	if !reflect.DeepEqual(cfg.ExtensionDirs, []string{filepath.Join(cwd, "project-ext")}) ||
 		!reflect.DeepEqual(cfg.SkillDirs, []string{filepath.Join(home, ".config", "notch", "global-skill")}) ||

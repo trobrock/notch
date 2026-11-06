@@ -410,6 +410,37 @@ func TestSessionLifecycleUsesFreshShutdownContext(t *testing.T) {
 	}
 }
 
+func TestValidateContextWindowCeiling(t *testing.T) {
+	if err := validateContextWindowCeiling(16_384, 16_384, true); err == nil {
+		t.Fatal("ceiling at reserve should fail when automatic compaction is enabled")
+	}
+	if err := validateContextWindowCeiling(16_384, 16_384, false); err != nil {
+		t.Fatalf("disabled compaction should allow a small ceiling: %v", err)
+	}
+	if err := validateContextWindowCeiling(200_000, 16_384, true); err != nil {
+		t.Fatalf("valid ceiling failed: %v", err)
+	}
+}
+
+func TestCapContextWindow(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		window, ceiling int
+		want            int
+	}{
+		{name: "no ceiling", window: 1_000_000, want: 1_000_000},
+		{name: "below ceiling", window: 128_000, ceiling: 200_000, want: 128_000},
+		{name: "at ceiling", window: 200_000, ceiling: 200_000, want: 200_000},
+		{name: "above ceiling", window: 1_000_000, ceiling: 200_000, want: 200_000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := capContextWindow(tc.window, tc.ceiling); got != tc.want {
+				t.Fatalf("capContextWindow(%d, %d) = %d, want %d", tc.window, tc.ceiling, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestWriteModelListJSON(t *testing.T) {
 	models := []modelregistry.Entry{{Provider: "anthropic", ID: "claude-test", Name: "Claude Test", ContextWindow: 200000, Reasoning: true, Source: "builtin"}}
 	var output bytes.Buffer

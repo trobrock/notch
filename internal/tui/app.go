@@ -37,14 +37,6 @@ const (
 	maxPanelLineBytes  = 4096
 )
 
-// ModelPreset is a provider, model, and optional thinking level assigned to a
-// function key.
-type ModelPreset struct {
-	Provider      string
-	Model         string
-	ThinkingLevel string
-}
-
 // AppConfig describes the terminal and the labels shown in the status line.
 type AppConfig struct {
 	MouseCapture  *bool
@@ -57,7 +49,6 @@ type AppConfig struct {
 	ThemeName     string
 	Themes        *ThemeCatalog
 	ThinkingLevel string
-	Presets       map[string]ModelPreset
 	InitialPrompt string
 	GitBranch     string
 	Profile       string
@@ -182,8 +173,6 @@ type modelSelectionResult struct {
 	model         string
 	contextWindow int
 	warning       error
-	presetKey     string
-	thinkingLevel string
 	err           error
 }
 type commandResult struct {
@@ -1023,8 +1012,6 @@ func (a *App) handleKey(runCtx context.Context, key KeyEvent) (changed, exit boo
 	case KeyShiftTab:
 		a.cycleThinkingLevel()
 		return true, false
-	case KeyF1, KeyF2, KeyF3, KeyF4, KeyF5, KeyF6, KeyF7, KeyF8, KeyF9:
-		return a.applyPreset(runCtx, key.Key), false
 	case KeyBackspace:
 		return e.Backspace(), false
 	case KeyDelete:
@@ -1843,70 +1830,6 @@ func (a *App) startCompact(runCtx context.Context, instructions string) {
 	}()
 }
 
-func validPresetThinkingLevel(level string) bool {
-	switch level {
-	case "", "off", "minimal", "low", "medium", "high", "xhigh":
-		return true
-	default:
-		return false
-	}
-}
-
-func (a *App) applyPreset(runCtx context.Context, key string) bool {
-	preset, ok := a.cfg.Presets[key]
-	if !ok {
-		return false
-	}
-	if a.state.activeModel || a.state.activeCommand {
-		a.addNotice("cannot apply preset while work is running", "error")
-		return true
-	}
-	currentProvider, currentModel := a.CurrentModel()
-	provider := strings.TrimSpace(preset.Provider)
-	modelName := strings.TrimSpace(preset.Model)
-	thinking := strings.ToLower(strings.TrimSpace(preset.ThinkingLevel))
-	if provider == "" {
-		provider = currentProvider
-	}
-	if modelName == "" {
-		modelName = currentModel
-	}
-	if provider == "" || modelName == "" {
-		a.addNotice("preset "+strings.ToUpper(key)+" requires a provider and model", "error")
-		return true
-	}
-	if !validPresetThinkingLevel(thinking) {
-		a.addNotice(fmt.Sprintf("preset %s has invalid thinking level %q", strings.ToUpper(key), thinking), "error")
-		return true
-	}
-	if provider == currentProvider && modelName == currentModel {
-		if thinking != "" {
-			a.applyThinkingLevel(thinking, false)
-		}
-		a.addNotice("preset "+strings.ToUpper(key)+": ("+provider+") "+modelName, "notice")
-		return true
-	}
-	a.mu.Lock()
-	switcher := a.switchModel
-	a.mu.Unlock()
-	if switcher == nil {
-		a.addNotice("model selection is unavailable", "error")
-		return true
-	}
-	commandCtx, cancel := context.WithCancel(runCtx)
-	a.state.activeCommand = true
-	a.state.cancel = cancel
-	a.state.layout.Status = "preset " + strings.ToUpper(key)
-	go func() {
-		window, err := switcher(commandCtx, provider, modelName, 0)
-		a.post(runCtx, appEvent{modelDone: &modelSelectionResult{
-			provider: provider, model: modelName, contextWindow: window,
-			presetKey: key, thinkingLevel: thinking, err: err,
-		}}, false)
-	}()
-	return true
-}
-
 func (a *App) startModelSelection(runCtx context.Context, force bool) {
 	if a.state.activeModel || a.state.activeCommand {
 		a.addNotice("cannot change model while work is running", "error")
@@ -2027,14 +1950,7 @@ func (a *App) finishModelSelection(result modelSelectionResult) bool {
 	if result.contextWindow > 0 {
 		a.state.layout.ContextWindow = result.contextWindow
 	}
-	if result.thinkingLevel != "" {
-		a.applyThinkingLevel(result.thinkingLevel, false)
-	}
-	if result.presetKey != "" {
-		a.addNotice("preset "+strings.ToUpper(result.presetKey)+": ("+result.provider+") "+result.model, "notice")
-	} else {
-		a.addNotice("model: ("+result.provider+") "+result.model, "notice")
-	}
+	a.addNotice("model: ("+result.provider+") "+result.model, "notice")
 	if result.warning != nil {
 		a.addNotice("model registry: "+result.warning.Error()+"; showing fallback data", "warning")
 	}
