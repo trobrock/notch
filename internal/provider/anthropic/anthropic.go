@@ -20,11 +20,13 @@ import (
 )
 
 const (
-	defaultBaseURL        = "https://api.anthropic.com"
-	defaultVersion        = "2023-06-01"
-	oauthBeta             = "claude-code-20250219,oauth-2025-04-20"
-	oauthUserAgent        = "claude-cli/2.1.75"
-	claudeCodeSystemBlock = "You are Claude Code, Anthropic's official CLI for Claude."
+	defaultBaseURL             = "https://api.anthropic.com"
+	defaultVersion             = "2023-06-01"
+	oauthBeta                  = "claude-code-20250219,oauth-2025-04-20"
+	thinkingBindingBeta        = "thinking-binding-controls-2026-08-01"
+	oauthUserAgent             = "claude-cli/2.1.75"
+	claudeCodeSystemBlock      = "You are Claude Code, Anthropic's official CLI for Claude."
+	prefixMismatchDropBehavior = "drop_block"
 )
 
 // Config configures an Anthropic provider.
@@ -108,8 +110,13 @@ type wireTool struct {
 }
 
 type wireThinking struct {
-	Type         string `json:"type"`
-	BudgetTokens int    `json:"budget_tokens,omitempty"`
+	Type         string            `json:"type"`
+	BudgetTokens int               `json:"budget_tokens,omitempty"`
+	BlockBinding *wireBlockBinding `json:"block_binding,omitempty"`
+}
+
+type wireBlockBinding struct {
+	PrefixMismatchBehavior string `json:"prefix_mismatch_behavior"`
 }
 
 type wireOutputConfig struct {
@@ -325,11 +332,12 @@ func makeRequestForMode(req model.Request, oauthMode bool) wireRequest {
 	if req.ReasoningLevel == "" || req.ReasoningLevel == "off" || !validReasoningLevel(req.ReasoningLevel) {
 		return wireReq
 	}
+	binding := &wireBlockBinding{PrefixMismatchBehavior: prefixMismatchDropBehavior}
 	if supportsAdaptiveThinking(req.Model) {
-		wireReq.Thinking = &wireThinking{Type: "adaptive"}
+		wireReq.Thinking = &wireThinking{Type: "adaptive", BlockBinding: binding}
 		wireReq.OutputConfig = &wireOutputConfig{Effort: adaptiveEffort(req.ReasoningLevel)}
 	} else {
-		wireReq.Thinking = &wireThinking{Type: "enabled", BudgetTokens: thinkingBudget(req.ReasoningLevel, maxTokens)}
+		wireReq.Thinking = &wireThinking{Type: "enabled", BudgetTokens: thinkingBudget(req.ReasoningLevel, maxTokens), BlockBinding: binding}
 	}
 	return wireReq
 }
@@ -499,7 +507,8 @@ func (p *provider) Stream(ctx context.Context, req model.Request, onEvent func(m
 	if cleaned != 0 || repaired != 0 {
 		log.Printf("warning: anthropic: cleaned %d invalid tool-call argument value and repaired %d missing result before encoding request", cleaned, repaired)
 	}
-	body, err := json.Marshal(makeRequestForMode(req, p.oauthMode))
+	wireReq := makeRequestForMode(req, p.oauthMode)
+	body, err := json.Marshal(wireReq)
 	if err != nil {
 		return model.Response{}, fmt.Errorf("anthropic: encode request: %w", err)
 	}
@@ -512,6 +521,13 @@ func (p *provider) Stream(ctx context.Context, req model.Request, onEvent func(m
 		httpReq.Header.Set("Accept", "text/event-stream")
 		httpReq.Header.Set("anthropic-version", p.version)
 		p.applyAuth(httpReq, token)
+		if wireReq.Thinking != nil {
+			betas := httpReq.Header.Get("anthropic-beta")
+			if betas != "" {
+				betas += ","
+			}
+			httpReq.Header.Set("anthropic-beta", betas+thinkingBindingBeta)
+		}
 		return httpReq, nil
 	})
 	if err != nil {
