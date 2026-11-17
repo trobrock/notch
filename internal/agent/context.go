@@ -509,8 +509,11 @@ func responseText(blocks []model.Block) string {
 	return strings.TrimSpace(strings.Join(parts, "\n"))
 }
 
-// compactionSplitLocked returns a normal user prompt at which recent context
-// can begin. Such a boundary cannot orphan a tool result from its tool call.
+// compactionSplitLocked returns a safe message at which recent context can
+// begin. Normal user prompts are preferred. If one tool-running turn is larger
+// than KeepRecentTokens, an assistant message can also begin the suffix because
+// the summary is a user message and the assistant's following tool results stay
+// with their tool calls.
 func (a *Agent) compactionSplitLocked() int {
 	if len(a.messages) < 2 {
 		return -1
@@ -531,12 +534,74 @@ func (a *Agent) compactionSplitLocked() int {
 			split = i
 		}
 	}
+	if split > 0 {
+		if split == 1 && compactionSummaryMessage(a.messages[0]) {
+			// Replacing only the previous summary cannot shrink the retained
+			// conversation and would repeat on the next agent loop.
+			return -1
+		}
+		return split
+	}
+
+	// The latest user turn alone is too large. Keep the newest complete portion
+	// of that turn instead of repeatedly summarizing only the prior summary.
+	turnStart := lastNormal + 1
+	if turnStart < 0 {
+		turnStart = 0
+	}
+	suffixTokens = 0
+	lastAssistant := -1
+	assistantCount := 0
+	for i := len(a.messages) - 1; i >= turnStart; i-- {
+		suffixTokens += estimateMessage(a.messages[i])
+		if !toolCallMessage(a.messages[i]) {
+			continue
+		}
+		assistantCount++
+		if lastAssistant == -1 {
+			lastAssistant = i
+		}
+		if i > 0 && suffixTokens <= keep {
+			split = i
+		}
+	}
+	if assistantCount < 2 {
+		// One exchange does not provide an older in-turn section to summarize.
+		// Preserve the existing user-turn boundary until another exchange lands.
+		split = -1
+	} else if split <= 0 {
+		split = lastAssistant
+	}
 	if split <= 0 && lastNormal > 0 {
-		// A single recent turn can itself exceed KeepRecentTokens. Keep it whole
-		// rather than creating an invalid tool sequence.
+		// There is no assistant response yet, so the normal user prompt remains
+		// the only boundary that cannot orphan a tool result.
 		split = lastNormal
 	}
+	if split == 1 && compactionSummaryMessage(a.messages[0]) {
+		// Nothing but the previous summary would be removed. Waiting for another
+		// assistant/tool-result exchange avoids an automatic compaction loop.
+		return -1
+	}
 	return split
+}
+
+func toolCallMessage(message model.Message) bool {
+	if message.Role != "assistant" {
+		return false
+	}
+	for _, block := range message.Content {
+		if block.Type == "tool_use" || block.Type == "function_call" {
+			return true
+		}
+	}
+	return false
+}
+
+func compactionSummaryMessage(message model.Message) bool {
+	if message.Role != "user" || len(message.Content) != 1 || message.Content[0].Type != "text" {
+		return false
+	}
+	return strings.HasPrefix(message.Content[0].Text, "[Conversation summary]\n")
 }
 
 func normalUserPrompt(message model.Message) bool {
@@ -545,7 +610,7 @@ func normalUserPrompt(message model.Message) bool {
 	}
 	hasText := false
 	for _, block := range message.Content {
-		if block.Type == "tool_result" {
+		if block.Type == "tool_result" || block.Type == "function_call_output" {
 			return false
 		}
 		if block.Type == "text" && strings.TrimSpace(block.Text) != "" {
