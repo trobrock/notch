@@ -1135,6 +1135,134 @@ func TestRepeatedCompactionPreservesPriorSummaryContext(t *testing.T) {
 	}
 }
 
+func TestCompactionSplitsOversizedToolTurnAtAssistantBoundary(t *testing.T) {
+	provider := &preservingSummaryProvider{}
+	a, err := New(Config{
+		Provider: provider, Registry: extension.NewRegistry(), Model: "m",
+		Compaction: CompactionConfig{Enabled: false, ContextWindow: 128000, ReserveTokens: 16384, KeepRecentTokens: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolExchange := func(id, result string) []model.Message {
+		return []model.Message{
+			{Role: "assistant", Content: []model.Block{{Type: "tool_use", ID: id, Name: "read", Arguments: json.RawMessage(`{"path":"file"}`)}}},
+			{Role: "user", Content: []model.Block{{Type: "tool_result", ToolUseID: id, Text: result}}},
+		}
+	}
+	a.messages = append(a.messages, model.TextMessage("user", "complete a long task"))
+	a.messages = append(a.messages, toolExchange("1", strings.Repeat("old ", 100))...)
+	a.messages = append(a.messages, toolExchange("2", strings.Repeat("middle ", 100))...)
+	latest := toolExchange("3", "latest result")
+	a.messages = append(a.messages, latest...)
+	a.compaction.KeepRecentTokens = estimateMessages(latest)
+
+	if split := a.compactionSplitLocked(); split != 5 {
+		t.Fatalf("split = %d, want 5", split)
+	}
+	if err := a.Compact(context.Background(), "", false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if provider.calls != 1 || len(a.messages) != 3 {
+		t.Fatalf("calls=%d messages=%#v", provider.calls, a.messages)
+	}
+	if a.messages[1].Role != "assistant" || a.messages[1].Content[0].ID != "3" {
+		t.Fatalf("retained context does not start with the tool call: %#v", a.messages[1])
+	}
+	if a.messages[2].Role != "user" || a.messages[2].Content[0].ToolUseID != "3" {
+		t.Fatalf("retained tool result was orphaned: %#v", a.messages[2])
+	}
+}
+
+func TestCompactionWaitsWhenOnlyPriorSummaryCanBeRemoved(t *testing.T) {
+	provider := &preservingSummaryProvider{}
+	a, err := New(Config{
+		Provider: provider, Registry: extension.NewRegistry(), Model: "m",
+		Compaction: CompactionConfig{Enabled: false, ContextWindow: 128000, ReserveTokens: 16384, KeepRecentTokens: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolExchange := func(id string) []model.Message {
+		return []model.Message{
+			{Role: "assistant", Content: []model.Block{{Type: "tool_use", ID: id, Name: "read", Arguments: json.RawMessage(`{"path":"file"}`)}}},
+			{Role: "user", Content: []model.Block{{Type: "tool_result", ToolUseID: id, Text: strings.Repeat("result ", 100)}}},
+		}
+	}
+	a.messages = append(a.messages, model.TextMessage("user", "complete a long task"))
+	a.messages = append(a.messages, toolExchange("1")...)
+	a.messages = append(a.messages, toolExchange("2")...)
+
+	if err := a.Compact(context.Background(), "", false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Compact(context.Background(), "", false, nil); !errors.Is(err, ErrNothingToCompact) {
+		t.Fatalf("second compaction error = %v, want ErrNothingToCompact", err)
+	}
+	if provider.calls != 1 {
+		t.Fatalf("summary calls = %d, want 1", provider.calls)
+	}
+
+	a.messages = append(a.messages, toolExchange("3")...)
+	if err := a.Compact(context.Background(), "", false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if provider.calls != 2 {
+		t.Fatalf("summary calls after a new safe boundary = %d, want 2", provider.calls)
+	}
+}
+
+func TestCompactionRecognizesFunctionCallBoundaries(t *testing.T) {
+	a, err := New(Config{
+		Provider: &preservingSummaryProvider{}, Registry: extension.NewRegistry(), Model: "m",
+		Compaction: CompactionConfig{Enabled: false, ContextWindow: 128000, ReserveTokens: 16384, KeepRecentTokens: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	functionExchange := func(id string) []model.Message {
+		return []model.Message{
+			{Role: "assistant", Content: []model.Block{{Type: "function_call", ID: id, Name: "read", Arguments: json.RawMessage(`{"path":"file"}`)}}},
+			{Role: "user", Content: []model.Block{{Type: "function_call_output", ToolUseID: id, Text: "result"}}},
+		}
+	}
+	a.messages = append(a.messages, model.TextMessage("user", "complete a long task"))
+	a.messages = append(a.messages, functionExchange("1")...)
+	a.messages = append(a.messages, functionExchange("2")...)
+
+	if split := a.compactionSplitLocked(); split != 3 {
+		t.Fatalf("split = %d, want 3", split)
+	}
+	mixedResult := model.Message{Role: "user", Content: []model.Block{
+		{Type: "function_call_output", ToolUseID: "2", Text: "result"},
+		{Type: "text", Text: "not a safe user boundary"},
+	}}
+	if normalUserPrompt(mixedResult) {
+		t.Fatal("function call output was treated as a normal user prompt")
+	}
+}
+
+func TestCompactionDoesNotReplaceOnlyPriorSummary(t *testing.T) {
+	a, err := New(Config{
+		Provider: &preservingSummaryProvider{}, Registry: extension.NewRegistry(), Model: "m",
+		Compaction: CompactionConfig{Enabled: false, ContextWindow: 128000, ReserveTokens: 16384, KeepRecentTokens: 10000},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.messages = []model.Message{
+		model.TextMessage("user", "[Conversation summary]\n\nprior work"),
+		model.TextMessage("user", "recent task"),
+		model.TextMessage("assistant", "recent answer"),
+	}
+	if split := a.compactionSplitLocked(); split != -1 {
+		t.Fatalf("split = %d, want -1", split)
+	}
+	if err := a.Compact(context.Background(), "", true, nil); !errors.Is(err, ErrNothingToCompact) {
+		t.Fatalf("compaction error = %v, want ErrNothingToCompact", err)
+	}
+}
+
 func TestAutomaticCompactionAndReset(t *testing.T) {
 	store, err := session.New(t.TempDir(), t.TempDir(), "fake", "fake")
 	if err != nil {
