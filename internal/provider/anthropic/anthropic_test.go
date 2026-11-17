@@ -51,6 +51,12 @@ func TestRequestBodyReasoningLevels(t *testing.T) {
 			} else if !present || thinking["type"] != tc.wantType {
 				t.Fatalf("thinking = %#v, want type %q", request["thinking"], tc.wantType)
 			}
+			if tc.wantType != "" {
+				binding, ok := thinking["block_binding"].(map[string]any)
+				if !ok || binding["prefix_mismatch_behavior"] != prefixMismatchDropBehavior {
+					t.Fatalf("thinking.block_binding = %#v, want prefix mismatch behavior %q", thinking["block_binding"], prefixMismatchDropBehavior)
+				}
+			}
 			if tc.wantEffort != "" {
 				output, ok := request["output_config"].(map[string]any)
 				if !ok || output["effort"] != tc.wantEffort {
@@ -145,6 +151,9 @@ func TestStreamTextToolUseAndUsage(t *testing.T) {
 		if r.URL.Path != "/v1/messages" || r.Header.Get("x-api-key") != "secret" {
 			t.Errorf("request path/header = %s/%q", r.URL.Path, r.Header.Get("x-api-key"))
 		}
+		if got := r.Header.Get("anthropic-beta"); got != thinkingBindingBeta {
+			t.Errorf("anthropic-beta = %q, want %q", got, thinkingBindingBeta)
+		}
 		var request map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Fatal(err)
@@ -174,7 +183,7 @@ func TestStreamTextToolUseAndUsage(t *testing.T) {
 	provider := New(Config{BaseURL: server.URL, APIKey: "secret", HTTPClient: server.Client()})
 	var streamed []model.StreamEvent
 	response, err := provider.Stream(context.Background(), model.Request{
-		Model: "claude-test", SystemPrompt: "be useful", Messages: []model.Message{model.TextMessage("user", "hi")},
+		Model: "claude-fable-5-2", ReasoningLevel: "high", SystemPrompt: "be useful", Messages: []model.Message{model.TextMessage("user", "hi")},
 	}, func(event model.StreamEvent) { streamed = append(streamed, event) })
 	if err != nil {
 		t.Fatal(err)
@@ -202,7 +211,7 @@ func TestStreamOAuthHeadersBodyAndToolNameRoundTrip(t *testing.T) {
 		if got := r.Header.Get("x-api-key"); got != "" {
 			t.Errorf("x-api-key must be omitted in OAuth mode, got %q", got)
 		}
-		if got := r.Header.Get("anthropic-beta"); got != oauthBeta {
+		if got := r.Header.Get("anthropic-beta"); got != oauthBeta+","+thinkingBindingBeta {
 			t.Errorf("anthropic-beta = %q", got)
 		}
 		if got := r.Header.Get("User-Agent"); got != oauthUserAgent {
@@ -245,8 +254,10 @@ func TestStreamOAuthHeadersBodyAndToolNameRoundTrip(t *testing.T) {
 		APIKey: "must-not-be-sent", OAuthToken: "oauth-secret", OAuthMode: true,
 		BaseURL: server.URL, HTTPClient: server.Client(),
 	}).Stream(context.Background(), model.Request{
-		SystemPrompt: "project instructions",
-		Tools:        []model.ToolDefinition{{Name: "read"}, {Name: "find"}},
+		Model:          "claude-fable-5-2",
+		ReasoningLevel: "high",
+		SystemPrompt:   "project instructions",
+		Tools:          []model.ToolDefinition{{Name: "read"}, {Name: "find"}},
 		Messages: []model.Message{{Role: "assistant", Content: []model.Block{{
 			Type: "tool_use", ID: "old-tool", Name: "read", Arguments: json.RawMessage(`{"path":"README.md"}`),
 		}}}},
