@@ -17,6 +17,7 @@ import (
 
 	"github.com/trobrock/notch/internal/extension"
 	"github.com/trobrock/notch/internal/model"
+	"github.com/trobrock/notch/internal/process"
 )
 
 const (
@@ -272,6 +273,7 @@ func (s *state) startArgv(name, command string, args []string, prompt string) (*
 	s.mu.Unlock()
 	ctx, cancel := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(ctx, command, args...)
+	process.ConfigureCommand(cmd)
 	cmd.Dir = s.cwd
 	var output lockedBuffer
 	cmd.Stdout, cmd.Stderr = &output, &output
@@ -296,6 +298,7 @@ func (s *state) start(input commandInput) (*Monitor, error) {
 	s.mu.Unlock()
 	ctx, cancel := context.WithCancel(context.Background())
 	cmd := shellCommand(ctx, input.Command)
+	process.ConfigureCommand(cmd)
 	cmd.Dir = s.cwd
 	var output lockedBuffer
 	if input.Trigger == "output_match" {
@@ -361,6 +364,9 @@ func (s *state) watch(m *Monitor, output *lockedBuffer, timeoutSeconds int) {
 	for {
 		select {
 		case err := <-done:
+			// Wait only proves the direct process exited. Clean up any children
+			// that are still in the process group before completing the monitor.
+			_ = process.TerminateCommand(m.cmd)
 			// Wait may win the select before the final output notification.
 			checkOutput()
 			s.finish(m, err, output.String(), "process exited")
@@ -438,7 +444,7 @@ func (s *state) finish(m *Monitor, err error, output, reason string) {
 			m.Status = "failed"
 		}
 	}
-	notify := !m.triggered && (m.Trigger == "exit" || m.ExitCode != 0)
+	notify := m.Status != "cancelled" && !m.triggered && (m.Trigger == "exit" || m.ExitCode != 0)
 	m.triggered = m.triggered || notify
 	s.pruneLocked()
 	s.mu.Unlock()
