@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -191,6 +194,84 @@ func TestStopMonitor(t *testing.T) {
 	if result.Content != "Stopped monitor mon-1" {
 		t.Fatalf("result=%#v", result)
 	}
+}
+
+func TestCancelledMonitorDoesNotWakeAgent(t *testing.T) {
+	h := &testHost{}
+	s := &state{host: h, monitors: map[string]*Monitor{}}
+	m := &Monitor{
+		ID:          "mon-1",
+		Name:        "dev server",
+		Command:     "bin/dev",
+		Trigger:     "exit",
+		Status:      "cancelled",
+		CompletedAt: time.Now(),
+	}
+
+	s.finish(m, context.Canceled, "server stopped", "process exited")
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.followups) != 0 {
+		t.Fatalf("cancelled monitor woke agent: %#v", h.followups)
+	}
+}
+
+func TestMonitorCleansUpDescendants(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell process-group fixture is Unix-specific")
+	}
+
+	for _, test := range []struct {
+		name string
+		stop bool
+	}{
+		{name: "completed"},
+		{name: "cancelled", stop: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			r, h := setup(t)
+			dir := t.TempDir()
+			marker := filepath.Join(dir, "descendant-finished")
+			ready := filepath.Join(dir, "descendant-started")
+			background := "(sleep 1; touch " + shellTestQuote(marker) + ") &"
+			command := background
+			if test.stop {
+				command = "touch " + shellTestQuote(ready) + "; " + background + " wait"
+			}
+
+			start, _ := r.Tool("monitor_command")
+			raw, err := json.Marshal(map[string]any{"command": command})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := start.Execute(context.Background(), raw, nil); err != nil {
+				t.Fatal(err)
+			}
+			if test.stop {
+				waitFor(t, func() bool { _, err := os.Stat(ready); return err == nil })
+				stop, _ := r.Tool("stop_monitor")
+				if _, err := stop.Execute(context.Background(), json.RawMessage(`{"id":"mon-1"}`), nil); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				waitFor(t, func() bool {
+					h.mu.Lock()
+					defer h.mu.Unlock()
+					return len(h.followups) == 1
+				})
+			}
+
+			time.Sleep(1200 * time.Millisecond)
+			if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("descendant survived monitor %s: stat error %v", test.name, err)
+			}
+		})
+	}
+}
+
+func shellTestQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 func TestMonitorReportsWakeupDeliveryFailure(t *testing.T) {

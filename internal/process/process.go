@@ -23,14 +23,30 @@ const (
 	processWaitDelay      = time.Second
 )
 
-// configureCommand applies platform cancellation and bounds how long inherited
-// output pipes can delay Wait.
-func configureCommand(cmd *exec.Cmd) {
+// ConfigureCommand applies platform cancellation and bounds how long inherited
+// output pipes can delay Wait. It must be called before the command starts.
+func ConfigureCommand(cmd *exec.Cmd) {
 	if cmd == nil {
 		return
 	}
 	cmd.WaitDelay = processWaitDelay
 	configureCancellation(cmd)
+}
+
+// TerminateCommand stops the command and its owned process group when the
+// platform supports process-group cancellation. It is safe to call after the
+// command's direct process has exited to clean up descendants.
+func TerminateCommand(cmd *exec.Cmd) error {
+	if cmd == nil {
+		return errors.New("nil command")
+	}
+	if cmd.Cancel != nil {
+		return cmd.Cancel()
+	}
+	if cmd.Process == nil {
+		return os.ErrProcessDone
+	}
+	return cmd.Process.Kill()
 }
 
 // RunCommand starts and waits for a context-backed command. Its own context
@@ -47,7 +63,7 @@ func RunCommand(ctx context.Context, cmd *exec.Cmd) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	configureCommand(cmd)
+	ConfigureCommand(cmd)
 	if err := cmd.Start(); err != nil {
 		return err
 	}
