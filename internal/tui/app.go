@@ -1562,6 +1562,10 @@ func (a *App) handleAgentEvent(event agent.Event) bool {
 			entry.Text = "done"
 		}
 		a.state.layout.Status = "working"
+	case "max_tokens_continue":
+		a.finishThinking(true)
+		a.addNotice(event.Text, "notice")
+		a.state.layout.Status = "continuing"
 	case "provider_retry":
 		a.finishThinking(true)
 		delay := time.Duration(event.DelayMS) * time.Millisecond

@@ -16,7 +16,7 @@ import (
 const (
 	defaultProvider     = "anthropic"
 	defaultModel        = "claude-sonnet-4-5"
-	defaultMaxTokens    = 8192
+	defaultMaxTokens    = 16384
 	defaultSystemPrompt = `You are a coding agent. Help the user understand and modify their codebase.
 
 Use language a fifth-grade student can understand when possible. Keep sentences short and clear. Use technical terms only when needed, and explain them in plain language.

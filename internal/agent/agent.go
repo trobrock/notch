@@ -23,17 +23,21 @@ import (
 )
 
 var (
-	ErrNotProcessing  = errors.New("agent is not processing")
-	ErrMaxTurns       = errors.New("maximum turns reached")
-	ErrMaxCost        = errors.New("maximum cost reached")
-	ErrPricingUnknown = errors.New("model price is unknown; cannot enforce maximum cost")
-	ErrIdleTimeout    = errors.New("agent idle timeout reached")
+	ErrNotProcessing         = errors.New("agent is not processing")
+	ErrMaxTurns              = errors.New("maximum turns reached")
+	ErrMaxCost               = errors.New("maximum cost reached")
+	ErrMaxTokenContinuations = errors.New("model repeatedly reached the maximum output token limit")
+	ErrPricingUnknown        = errors.New("model price is unknown; cannot enforce maximum cost")
+	ErrIdleTimeout           = errors.New("agent idle timeout reached")
 )
 
 const (
-	toolExecutionEndCleanupTimeout = 5 * time.Second
-	claudeBashPrompt               = "Do not prefix a bash command with 'cd ...;' or 'cd ... &&' when the tool is already in the right working directory. Run the command directly. When a different directory is needed, set the bash tool's 'cwd' instead. For file inspection, prefer the dedicated read, grep, find, and ls tools. Use bash when those tools cannot express the operation."
-	invalidToolCallInputMessage    = model.ToolCallInputErrorMessage
+	toolExecutionEndCleanupTimeout   = 5 * time.Second
+	claudeBashPrompt                 = "Do not prefix a bash command with 'cd ...;' or 'cd ... &&' when the tool is already in the right working directory. Run the command directly. When a different directory is needed, set the bash tool's 'cwd' instead. For file inspection, prefer the dedicated read, grep, find, and ls tools. Use bash when those tools cannot express the operation."
+	invalidToolCallInputMessage      = model.ToolCallInputErrorMessage
+	maxTokensContinuationMessage     = "Continue from where you left off. Do not repeat completed work."
+	maxConsecutiveTokenContinuations = 2
+	defaultMaxTokens                 = 16384
 )
 
 func systemPromptForModel(base, providerName, modelName string) string {
@@ -230,7 +234,7 @@ func New(cfg Config) (*Agent, error) {
 		return nil, errors.New("agent requires a model")
 	}
 	if cfg.MaxTokens <= 0 {
-		cfg.MaxTokens = 8192
+		cfg.MaxTokens = defaultMaxTokens
 	}
 	if cfg.ThinkingLevel == "" {
 		cfg.ThinkingLevel = "off"
@@ -539,6 +543,7 @@ func (a *Agent) promptWithStart(ctx context.Context, text string, emit func(Even
 	startedAt := time.Now()
 	totals := Usage{}
 	turns := 0
+	maxTokenContinuations := 0
 	costKnown := true
 	finalText := ""
 	stop := "end_turn"
@@ -765,12 +770,14 @@ func (a *Agent) promptWithStart(ctx context.Context, text string, emit func(Even
 			}
 		}
 		if queued, ok := a.takeQueued("steer"); ok {
+			maxTokenContinuations = 0
 			if err := a.appendMessage(model.TextMessage("user", queued.Text)); err != nil {
 				return err
 			}
 			continue
 		}
 		if len(calls) != 0 {
+			maxTokenContinuations = 0
 			continue
 		}
 		end, hookErr := a.registry.RunHooks(ctx, "agent_end", map[string]any{"stop_reason": response.StopReason, "turn": turn})
@@ -780,7 +787,19 @@ func (a *Agent) promptWithStart(ctx context.Context, text string, emit func(Even
 		followUp, _ := end["follow_up"].(string)
 		next, _, ok := a.settleOrTakeQueuedOr(followUp)
 		if ok {
+			maxTokenContinuations = 0
 			if err := a.appendMessage(model.TextMessage("user", next.Text)); err != nil {
+				return err
+			}
+			continue
+		}
+		if response.StopReason == "max_tokens" {
+			if maxTokenContinuations >= maxConsecutiveTokenContinuations {
+				return fmt.Errorf("%w after %d consecutive responses", ErrMaxTokenContinuations, maxTokenContinuations+1)
+			}
+			maxTokenContinuations++
+			emit(Event{Type: "max_tokens_continue", Text: "Model reached its output limit; continuing automatically.", Attempt: maxTokenContinuations, MaxAttempts: maxConsecutiveTokenContinuations})
+			if err := a.appendMessage(model.TextMessage("user", maxTokensContinuationMessage)); err != nil {
 				return err
 			}
 			continue

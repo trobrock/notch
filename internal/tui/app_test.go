@@ -1358,6 +1358,21 @@ func TestFreeformPromptExplainsControls(t *testing.T) {
 	}
 }
 
+func TestAppDisplaysMaxTokenContinuationWithoutMarkingPromptFailed(t *testing.T) {
+	a := NewApp(AppConfig{})
+	a.handleAgentEvent(agent.Event{Type: "turn_start"})
+	if !a.handleAgentEvent(agent.Event{Type: "max_tokens_continue", Text: "Model reached its output limit; continuing automatically.", Attempt: 1, MaxAttempts: 2}) {
+		t.Fatal("max-token continuation event was not handled")
+	}
+	if a.state.promptErrored || a.state.layout.Status != "continuing" {
+		t.Fatalf("promptErrored=%v status=%q", a.state.promptErrored, a.state.layout.Status)
+	}
+	last := a.state.layout.Transcript[len(a.state.layout.Transcript)-1]
+	if last.Kind != KindNotice || !strings.Contains(last.Text, "continuing automatically") {
+		t.Fatalf("continuation notice = %#v", last)
+	}
+}
+
 func TestAppDisplaysProviderRetryWithoutMarkingPromptFailed(t *testing.T) {
 	a := NewApp(AppConfig{})
 	a.handleAgentEvent(agent.Event{Type: "turn_start"})

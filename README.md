@@ -261,7 +261,7 @@ Later non-empty values replace earlier ones, so CLI flags take precedence over e
   "model": "claude-sonnet-4-5",
   "explore_model": "openai-codex/gpt-5.4-mini",
   "base_url": "",
-  "max_tokens": 8192,
+  "max_tokens": 16384,
   "theme": "dark",
   "thinking_level": "medium",
   "cache_retention": "short",

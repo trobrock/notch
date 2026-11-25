@@ -16,6 +16,9 @@ func TestDefaultSystemPromptGuidesAgentBehavior(t *testing.T) {
 	if cfg.CacheRetention != "short" {
 		t.Fatalf("default cache retention = %q", cfg.CacheRetention)
 	}
+	if cfg.MaxTokens != 16384 {
+		t.Fatalf("default max tokens = %d, want 16384", cfg.MaxTokens)
+	}
 	if cfg.AutoUpdate == nil || !*cfg.AutoUpdate {
 		t.Fatalf("automatic updates are not enabled by default: %+v", cfg.AutoUpdate)
 	}
