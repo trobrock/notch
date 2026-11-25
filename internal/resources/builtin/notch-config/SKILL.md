@@ -30,7 +30,7 @@ Before editing, read every existing applicable config file. Do not replace unrel
   "model": "gpt-5.6-sol",
   "explore_model": "openai-codex/gpt-5.4-mini",
   "base_url": "",
-  "max_tokens": 8192,
+  "max_tokens": 16384,
   "theme": "dark",
   "thinking_level": "medium",
   "cache_retention": "short",

@@ -48,7 +48,7 @@ Notch does not import Pi provider/model registries. It maintains its own embedde
 {
   "provider": "anthropic",
   "model": "claude-sonnet-4-5",
-  "max_tokens": 8192,
+  "max_tokens": 16384,
   "theme": "dark",
   "thinking_level": "medium",
   "compaction": {

@@ -100,6 +100,8 @@ func (a *eventAdapter) Handle(event agent.Event) {
 		_ = a.server.write(result)
 	case "delegation_usage":
 		_ = a.server.write(map[string]any{"type": "delegation_usage", "usage": rpcDelegationUsage(event.DelegationUsage)})
+	case "max_tokens_continue":
+		_ = a.server.write(map[string]any{"type": "max_tokens_continue", "message": event.Text, "attempt": event.Attempt, "maxAttempts": event.MaxAttempts})
 	case "provider_retry":
 		_ = a.server.write(map[string]any{"type": "provider_retry", "attempt": event.Attempt, "maxAttempts": event.MaxAttempts, "delayMs": event.DelayMS, "error": event.Text})
 	case "error":

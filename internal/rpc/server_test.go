@@ -51,6 +51,20 @@ func (p *rpcTestProvider) Stream(ctx context.Context, _ model.Request, emit func
 	}, nil
 }
 
+func TestMaxTokenContinuationEventUsesRPCShape(t *testing.T) {
+	var output bytes.Buffer
+	server := New(strings.NewReader(""), &output, "/work")
+	adapter := newEventAdapter(server, StateConfig{})
+	adapter.Handle(agent.Event{Type: "max_tokens_continue", Text: "continuing", Attempt: 1, MaxAttempts: 2})
+	var event map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(output.Bytes()), &event); err != nil {
+		t.Fatal(err)
+	}
+	if event["type"] != "max_tokens_continue" || event["message"] != "continuing" || event["attempt"] != float64(1) || event["maxAttempts"] != float64(2) {
+		t.Fatalf("event = %#v", event)
+	}
+}
+
 func TestCompactionFailureEventClearsRPCState(t *testing.T) {
 	var output bytes.Buffer
 	server := New(strings.NewReader(""), &output, "/work")

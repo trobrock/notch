@@ -2114,6 +2114,89 @@ func TestDeniedToolEmitsObservationalHook(t *testing.T) {
 	}
 }
 
+func TestMaxTokensWithoutToolCallContinuesAutomatically(t *testing.T) {
+	calls := 0
+	provider := providerFunc(func(_ context.Context, req model.Request, _ func(model.StreamEvent)) (model.Response, error) {
+		calls++
+		switch calls {
+		case 1:
+			if req.MaxTokens != defaultMaxTokens {
+				t.Fatalf("max tokens = %d, want %d", req.MaxTokens, defaultMaxTokens)
+			}
+			return model.Response{
+				Content:      []model.Block{{Type: "thinking", Text: "still working"}},
+				StopReason:   "max_tokens",
+				OutputTokens: 8192,
+			}, nil
+		case 2:
+			last := req.Messages[len(req.Messages)-1]
+			if last.Role != "user" || len(last.Content) != 1 || last.Content[0].Type != "text" || last.Content[0].Text != maxTokensContinuationMessage {
+				t.Fatalf("continuation message = %#v", last)
+			}
+			return model.Response{Content: []model.Block{{Type: "text", Text: "done"}}, StopReason: "end_turn"}, nil
+		default:
+			t.Fatalf("provider calls = %d, want 2", calls)
+			return model.Response{}, nil
+		}
+	})
+	a, err := New(Config{Provider: provider, Registry: extension.NewRegistry(), Model: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var end Event
+	var continuation Event
+	if err := a.Prompt(context.Background(), "start", func(event Event) {
+		if event.Type == "max_tokens_continue" {
+			continuation = event
+		}
+		if event.Type == "run_end" {
+			end = event
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("provider calls = %d, want 2", calls)
+	}
+	if continuation.Text == "" || continuation.Attempt != 1 || continuation.MaxAttempts != maxConsecutiveTokenContinuations {
+		t.Fatalf("continuation event = %#v", continuation)
+	}
+	if end.StopReason != "end_turn" || end.NumTurns != 2 || end.FinalAssistant != "done" || end.Usage == nil || end.Usage.OutputTokens != 8192 {
+		t.Fatalf("run_end = %#v", end)
+	}
+}
+
+func TestRepeatedMaxTokensStopsAfterBoundedContinuations(t *testing.T) {
+	calls := 0
+	provider := providerFunc(func(_ context.Context, _ model.Request, _ func(model.StreamEvent)) (model.Response, error) {
+		calls++
+		return model.Response{Content: []model.Block{{Type: "thinking", Text: "still working"}}, StopReason: "max_tokens"}, nil
+	})
+	a, err := New(Config{Provider: provider, Registry: extension.NewRegistry(), Model: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var continuations int
+	var end Event
+	err = a.Prompt(context.Background(), "start", func(event Event) {
+		if event.Type == "max_tokens_continue" {
+			continuations++
+		}
+		if event.Type == "run_end" {
+			end = event
+		}
+	})
+	if !errors.Is(err, ErrMaxTokenContinuations) {
+		t.Fatalf("error = %v, want ErrMaxTokenContinuations", err)
+	}
+	if calls != maxConsecutiveTokenContinuations+1 || continuations != maxConsecutiveTokenContinuations {
+		t.Fatalf("provider calls = %d, continuation events = %d", calls, continuations)
+	}
+	if end.StopReason != "error" || end.NumTurns != calls {
+		t.Fatalf("run_end = %#v", end)
+	}
+}
+
 func TestInvalidStreamedToolCallRecoversInSameSession(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
